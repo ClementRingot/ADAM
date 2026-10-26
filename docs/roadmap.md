@@ -4,24 +4,10 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 
 | ID | Idea | Priority | Effort | Status |
 |---|---|---|---|---|
-| [FEAT-94](#feat-94) | Conditional breakpoints | P2 | S | Needs research |
 | [FEAT-95](#feat-95) | Compact repeated stops with a result-size budget | P2 | M | Ready |
 | [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
 | [NET-1](#net-1) | Corporate HTTP proxy (`HTTPS_PROXY`) | P3 | S | Ready |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
-
-<a id="feat-94"></a>
-## FEAT-94 — Conditional breakpoints
-
-**Idea.** Let a breakpoint carry an ABAP condition, e.g. `{ "line": 42, "condition": "lv_index = 500" }`,
-so the run stops only where the condition holds.
-
-**Why it remains.** In a loop a capture can only stop on the first `hits` passes (at most 10), so
-reaching iteration 500 is impossible today. ADT line breakpoints accept a `condition` attribute
-(abap-adt-api's `formatBreakpoint` sends it), which would replace hundreds of stops with one.
-
-**Resume with.** Verify how SAP reports an invalid or unresolvable condition (`reachedBreakpoints`
-carries `unresolvableCondition`) and surface it in the breakpoint report.
 
 <a id="feat-95"></a>
 ## FEAT-95 — Compact repeated stops with a result-size budget
@@ -45,6 +31,10 @@ server ports it over a new, minimal HTTP client, tested so far against simulated
 
 **Resume with.** Basic auth on an on-premise system (one class with unit tests, one loop, one RAP
 behavior pool with `trigger: "none"`), then the BTP browser login; record the answers as fixtures.
+Conditional breakpoints follow the reference clients (abap-adt-api, vscode_abap_remote_fs) and need
+their own checks: how SAP answers an invalid condition (refused at the final sync, or a stop flagged
+`unresolvableCondition`), and that a step onto the line of a condition that does not hold carries no
+`reachedBreakpoints`.
 
 <a id="net-1"></a>
 ## NET-1 — Corporate HTTP proxy

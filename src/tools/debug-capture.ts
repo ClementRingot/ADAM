@@ -36,6 +36,7 @@ import {
   openSessionOnServer,
   openSessionsAhead,
   type PinnedSession,
+  type ReachedBreakpoint,
   type SessionsAhead,
   stopListener,
   syncBreakpoints,
@@ -115,6 +116,8 @@ interface BreakpointLocation {
   line?: number;
   method?: string;
   include?: string;
+  /** ABAP condition SAP evaluates there: the run stops only where it holds. */
+  condition?: string;
   /** How many times it may stop the run (a loop). */
   hits: number;
 }
@@ -145,12 +148,14 @@ function readLocation(raw: Record<string, unknown>, type: string, name: string):
   if (line === undefined && method === undefined) return undefined;
   const include = trimmed(raw.include)?.toLowerCase();
   const ownType = trimmed(raw.type);
+  const condition = trimmed(raw.condition);
   return {
     type: ownType ? normalizeObjectType(ownType) : type,
     name: (trimmed(raw.name) ?? name).toUpperCase(),
     ...(line !== undefined ? { line } : {}),
     ...(method ? { method } : {}),
     ...(include ? { include } : {}),
+    ...(condition ? { condition } : {}),
     hits: typeof raw.hits === 'number' ? raw.hits : 1,
   };
 }
@@ -206,8 +211,8 @@ interface LineTarget {
   label: string;
 }
 
-/** A resolved location and how many times it may stop the run. */
-type StopTarget = LineTarget & { hits: number };
+/** A resolved location, how many times it may stop the run, and where only (its condition). */
+type StopTarget = LineTarget & { hits: number; condition?: string };
 
 /** What resolving the breakpoints reads, once per capture: several breakpoints often share a source. */
 interface ResolutionCache {
@@ -418,6 +423,8 @@ interface ArmedBreakpoint {
   /** Line breakpoints: lower-cased source URI + the line SAP armed — how a stop is recognised on the stack. */
   uri?: string;
   line?: number;
+  /** SAP stops here only where this holds — so a step merely passing the line is no stop of it. */
+  condition?: string;
   /** Stops it may make before it is retired from the run. */
   maxHits: number;
   /** Its entry in the breakpoints report. */
@@ -474,7 +481,8 @@ function acceptedLine(
 /**
  * Arm every line target on the first candidate SAP accepts (one probe POST carrying all candidates,
  * then a second sync keeping one line per target — two targets on the same line arm it once) plus
- * the optional exception breakpoint.
+ * the optional exception breakpoint. Conditions ride on the second sync only, as vscode_abap_remote_fs
+ * sends them: the probe finds the line, then the condition goes onto the line SAP armed.
  */
 async function armBreakpoints(
   conn: SapConnection,
@@ -486,12 +494,16 @@ async function armBreakpoints(
   const exceptionSpec: DebugBreakpointSpec[] = exceptionClass
     ? [{ kind: 'exception', clientId: EXCEPTION_CLIENT_ID, exceptionClass }]
     : [];
-  const lineSpec = (index: number, line: number): DebugBreakpointSpec => ({
-    kind: 'line',
-    clientId: lineClientId(index, line),
-    uri: targets[index]?.uri ?? '',
-    line,
-  });
+  const lineSpec = (index: number, line: number, withCondition = false): DebugBreakpointSpec => {
+    const condition = withCondition ? targets[index]?.condition : undefined;
+    return {
+      kind: 'line',
+      clientId: lineClientId(index, line),
+      uri: targets[index]?.uri ?? '',
+      line,
+      ...(condition ? { condition } : {}),
+    };
+  };
   const remember = (states: DebugBreakpointState[]): DebugBreakpointState[] => {
     armedIds.splice(0, armedIds.length, ...states.flatMap((state) => (state.id ? [state.id] : [])));
     return states;
@@ -512,11 +524,12 @@ async function armBreakpoints(
     if (hit && !owner.has(positionKey(index, hit.line))) owner.set(positionKey(index, hit.line), index);
   });
   let states = probe;
-  // The probe may have armed several candidate lines per target — keep exactly one each.
-  if (probe.filter((state) => state.id && isLineState(state)).length > owner.size) {
+  // The probe may have armed several candidate lines per target — keep exactly one each, with its condition.
+  const conditioned = [...owner.values()].some((index) => targets[index]?.condition);
+  if (conditioned || probe.filter((state) => state.id && isLineState(state)).length > owner.size) {
     states = remember(
       await syncBreakpoints(conn.http, identity, [
-        ...[...owner.values()].map((index) => lineSpec(index, accepted[index]?.requested ?? 0)),
+        ...[...owner.values()].map((index) => lineSpec(index, accepted[index]?.requested ?? 0, true)),
         ...exceptionSpec,
       ]),
     );
@@ -528,8 +541,21 @@ async function armBreakpoints(
     const hit = accepted[index];
     const first = hit ? owner.get(positionKey(index, hit.line)) : undefined;
     const state = hit && first === index ? stateFor(states, index, target, hit.requested, sole) : undefined;
+    const condition = target.condition ? { condition: target.condition } : {};
     if (hit && first !== undefined && first !== index) {
-      report.push({ kind: 'line', location: target.label, status: 'duplicate', of: targets[first]?.label });
+      const other = targets[first];
+      report.push({
+        kind: 'line',
+        location: target.label,
+        status: 'duplicate',
+        of: other?.label,
+        ...condition,
+        ...(target.condition !== other?.condition
+          ? {
+              note: 'SAP keeps one breakpoint per line, with one condition: its stops are reported for the first. To stop on either condition, join both with OR in one breakpoint.',
+            }
+          : {}),
+      });
     } else if (hit && state?.id) {
       const line = state.line ?? hit.line;
       armed.push({
@@ -538,10 +564,29 @@ async function armBreakpoints(
         kind: 'line',
         uri: target.uri.toLowerCase(),
         line,
+        ...condition,
         maxHits: target.hits,
         reportIndex: report.length,
       });
-      report.push({ kind: 'line', location: target.label, status: 'set', line, uri: `${target.uri}#start=${line}` });
+      report.push({
+        kind: 'line',
+        location: target.label,
+        status: 'set',
+        line,
+        uri: `${target.uri}#start=${line}`,
+        ...condition,
+      });
+    } else if (hit && first === index) {
+      // The probe armed the line, the final sync did not keep it: with a condition, SAP refused the condition.
+      report.push({
+        kind: 'line',
+        location: target.label,
+        status: 'refused',
+        error:
+          state?.error ?? (target.condition ? 'SAP did not accept the condition' : 'SAP did not keep the breakpoint'),
+        line: hit.line,
+        ...condition,
+      });
     } else {
       const refusal = target.candidates
         .map((line) => stateFor(probe, index, target, line, sole)?.error)
@@ -552,6 +597,7 @@ async function armBreakpoints(
         status: 'refused',
         error: state?.error ?? refusal ?? 'SAP did not accept a breakpoint there',
         triedLines: target.candidates,
+        ...condition,
       });
     }
   });
@@ -911,7 +957,7 @@ interface StepRun {
   ended: boolean;
   steppingPossible: boolean;
   /** A step ran into an armed breakpoint: the run stands at it (`stack`), and the next stop records it. */
-  reached?: { id: string; stack: DebugStackFrame[] };
+  reached?: { id: string; stack: DebugStackFrame[]; unresolvable: ReachedBreakpoint[] };
   /** The inspection budget ran low: the capture stops following the run. */
   outOfTime?: true;
 }
@@ -964,7 +1010,12 @@ async function runSteps(
     const bp = reach(outcome.reachedBreakpoints, stack[0], move);
     if (bp) {
       entry.breakpoint = bp.label;
-      return { steps, ended: false, steppingPossible: outcome.steppingPossible, reached: { id: bp.id, stack } };
+      return {
+        steps,
+        ended: false,
+        steppingPossible: outcome.steppingPossible,
+        reached: { id: bp.id, stack, unresolvable: outcome.unresolvableConditions ?? [] },
+      };
     }
     if (move) {
       frame = stack;
@@ -998,24 +1049,38 @@ async function collectStops(
   session: DebuggerSession,
   req: DebugRequest,
   armed: readonly ArmedBreakpoint[],
-  first: { reachedBreakpoints: string[]; steppingPossible: boolean; single: boolean },
+  first: {
+    reachedBreakpoints: string[];
+    steppingPossible: boolean;
+    single: boolean;
+    /** Reached breakpoints whose condition SAP could not evaluate. */
+    unresolvable: ReachedBreakpoint[];
+  },
   inspection: Inspection,
   deadline: number,
   warnings: string[],
 ): Promise<void> {
   const remaining = new Set(armed.map((bp) => bp.id));
   const stackShown = new Set<string>();
-  let { reachedBreakpoints, steppingPossible } = first;
+  let { reachedBreakpoints, steppingPossible, unresolvable } = first;
   /** The stack a step already read where it ran into a breakpoint: the next stop's. */
   let reachedStack: DebugStackFrame[] | undefined;
   let stepsLeft = MAX_TOTAL_STEPS;
-  // Back in a caller the top frame stands on the call it returned from, already passed: only SAP's word counts.
-  const reach: StepReach = (reached, top, move) =>
-    armedAt(
-      armed.filter((bp) => remaining.has(bp.id)),
-      reached,
-      move === 'returned' ? undefined : top,
+  // Only SAP's word counts back in a caller (the top frame stands on the call it returned from, already
+  // passed) and for a conditional breakpoint (SAP stops there only where the condition holds).
+  const reach: StepReach = (reached, top, move) => {
+    const live = armed.filter((bp) => remaining.has(bp.id));
+    return (
+      armedAt(live, reached, undefined) ??
+      (move === 'returned'
+        ? undefined
+        : armedAt(
+            live.filter((bp) => !bp.condition),
+            [],
+            top,
+          ))
     );
+  };
   for (;;) {
     const stack = reachedStack ?? (await session.stack());
     reachedStack = undefined;
@@ -1031,6 +1096,17 @@ async function collectStops(
       ...(!at || !stackShown.has(at.id) ? describeStack(stack) : {}),
     };
     if (at) stackShown.add(at.id);
+    const unevaluated = at?.condition ? unresolvable.find((bp) => bp.id === at.id) : undefined;
+    if (at && unevaluated) {
+      const where =
+        unevaluated.conditionErrorOffset !== undefined
+          ? ` (error at character ${unevaluated.conditionErrorOffset})`
+          : '';
+      stop.conditionNotEvaluated = `SAP could not evaluate "${at.condition}"${where} and stopped anyway.`;
+      warnings.push(
+        `SAP could not evaluate the condition of ${at.label} and stopped regardless of it: check that every variable it names exists at that line.`,
+      );
+    }
     inspection.stops.push(stop);
     const willStep = req.steps > 0 && steppingPossible && stepsLeft > 0;
     // A post-mortem session is inspection only: nothing to follow, nothing to retire.
@@ -1097,6 +1173,7 @@ async function collectStops(
       // A step ran into the next stop: the run already stands there.
       reachedBreakpoints = [run.reached.id];
       reachedStack = run.reached.stack;
+      unresolvable = run.reached.unresolvable;
       steppingPossible = run.steppingPossible;
       continue;
     }
@@ -1106,6 +1183,7 @@ async function collectStops(
       return;
     }
     ({ reachedBreakpoints, steppingPossible } = next);
+    unresolvable = next.unresolvableConditions ?? [];
   }
 }
 
@@ -1163,6 +1241,7 @@ async function inspect(
         reachedBreakpoints: attach.reachedBreakpoints.map((bp) => bp.id).filter(Boolean),
         steppingPossible: attach.steppingPossible,
         single: attach.postMortem,
+        unresolvable: attach.reachedBreakpoints.filter((bp) => bp.unresolvableCondition),
       },
       inspection,
       deadline,
@@ -1244,7 +1323,11 @@ async function runCapture(conn: SapConnection, req: DebugRequest, user: string):
   const cache = newResolutionCache();
   const targets: StopTarget[] = [];
   for (const location of req.locations) {
-    targets.push({ ...(await resolveLineTarget(conn, location, cache)), hits: location.hits });
+    targets.push({
+      ...(await resolveLineTarget(conn, location, cache)),
+      hits: location.hits,
+      ...(location.condition ? { condition: location.condition } : {}),
+    });
   }
   if (targets.length === 0 && !req.exceptionClass) {
     throw new DebugInputError(

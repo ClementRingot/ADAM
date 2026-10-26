@@ -90,6 +90,30 @@ describe('breakpoints', () => {
     expect(xml).toContain('kind="exception" clientId="dbg-exception" skipCount="0" exceptionClass="CX_SY_ZERODIVIDE"');
   });
 
+  it('puts an escaped condition on a line breakpoint, and reads it back', () => {
+    const xml = buildBreakpointsXml(
+      IDENTITY,
+      [
+        {
+          kind: 'line',
+          clientId: 'dbg-0-line-9',
+          uri: '/sap/bc/adt/oo/classes/zcl_order/source/main',
+          line: 9,
+          condition: `lv_kind = 'A' AND lv_total < 10 & "x"`,
+        },
+      ],
+      'external',
+    );
+    expect(xml).toContain(
+      'adtcore:uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=9" condition="lv_kind = &apos;A&apos; AND lv_total &lt; 10 &amp; &quot;x&quot;"/>',
+    );
+    expect(
+      parseBreakpointsResponse(
+        '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core"><breakpoint kind="line" clientId="c" id="BP" adtcore:uri="/x#start=9" condition="lv_total &lt; 10"/></dbg:breakpoints>',
+      ),
+    ).toEqual([{ clientId: 'c', kind: 'line', id: 'BP', uri: '/x', line: 9, condition: 'lv_total < 10' }]);
+  });
+
   it('parses accepted and refused breakpoints, keeping SAP refusal text', () => {
     const states = parseBreakpointsResponse(
       `<?xml version="1.0" encoding="utf-8"?><dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core"><breakpoint kind="line" clientId="dbg-line-41" errorMessage="Cannot create a breakpoint at this position"/><breakpoint kind="line" clientId="dbg-line-42" id="KIND=0.SOURCETYPE=ABAP.MAIN_PROGRAM=ZCL_ORDER=====CP.LINE_NR=12" adtcore:uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=42"/><breakpoint kind="exception" clientId="dbg-exception" id="KIND=5.EXCEPTION_CLASS=CX_SY_ZERODIVIDE" exceptionClass="CX_SY_ZERODIVIDE"/></dbg:breakpoints>`,
@@ -404,6 +428,15 @@ describe('session documents', () => {
     expect(parseAttachResponse('<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger"/>').steppingPossible).toBe(
       true,
     );
+    // A condition SAP could not evaluate: it stopped anyway and says where the evaluation failed.
+    expect(
+      parseAttachResponse(
+        '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger"><reachedBreakpoints><breakpoint id="BP1" kind="line" unresolvableCondition="lv_nope = 1" unresolvableConditionErrorOffset="0"/><breakpoint id="BP2" kind="line" unresolvableCondition="false"/></reachedBreakpoints></dbg:attach>',
+      ).reachedBreakpoints,
+    ).toEqual([
+      { id: 'BP1', kind: 'line', unresolvableCondition: 'lv_nope = 1', conditionErrorOffset: 0 },
+      { id: 'BP2', kind: 'line' },
+    ]);
   });
 
   it('parses stack entries in document order with the system-program flag', () => {
@@ -565,6 +598,24 @@ describe('DebuggerSession', () => {
       reachedBreakpoints: ['KIND=0.LINE_NR=40'],
     });
     expect(http.post.mock.calls[0]?.[0]).toBe('/sap/bc/adt/debugger?method=stepContinue');
+  });
+
+  it('reports the reached breakpoints whose condition SAP could not evaluate', async () => {
+    const http = mockHttp({
+      post: vi
+        .fn()
+        .mockResolvedValue(
+          ok(
+            '<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger"><reachedBreakpoints><breakpoint id="BP9" kind="line" unresolvableCondition="lv_x = 1" unresolvableConditionErrorOffset="5"/></reachedBreakpoints></dbg:step>',
+          ),
+        ),
+    });
+    expect(await new DebuggerSession(http, IDENTITY).step('stepContinue')).toEqual({
+      status: 'stopped',
+      steppingPossible: true,
+      reachedBreakpoints: ['BP9'],
+      unresolvableConditions: [{ id: 'BP9', kind: 'line', unresolvableCondition: 'lv_x = 1', conditionErrorOffset: 5 }],
+    });
   });
 
   it('retires one breakpoint from the attached run by deleting its session copy', async () => {

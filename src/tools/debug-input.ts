@@ -31,6 +31,14 @@ const DebugBreakpointSchema = z
       .enum(['implementations', 'testclasses'])
       .optional()
       .describe('CLAS only: the local-class include the line or method is in (detected for lhc_/lcl_/ltc_ methods).'),
+    condition: z
+      .string()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe(
+        "ABAP condition SAP evaluates at the breakpoint: the run stops there only where it holds, e.g. lv_index = 500 or ls_item-matnr = 'X' AND sy-tabix > 10 — reach one iteration of a long loop. SAP stops anyway when it cannot evaluate it, and the stop says so.",
+      ),
     hits: z.coerce
       .number()
       .int()

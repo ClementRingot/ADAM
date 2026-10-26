@@ -124,7 +124,7 @@ A server that is not configured still starts; every tool call then lists what is
 |---|---|
 | `type`, `name` | Object of `line`, and the default object of every breakpoint and of the unit-test trigger: `CLAS`, `PROG` or `FUNC` |
 | `line` | Shorthand for one breakpoint at this line of `type` + `name` |
-| `breakpoints` | Up to 20 breakpoints, each `{ line \| method, include?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `hits` (1-10, default 1): how often this breakpoint may stop the run |
+| `breakpoints` | Up to 20 breakpoints, each `{ line \| method, include?, condition?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `condition`: an ABAP condition SAP evaluates there, so the run stops only where it holds (`lv_index = 500`, `ls_item-matnr = 'X' AND sy-tabix > 10`) — one pass of a long loop; when SAP cannot evaluate it, it stops anyway and the stop says so. `hits` (1-10, default 1): how often this breakpoint may stop the run |
 | `exceptionClass` | Also (or only) stop where this exception class is raised, e.g. `CX_SY_ZERODIVIDE` |
 | `trigger` | `unittest` (default): the harmless ABAP Unit tests of `triggerName`, else of `type` + `name`, else of the first breakpoint's object (a function module's tests are its group's). `http`: a `GET` of `url`. `none`: wait `timeoutSeconds` while you run the code yourself as the same SAP user |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint object |
@@ -168,6 +168,9 @@ abap_debug {type: "CLAS", name: "ZCL_ORDER", line: 42, variables: ["LV_TOTAL", "
 
 abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{line: 42, hits: 5}, {line: 60}], variables: ["LV_TOTAL"]}
     five loop iterations, then the line after the loop — one run
+
+abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{line: 42, condition: "sy-tabix = 500"}], variables: ["LS_ITEM"]}
+    only the 500th pass of the loop
 
 abap_debug {type: "CLAS", name: "ZBP_I_TRAVEL",
             breakpoints: [{method: "lhc_travel~validate_dates"}, {type: "CLAS", name: "ZCL_TRAVEL_RULES", method: "check_dates"}],

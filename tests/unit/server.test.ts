@@ -43,6 +43,7 @@ describe('tools/list', () => {
       'line',
       'method',
       'include',
+      'condition',
       'hits',
     ]);
     expect(debug.properties.timeoutSeconds).toMatchObject({ type: 'integer', minimum: 1, maximum: 240 });

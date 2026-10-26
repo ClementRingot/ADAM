@@ -194,6 +194,28 @@ function installFakeSap(options: FakeSapOptions = {}) {
   /** Armed breakpoints by position → id: the user's external ones, and the attached run's own copies. */
   const external = new Map<string, string>();
   let sessionBreakpoints = new Map<string, string>();
+  /** Their conditions by position, kept with the breakpoints as SAP keeps them. */
+  let externalConditions = new Map<string, string>();
+  let sessionConditions = new Map<string, string>();
+  /** How many times the run has reached the position of execution step `index`, up to and including it. */
+  const passOf = (index: number): number => {
+    const at = options.execution?.[index];
+    if (!at) return 1;
+    return (options.execution ?? []).slice(0, index + 1).filter((p) => p.path === at.path && p.line === at.line).length;
+  };
+  /** The fake's condition language: `LV_PASS = n` or `LV_PASS > n`; SAP cannot evaluate anything else. */
+  const evaluate = (condition: string, pass: number): boolean | 'unresolvable' => {
+    const match = /^LV_PASS\s*(=|>)\s*(\d+)$/i.exec(condition.trim());
+    if (!match) return 'unresolvable';
+    return match[1] === '=' ? pass === Number(match[2]) : pass > Number(match[2]);
+  };
+  /** Does the run stop at execution step `index`: an armed position whose condition holds (or cannot be evaluated)? */
+  const stopsAt = (index: number, armed: Map<string, string>, conditions: Map<string, string>): boolean => {
+    const at = options.execution?.[index] as Position;
+    const key = positionKey(at.path, at.line);
+    const condition = conditions.get(key);
+    return armed.has(key) && (condition === undefined || evaluate(condition, passOf(index)) !== false);
+  };
   let released: () => void = () => {};
   const releasedPromise = new Promise<void>((resolve) => {
     released = resolve;
@@ -290,7 +312,7 @@ function installFakeSap(options: FakeSapOptions = {}) {
         if (options.runByUser) stoppedOn = options.servers ? options.debuggeeServer : undefined;
         else await triggeredPromise;
         if (options.execution) {
-          cursor = options.execution.findIndex((at) => external.has(positionKey(at.path, at.line)));
+          cursor = options.execution.findIndex((_, index) => stopsAt(index, external, externalConditions));
           position = { ...(options.execution[cursor] as Position) };
         }
         return mockResponse(200, debuggeeXml());
@@ -311,15 +333,27 @@ function installFakeSap(options: FakeSapOptions = {}) {
       }
       // A full sync replaces the scope's set: the user's external breakpoints, or the attached run's copies.
       const armed = new Map<string, string>();
+      const conditions = new Map<string, string>();
       const items = [
-        ...body.matchAll(/kind="line" clientId="([^"]+)" skipCount="0" adtcore:uri="([^"#]+)#start=(\d+)"/g),
+        ...body.matchAll(
+          /kind="line" clientId="([^"]+)" skipCount="0" adtcore:uri="([^"#]+)#start=(\d+)"(?: condition="([^"]*)")?/g,
+        ),
       ].map((m) => {
-        const [, clientId, path = '', text] = m;
+        const [, clientId, path = '', text, rawCondition] = m;
         const line = Number(text);
+        const condition = rawCondition
+          ?.replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .replace(/&amp;/g, '&');
         if (line < (options.acceptLinesFrom ?? 1))
           return `<breakpoint kind="line" clientId="${clientId}" errorMessage="Cannot create a breakpoint at this position"/>`;
+        if (condition?.includes('INVALID'))
+          return `<breakpoint kind="line" clientId="${clientId}" errorMessage="Condition is not valid"/>`;
         armed.set(positionKey(path, line), breakpointId(path, line));
-        return `<breakpoint kind="line" clientId="${clientId}" id="${breakpointId(path, line)}" adtcore:uri="${path}#start=${line}"/>`;
+        if (condition !== undefined) conditions.set(positionKey(path, line), condition);
+        return `<breakpoint kind="line" clientId="${clientId}" id="${breakpointId(path, line)}" adtcore:uri="${path}#start=${line}"${rawCondition !== undefined ? ` condition="${rawCondition}"` : ''}/>`;
       });
       if (body.includes('kind="exception"')) {
         items.push(
@@ -328,10 +362,12 @@ function installFakeSap(options: FakeSapOptions = {}) {
       }
       if (body.includes('scope="debugger"')) {
         sessionBreakpoints = armed;
+        sessionConditions = conditions;
         return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
       }
       external.clear();
       for (const [key, id] of armed) external.set(key, id);
+      externalConditions = conditions;
       return mockResponse(
         200,
         `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
@@ -364,6 +400,7 @@ function installFakeSap(options: FakeSapOptions = {}) {
           }
           // The attached run gets its own copies of the breakpoints armed when it stopped.
           sessionBreakpoints = new Map(external);
+          sessionConditions = new Map(externalConditions);
           return mockResponse(
             200,
             options.postMortem
@@ -382,7 +419,7 @@ function installFakeSap(options: FakeSapOptions = {}) {
         case 'stepContinue':
           for (cursor++; options.execution && cursor < options.execution.length; cursor++) {
             const next = options.execution[cursor] as Position;
-            if (sessionBreakpoints.has(positionKey(next.path, next.line))) {
+            if (stopsAt(cursor, sessionBreakpoints, sessionConditions)) {
               position = { ...next };
               return mockResponse(
                 200,
@@ -424,13 +461,15 @@ function installFakeSap(options: FakeSapOptions = {}) {
           const values = ids.flatMap((id) =>
             !visible(id)
               ? []
-              : id === 'LV_TOTAL'
-                ? [variable('LV_TOTAL', 'simple', String(30 + position.line))]
-                : id === 'LT_ITEMS' && appended
-                  ? [variable('LT_ITEMS', 'table', '', '<TABLE_LINES>3</TABLE_LINES>')]
-                  : VARIABLES[id]
-                    ? [VARIABLES[id]]
-                    : [],
+              : id === 'LV_PASS'
+                ? [variable('LV_PASS', 'simple', String(passOf(cursor)))]
+                : id === 'LV_TOTAL'
+                  ? [variable('LV_TOTAL', 'simple', String(30 + position.line))]
+                  : id === 'LT_ITEMS' && appended
+                    ? [variable('LT_ITEMS', 'table', '', '<TABLE_LINES>3</TABLE_LINES>')]
+                    : VARIABLES[id]
+                      ? [VARIABLES[id]]
+                      : [],
           );
           return mockResponse(200, asx(values.join('')));
         }
@@ -453,12 +492,18 @@ function installFakeSap(options: FakeSapOptions = {}) {
     return mockResponse(404, `unexpected ${method} ${parsed.pathname}${parsed.search}`);
   }
 
-  /** `<reachedBreakpoints>` naming the session breakpoint at the current position, when SAP names it. */
+  /** `<reachedBreakpoints>` naming the session breakpoint at the current position, when SAP names it —
+   *  always when SAP could not evaluate its condition. */
   function reached(): string {
-    const id = sessionBreakpoints.get(positionKey(position.path, position.line));
-    return options.namesBreakpoints && id
-      ? `<reachedBreakpoints><breakpoint id="${id}" kind="line"/></reachedBreakpoints>`
+    const key = positionKey(position.path, position.line);
+    const id = sessionBreakpoints.get(key);
+    const condition = sessionConditions.get(key);
+    const unresolvable = condition !== undefined && evaluate(condition, passOf(cursor)) === 'unresolvable';
+    if (!id || !(options.namesBreakpoints || unresolvable)) return '';
+    const failure = unresolvable
+      ? ` unresolvableCondition="${condition.replace(/"/g, '&quot;')}" unresolvableConditionErrorOffset="0"`
       : '';
+    return `<reachedBreakpoints><breakpoint id="${id}" kind="line"${failure}/></reachedBreakpoints>`;
   }
   return { calls };
 }
@@ -1077,6 +1122,117 @@ describe('abap_debug — several stops in one run', () => {
     // Blank and comment lines never carry a statement: the probe skips them.
     const probe = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]!;
     expect([...probe.body.matchAll(/dbg-1-line-(\d+)/g)].map((m) => m[1])).toEqual(['13', '17', '18']);
+  });
+
+  it('stops only where a condition holds: one pass of a long loop', async () => {
+    const loop = Array.from({ length: 50 }, () => at9);
+    const { calls } = installFakeSap({ hit: true, execution: [...loop, at11] });
+    const { result, json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, condition: 'lv_pass = 37' }],
+      variables: ['LV_PASS'],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(json?.breakpoints).toEqual([
+      expect.objectContaining({ location: line9, status: 'set', line: 9, condition: 'lv_pass = 37', hits: 1 }),
+    ]);
+    expect(json?.stops).toEqual([
+      expect.objectContaining({ at: line9, variables: [expect.objectContaining({ name: 'LV_PASS', value: '37' })] }),
+    ]);
+    expect(json?.stops[0]).not.toHaveProperty('conditionNotEvaluated');
+    // The probe finds the line without the condition; the final sync puts the condition on it.
+    const syncs = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints').filter((c) =>
+      c.body.includes('scope="external"'),
+    );
+    expect(syncs.map((c) => c.body.includes('condition='))).toEqual([false, true]);
+    expect(syncs[1]?.body).toContain(
+      'adtcore:uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=9" condition="lv_pass = 37"',
+    );
+  });
+
+  it('stops as often as a condition holds, within the hits', async () => {
+    const loop = Array.from({ length: 8 }, () => at9);
+    installFakeSap({ hit: true, execution: loop });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, condition: 'LV_PASS > 5', hits: 5 }],
+      variables: ['LV_PASS'],
+    });
+    expect(json?.stops.map((stop: Record<string, any>) => stop.variables[0].value)).toEqual(['6', '7', '8']);
+    expect(json?.breakpoints[0]).toMatchObject({ hits: 3 });
+  });
+
+  it('reports a condition SAP refuses, and arms nothing for it', async () => {
+    installFakeSap({ hit: true, execution: [at9] });
+    const refused = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, condition: 'INVALID ~~' }],
+    });
+    expect(refused.result.isError).toBe(true);
+    expect(refused.json?.breakpoints).toEqual([
+      {
+        kind: 'line',
+        location: line9,
+        status: 'refused',
+        error: 'Condition is not valid',
+        line: 9,
+        condition: 'INVALID ~~',
+      },
+    ]);
+  });
+
+  it('says so when SAP could not evaluate a condition and stopped anyway', async () => {
+    installFakeSap({ hit: true, execution: [at9] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, condition: "lv_nope = 'A'" }],
+    });
+    expect(json?.stops[0]).toMatchObject({
+      at: line9,
+      conditionNotEvaluated: `SAP could not evaluate "lv_nope = 'A'" (error at character 0) and stopped anyway.`,
+    });
+    expect(json?.warnings).toContainEqual(expect.stringContaining('could not evaluate the condition of'));
+  });
+
+  it('arms one breakpoint per line, telling how to combine two conditions', async () => {
+    installFakeSap({ hit: false });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [
+        { line: 9, condition: 'LV_PASS = 1' },
+        { line: 9, condition: 'LV_PASS = 2' },
+      ],
+    });
+    expect(json?.breakpoints[1]).toMatchObject({
+      status: 'duplicate',
+      of: line9,
+      condition: 'LV_PASS = 2',
+      note: expect.stringContaining('join both with OR'),
+    });
+  });
+
+  it("takes a step onto a conditional breakpoint for a stop of it only on SAP's word", async () => {
+    const at10 = { path: MAIN, line: 10 };
+    const { calls } = installFakeSap({ hit: true, execution: [at9, at10, at10] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9 }, { line: 10, condition: 'LV_PASS = 2' }],
+      variables: ['LV_PASS'],
+      steps: 1,
+    });
+    // The step lands on line 10, where the condition does not hold: no stop of that breakpoint.
+    expect(json?.stops[0].steps).toEqual([expect.objectContaining({ step: 1, line: 10 })]);
+    expect(json?.stops[0].steps[0]).not.toHaveProperty('breakpoint');
+    // The continue then runs to its second pass, where it holds.
+    expect(json?.stops[1]).toMatchObject({ at: 'CLAS ZCL_ORDER the main source line 10' });
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([1, 1]);
+    expect(calls.filter((c) => c.query.get('method') === 'stepContinue')).toHaveLength(2);
   });
 
   it('validates each breakpoint before anything reaches SAP', async () => {

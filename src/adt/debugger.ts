@@ -148,7 +148,15 @@ export function isEndedSubType(subType: string | undefined): boolean {
 export type DebugBreakpointScope = 'external' | 'debugger';
 
 export type DebugBreakpointSpec =
-  | { kind: 'line'; clientId: string /** Source URI without fragment. */; uri: string; line: number }
+  | {
+      kind: 'line';
+      clientId: string;
+      /** Source URI without fragment. */
+      uri: string;
+      line: number;
+      /** ABAP condition SAP evaluates at the line: the run stops there only where it holds. */
+      condition?: string;
+    }
   | { kind: 'exception'; clientId: string; exceptionClass: string };
 
 export interface DebugBreakpointState {
@@ -159,6 +167,7 @@ export interface DebugBreakpointState {
   uri?: string;
   line?: number;
   exceptionClass?: string;
+  condition?: string;
   /** SAP's refusal, e.g. "Cannot create a breakpoint at this position". */
   error?: string;
 }
@@ -172,7 +181,7 @@ export function buildBreakpointsXml(
   const items = specs
     .map((spec) =>
       spec.kind === 'line'
-        ? `<breakpoint xmlns:adtcore="http://www.sap.com/adt/core" kind="line" clientId="${escapeXml(spec.clientId)}" skipCount="0" adtcore:uri="${escapeXml(`${spec.uri}#start=${spec.line}`)}"/>`
+        ? `<breakpoint xmlns:adtcore="http://www.sap.com/adt/core" kind="line" clientId="${escapeXml(spec.clientId)}" skipCount="0" adtcore:uri="${escapeXml(`${spec.uri}#start=${spec.line}`)}"${spec.condition ? ` condition="${escapeXml(spec.condition)}"` : ''}/>`
         : `<breakpoint kind="exception" clientId="${escapeXml(spec.clientId)}" skipCount="0" exceptionClass="${escapeXml(spec.exceptionClass)}"/>`,
     )
     .join('');
@@ -194,6 +203,7 @@ export function parseBreakpointsResponse(xml: string): DebugBreakpointState[] {
     const id = attr(node, 'id');
     const error = attr(node, 'errorMessage');
     const exceptionClass = attr(node, 'exceptionClass');
+    const condition = attr(node, 'condition');
     return {
       clientId: attr(node, 'clientId'),
       kind: attr(node, 'kind'),
@@ -201,6 +211,7 @@ export function parseBreakpointsResponse(xml: string): DebugBreakpointState[] {
       ...(uri ? { uri } : {}),
       ...(line !== undefined ? { line } : {}),
       ...(exceptionClass ? { exceptionClass } : {}),
+      ...(condition ? { condition } : {}),
       ...(error ? { error } : {}),
     };
   });
@@ -491,10 +502,34 @@ export async function endSession(session: AdtHttpClient, options: AdtRequestOpti
 
 // ─── Session documents ─────────────────────────────────────────────
 
+/** A breakpoint SAP says the run stopped at (attach and step answers). */
+export interface ReachedBreakpoint {
+  id: string;
+  kind: string;
+  /** SAP could not evaluate the breakpoint's condition and stopped anyway (as SAP words it). */
+  unresolvableCondition?: string;
+  /** Character offset in the condition where its evaluation failed, when SAP says. */
+  conditionErrorOffset?: number;
+}
+
+function parseReachedBreakpoints(node: XmlNode): ReachedBreakpoint[] {
+  return asNodes(asNode(node.reachedBreakpoints)?.breakpoint).map((bp) => {
+    const unresolvable = attr(bp, 'unresolvableCondition').trim();
+    const offset = toInt(attr(bp, 'unresolvableConditionErrorOffset'));
+    const failed = unresolvable !== '' && unresolvable.toLowerCase() !== 'false';
+    return {
+      id: attr(bp, 'id'),
+      kind: attr(bp, 'kind'),
+      ...(failed ? { unresolvableCondition: unresolvable } : {}),
+      ...(failed && offset !== undefined ? { conditionErrorOffset: offset } : {}),
+    };
+  });
+}
+
 export interface DebugAttachInfo {
   steppingPossible: boolean;
   postMortem: boolean;
-  reachedBreakpoints: Array<{ id: string; kind: string }>;
+  reachedBreakpoints: ReachedBreakpoint[];
 }
 
 export function parseAttachResponse(xml: string): DebugAttachInfo {
@@ -502,10 +537,7 @@ export function parseAttachResponse(xml: string): DebugAttachInfo {
   return {
     steppingPossible: attr(node, 'isSteppingPossible') === '' ? true : flag(attr(node, 'isSteppingPossible')),
     postMortem: flag(attr(node, 'isPostMortem')),
-    reachedBreakpoints: asNodes(asNode(node.reachedBreakpoints)?.breakpoint).map((bp) => ({
-      id: attr(bp, 'id'),
-      kind: attr(bp, 'kind'),
-    })),
+    reachedBreakpoints: parseReachedBreakpoints(node),
   };
 }
 
@@ -623,8 +655,15 @@ export function buildChildVariablesXml(parents: readonly string[]): string {
 export type DebugStepMethod = 'stepInto' | 'stepOver' | 'stepReturn' | 'stepContinue' | 'terminateDebuggee';
 
 export type DebugStepResult =
-  /** `reachedBreakpoints`: ids of the breakpoints the run stopped at, when SAP names them. */
-  { status: 'stopped'; steppingPossible: boolean; reachedBreakpoints: string[] } | { status: 'ended'; reason: string };
+  | {
+      status: 'stopped';
+      steppingPossible: boolean;
+      /** Ids of the breakpoints the run stopped at, when SAP names them. */
+      reachedBreakpoints: string[];
+      /** Those of them whose condition SAP could not evaluate (it stopped anyway). */
+      unresolvableConditions?: ReachedBreakpoint[];
+    }
+  | { status: 'ended'; reason: string };
 
 export interface DebugReleaseResult {
   released: boolean;
@@ -737,12 +776,13 @@ export class DebuggerSession {
       if (exception && isEndedSubType(exception.subType)) return { status: 'ended', reason: exception.subType ?? '' };
       const node = asNode(parseDocument(resp.body).step) ?? {};
       const stepping = attr(node, 'isSteppingPossible');
+      const reached = parseReachedBreakpoints(node).filter((bp) => bp.id);
+      const unresolvable = reached.filter((bp) => bp.unresolvableCondition);
       return {
         status: 'stopped',
         steppingPossible: stepping === '' ? true : flag(stepping),
-        reachedBreakpoints: asNodes(asNode(node.reachedBreakpoints)?.breakpoint)
-          .map((bp) => attr(bp, 'id'))
-          .filter(Boolean),
+        reachedBreakpoints: reached.map((bp) => bp.id),
+        ...(unresolvable.length > 0 ? { unresolvableConditions: unresolvable } : {}),
       };
     } catch (err) {
       const subType = debuggerErrorSubType(err);
