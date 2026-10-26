@@ -7,7 +7,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { parseDebuggerException } from './adt/debugger.js';
 import { AdtApiError, AdtNetworkError } from './adt/errors.js';
-import type { SapConnection } from './tools/debug-capture.js';
+import type { SapConnection } from './tools/connection.js';
 import { listTools, TOOLS } from './tools/definitions.js';
 import { errorResult, formatIssues, type ToolResult } from './tools/result.js';
 import { VERSION } from './version.js';

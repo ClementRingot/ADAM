@@ -6,7 +6,7 @@
 import { resolveCookies } from './adt/cookies.js';
 import { AdtHttpClient, createDispatcher } from './adt/http.js';
 import { type BTPServiceKey, createBearerTokenProvider, loadServiceKeyFile, parseServiceKey } from './adt/oauth.js';
-import type { SapConnection } from './tools/debug-capture.js';
+import type { SapConnection } from './tools/connection.js';
 
 export type AuthMode = 'btp' | 'basic' | 'cookies';
 

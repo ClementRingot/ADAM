@@ -2,7 +2,7 @@
 
 import { z } from 'zod';
 import { searchObjects } from '../adt/repository.js';
-import type { SapConnection } from './debug-capture.js';
+import type { SapConnection } from './connection.js';
 import { type ToolResult, textResult, toolJson } from './result.js';
 
 export const SearchInputSchema = z

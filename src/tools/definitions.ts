@@ -4,7 +4,8 @@
  */
 
 import { z } from 'zod';
-import { handleDebugCapture, type SapConnection } from './debug-capture.js';
+import type { SapConnection } from './connection.js';
+import { handleDebugCapture } from './debug-capture.js';
 import { DebugInputSchema } from './debug-input.js';
 import type { ToolResult } from './result.js';
 import { handleSearch, SearchInputSchema } from './search.js';

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { abaplintVersionFor, locateMethod } from '../abap/method-locator.js';
 import { detectLocalHandlerInclude, normalizeObjectType, sourceUri } from '../abap/object-types.js';
 import { readSource, resolveFunctionGroup } from '../adt/repository.js';
-import type { SapConnection } from './debug-capture.js';
+import type { SapConnection } from './connection.js';
 import { errorResult, type ToolResult, textResult } from './result.js';
 
 /** More would flood the model's context; a range, a method or a grep narrows it. */
