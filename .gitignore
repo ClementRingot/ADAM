@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+
+# Credentials (never commit)
+.env
+.env.*
+!.env.example
+cookies.txt
+cookie.txt
+*service-key*.json
+.mcp*.json
