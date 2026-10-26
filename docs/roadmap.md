@@ -6,7 +6,6 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 |---|---|---|---|---|
 | [FEAT-94](#feat-94) | Conditional breakpoints | P2 | S | Needs research |
 | [FEAT-95](#feat-95) | Compact repeated stops with a result-size budget | P2 | M | Ready |
-| [FEAT-96](#feat-96) | More breakpoints per capture | P3 | XS | Ready |
 | [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
 | [NET-1](#net-1) | Corporate HTTP proxy (`HTTPS_PROXY`) | P3 | S | Ready |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
@@ -34,14 +33,6 @@ inspection budget, instead of the fixed caps of 10 stops and 40 steps.
 **Why it remains.** The fixed counters are a poor proxy for cost: ten stops with two named variables
 are small, ten stops with sixty frame variables are large. A size budget allows many more `hits` when
 the output stays small, while keeping the result readable for the model.
-
-<a id="feat-96"></a>
-## FEAT-96 — More breakpoints per capture
-
-**Idea.** Raise the limit of 6 `breakpoints` per capture (for example to 20).
-
-**Why it remains.** An armed breakpoint that is never reached costs almost nothing (one more entry in
-the probe POST); stops and steps stay capped separately, so the limit protects little.
 
 <a id="live-1"></a>
 ## LIVE-1 — Live verification of this standalone build

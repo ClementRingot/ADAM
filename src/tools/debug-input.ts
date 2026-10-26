@@ -55,9 +55,9 @@ export const DEBUG_INPUT_SHAPE = {
   line: z.coerce.number().optional().describe('Shorthand for one breakpoint at this 1-based line of type + name.'),
   breakpoints: z
     .array(DebugBreakpointSchema)
-    .max(6)
+    .max(20)
     .optional()
-    .describe('The stops of the run (max 6): each a line or a CLAS method. One run can stop in several objects.'),
+    .describe('The stops of the run (max 20): each a line or a CLAS method. One run can stop in several objects.'),
   exceptionClass: z
     .string()
     .regex(/^[A-Za-z0-9_/]{1,30}$/, 'exceptionClass must be an ABAP class name')

@@ -38,6 +38,13 @@ const CLASS_SOURCE = [
   '    lv_total = 42.',
   '    rv_total = lv_total.',
   '  ENDMETHOD.',
+  '',
+  '  METHOD describe.',
+  '* full-line comment',
+  '',
+  '    " indented comment',
+  '    rv_text = |{ get_total( ) }|.',
+  '  ENDMETHOD.',
   'ENDCLASS.',
 ].join('\n');
 
@@ -1046,6 +1053,32 @@ describe('abap_debug — several stops in one run', () => {
     expect(json?.warnings).toContainEqual(expect.stringContaining('at most 40 steps'));
   });
 
+  it('arms up to 20 breakpoints in one run', async () => {
+    installFakeSap({ hit: false });
+    const { result, json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: Array.from({ length: 20 }, (_, index) => ({ line: index + 1 })),
+    });
+    expect(result.isError).toBeFalsy();
+    expect(json?.breakpoints).toHaveLength(20);
+    expect(json?.breakpoints.every((bp: Record<string, unknown>) => bp.status === 'set')).toBe(true);
+  });
+
+  it('reads each source once, and probes a method on its statement lines only', async () => {
+    const { calls } = installFakeSap({ hit: false });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ method: 'get_total' }, { method: 'describe' }, { line: 10 }],
+    });
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.line)).toEqual([7, 13, 10]);
+    expect(named(calls, 'GET', MAIN)).toHaveLength(1);
+    // Blank and comment lines never carry a statement: the probe skips them.
+    const probe = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]!;
+    expect([...probe.body.matchAll(/dbg-1-line-(\d+)/g)].map((m) => m[1])).toEqual(['13', '17', '18']);
+  });
+
   it('validates each breakpoint before anything reaches SAP', async () => {
     installFakeSap();
     const both = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, method: 'get_total' }] });
@@ -1055,7 +1088,7 @@ describe('abap_debug — several stops in one run', () => {
     const tooMany = await debug({
       type: 'CLAS',
       name: 'ZCL_ORDER',
-      breakpoints: Array.from({ length: 7 }, (_, index) => ({ line: index + 1 })),
+      breakpoints: Array.from({ length: 21 }, (_, index) => ({ line: index + 1 })),
     });
     expect(tooMany.result.isError).toBe(true);
     const tooManyHits = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, hits: 11 }] });

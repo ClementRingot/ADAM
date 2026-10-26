@@ -124,7 +124,7 @@ A server that is not configured still starts; every tool call then lists what is
 |---|---|
 | `type`, `name` | Object of `line`, and the default object of every breakpoint and of the unit-test trigger: `CLAS`, `PROG` or `FUNC` |
 | `line` | Shorthand for one breakpoint at this line of `type` + `name` |
-| `breakpoints` | Up to 6 stops, each `{ line \| method, include?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `hits` (1-10, default 1): how often this breakpoint may stop the run |
+| `breakpoints` | Up to 20 breakpoints, each `{ line \| method, include?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `hits` (1-10, default 1): how often this breakpoint may stop the run |
 | `exceptionClass` | Also (or only) stop where this exception class is raised, e.g. `CX_SY_ZERODIVIDE` |
 | `trigger` | `unittest` (default): the harmless ABAP Unit tests of `triggerName`, else of `type` + `name`, else of the first breakpoint's object (a function module's tests are its group's). `http`: a `GET` of `url`. `none`: wait `timeoutSeconds` while you run the code yourself as the same SAP user |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint object |
@@ -195,7 +195,7 @@ abap_debug {exceptionClass: "CX_SY_ITAB_LINE_NOT_FOUND", trigger: "unittest", tr
 - **Always cleaned up.** Breakpoints and the listener are removed and the program released on every
   path; the release has its own time budget, so an exhausted inspection never leaves a program
   suspended.
-- **Caps per capture:** 6 breakpoints, 10 stops, 40 steps, 120 s of inspection after the first stop;
+- **Caps per capture:** 20 breakpoints, 10 stops, 40 steps, 120 s of inspection after the first stop;
   past a cap the run goes on without stopping and a warning says so.
 
 **Several application servers** (the BTP ABAP Environment and larger on-premise systems): SAP attaches

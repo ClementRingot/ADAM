@@ -35,7 +35,7 @@ describe('tools/list', () => {
 
   it('keeps the breakpoint item schema strict and bounded', () => {
     const debug = tools[0]?.inputSchema as unknown as { properties: Record<string, any> };
-    expect(debug.properties.breakpoints).toMatchObject({ type: 'array', maxItems: 6 });
+    expect(debug.properties.breakpoints).toMatchObject({ type: 'array', maxItems: 20 });
     expect(debug.properties.breakpoints.items).toMatchObject({ additionalProperties: false });
     expect(Object.keys(debug.properties.breakpoints.items.properties)).toEqual([
       'type',

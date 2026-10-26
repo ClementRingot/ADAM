@@ -22,7 +22,7 @@ export interface ToolDefinition {
 const DEBUG_DESCRIPTION = [
   'Debug ABAP code on the connected SAP system in ONE call: arm breakpoints (lines or class methods in CLAS, PROG or FUNC objects, and/or an exception class), run the code (its harmless ABAP Unit tests, an OData GET, or wait while you run it yourself as the same SAP user), and at every stop of that one run record the position, the call stack, the variables and optional steps — then release the program and remove the breakpoints.',
   'The program runs once, however many stops you ask for: a breakpoint in a loop with hits 5 shows five iterations of the same run. Nothing stays stopped after the call returns, so name every variable you need up front; to look again, run another capture.',
-  'Lines are numbered as abap_source shows the ACTIVE source. Per capture: at most 6 breakpoints, 10 stops, 40 steps and 120 s of inspection; past a cap the run goes on without stopping.',
+  'Lines are numbered as abap_source shows the ACTIVE source. Per capture: at most 20 breakpoints, 10 stops, 40 steps and 120 s of inspection; past a cap the run goes on without stopping.',
   "Result: hit; breakpoints (set, with the hits they made, or refused with SAP's reason); debuggee; stops (at, stoppedAt, stack on a breakpoint's first stop, variables, steps); release; trigger; warnings. Without a stop: reason and hint.",
   "It never changes variables or the program flow, never debugs system code, and only debugs the session's own SAP user; it refuses when Eclipse or VS Code already debugs that user.",
 ].join('\n');

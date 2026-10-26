@@ -209,21 +209,66 @@ interface LineTarget {
 /** A resolved location and how many times it may stop the run. */
 type StopTarget = LineTarget & { hits: number };
 
+/** What resolving the breakpoints reads, once per capture: several breakpoints often share a source. */
+interface ResolutionCache {
+  sources: Map<string, Promise<string>>;
+  groups: Map<string, Promise<string>>;
+}
+
+const newResolutionCache = (): ResolutionCache => ({ sources: new Map(), groups: new Map() });
+
 function lineRange(from: number, to: number): number[] {
   const lines: number[] = [];
   for (let line = Math.max(1, from); line <= Math.max(from, to); line++) lines.push(line);
   return lines;
 }
 
-async function resolveFunctionGroup(conn: SapConnection, name: string): Promise<string> {
-  const group = await findFunctionGroup(conn.http, name);
+/** A line that cannot carry a statement: blank, or a full-line comment (`*` in column 1, or `"`). */
+function carriesNoStatement(text: string): boolean {
+  const content = text.trim();
+  return content === '' || text.startsWith('*') || content.startsWith('"');
+}
+
+/** The method's lines SAP may accept, from its METHOD statement on: at most METHOD_PROBE, blank and comment lines skipped. */
+function methodCandidates(source: string, startLine: number, endLine: number): number[] {
+  const lines = source.replace(/\r\n/g, '\n').split('\n');
+  const candidates: number[] = [];
+  for (let line = startLine; line <= endLine && candidates.length < METHOD_PROBE; line++) {
+    if (!carriesNoStatement(lines[line - 1] ?? '')) candidates.push(line);
+  }
+  return candidates.length > 0 ? candidates : [startLine];
+}
+
+function resolveFunctionGroup(conn: SapConnection, name: string, cache: ResolutionCache): Promise<string> {
+  const key = name.toUpperCase();
+  let group = cache.groups.get(key);
   if (!group) {
-    throw new DebugInputError(`Cannot resolve the function group of ${name}. Check the name with abap_search.`);
+    group = findFunctionGroup(conn.http, name).then((found) => {
+      if (!found) {
+        throw new DebugInputError(`Cannot resolve the function group of ${name}. Check the name with abap_search.`);
+      }
+      return found;
+    });
+    cache.groups.set(key, group);
   }
   return group;
 }
 
-async function resolveLineTarget(conn: SapConnection, location: BreakpointLocation): Promise<LineTarget> {
+/** The ACTIVE source at `uri` — breakpoints apply to it, never to a draft. */
+function activeSource(conn: SapConnection, uri: string, cache: ResolutionCache): Promise<string> {
+  let source = cache.sources.get(uri);
+  if (!source) {
+    source = readSource(conn.http, uri, 'active');
+    cache.sources.set(uri, source);
+  }
+  return source;
+}
+
+async function resolveLineTarget(
+  conn: SapConnection,
+  location: BreakpointLocation,
+  cache: ResolutionCache,
+): Promise<LineTarget> {
   const { type, name, method } = location;
   const encoded = encodeURIComponent(name.toLowerCase());
   if (type === 'CLAS') {
@@ -235,8 +280,7 @@ async function resolveLineTarget(conn: SapConnection, location: BreakpointLocati
     const uri = include ? `${base}/includes/${include}` : `${base}/source/main`;
     const where = include ? `include "${include}"` : 'the main source';
     if (method !== undefined) {
-      // Breakpoints apply to the ACTIVE code — resolve the method against it, never a draft.
-      const source = await readSource(conn.http, uri, 'active');
+      const source = await activeSource(conn, uri, cache);
       const found = locateMethod(source, name, method, abaplintVersionFor(conn.abapRelease));
       if (!found.found) {
         throw new DebugInputError(
@@ -245,7 +289,7 @@ async function resolveLineTarget(conn: SapConnection, location: BreakpointLocati
       }
       return {
         uri,
-        candidates: lineRange(found.startLine, Math.min(found.endLine, found.startLine + METHOD_PROBE - 1)),
+        candidates: methodCandidates(source, found.startLine, found.endLine),
         label: `CLAS ${name} method ${method}`,
       };
     }
@@ -266,7 +310,7 @@ async function resolveLineTarget(conn: SapConnection, location: BreakpointLocati
     };
   }
   if (type === 'FUNC') {
-    const group = await resolveFunctionGroup(conn, name);
+    const group = await resolveFunctionGroup(conn, name, cache);
     return {
       uri: `/sap/bc/adt/functions/groups/${encodeURIComponent(group.toLowerCase())}/fmodules/${encoded}/source/main`,
       candidates: lineRange(line, line + LINE_PROBE - 1),
@@ -300,7 +344,7 @@ async function resolveUnitTestObjectType(conn: SapConnection, name: string): Pro
   );
 }
 
-async function planTrigger(conn: SapConnection, req: DebugRequest): Promise<TriggerPlan> {
+async function planTrigger(conn: SapConnection, req: DebugRequest, cache: ResolutionCache): Promise<TriggerPlan> {
   if (req.trigger === 'none') return { kind: 'none', label: 'none (run it yourself as the same SAP user)' };
   if (req.trigger === 'http') {
     if (!req.url) throw new DebugInputError('trigger="http" needs url (a host-relative OData path).');
@@ -321,7 +365,7 @@ async function planTrigger(conn: SapConnection, req: DebugRequest): Promise<Trig
     );
   }
   if (type === 'FUNC') {
-    name = await resolveFunctionGroup(conn, name);
+    name = await resolveFunctionGroup(conn, name, cache);
     type = 'FUGR';
   }
   if (!['CLAS', 'PROG', 'FUGR'].includes(type)) {
@@ -1197,16 +1241,17 @@ async function runCapture(conn: SapConnection, req: DebugRequest, user: string):
   const identity = createDebugIdentity(user);
   const warnings: string[] = [];
   // Everything that can fail on input is resolved BEFORE any debugger state exists on SAP.
+  const cache = newResolutionCache();
   const targets: StopTarget[] = [];
   for (const location of req.locations) {
-    targets.push({ ...(await resolveLineTarget(conn, location)), hits: location.hits });
+    targets.push({ ...(await resolveLineTarget(conn, location, cache)), hits: location.hits });
   }
   if (targets.length === 0 && !req.exceptionClass) {
     throw new DebugInputError(
       'Give a breakpoint: breakpoints (line or CLAS method each), line (with type + name), and/or exceptionClass.',
     );
   }
-  const plan = await planTrigger(conn, req);
+  const plan = await planTrigger(conn, req, cache);
 
   const conflict = await findListenerConflict(conn.http, identity);
   if (conflict) {
