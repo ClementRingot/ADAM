@@ -44,8 +44,16 @@ describe('tools/list', () => {
       'method',
       'include',
       'condition',
+      'message',
+      'statement',
+      'exceptionClass',
       'hits',
     ]);
+    expect(debug.properties.breakpoints.items.properties.message).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'number'],
+    });
     expect(debug.properties.timeoutSeconds).toMatchObject({ type: 'integer', minimum: 1, maximum: 240 });
   });
 

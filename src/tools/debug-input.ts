@@ -8,6 +8,26 @@ import { z } from 'zod';
 import { normalizeObjectType } from '../abap/object-types.js';
 
 const LINE_TYPES = new Set(['CLAS', 'PROG', 'FUNC']);
+const EXCEPTION_CLASS = /^[A-Za-z0-9_/]{1,30}$/;
+
+/** A message as a MESSAGE statement issues it: class, number, and optionally its type. */
+const MessageSchema = z
+  .object({
+    id: z
+      .string()
+      .regex(/^[A-Za-z0-9_/]{1,20}$/, 'message.id must be a message class, e.g. ZSD')
+      .describe('Message class, e.g. ZSD.'),
+    number: z.coerce
+      .string()
+      .regex(/^\d{1,3}$/, 'message.number must be 1-3 digits, e.g. 042')
+      .describe('Message number, e.g. 042.'),
+    type: z
+      .string()
+      .regex(/^[SIWEAX]$/i, 'message.type must be one of S, I, W, E, A, X')
+      .optional()
+      .describe('S, I, W, E, A or X; any type when omitted.'),
+  })
+  .strict();
 
 /** One stop of the debugged run; type/name default to the top-level ones. */
 const DebugBreakpointSchema = z
@@ -39,6 +59,21 @@ const DebugBreakpointSchema = z
       .describe(
         "ABAP condition SAP evaluates at the breakpoint: the run stops there only where it holds, e.g. lv_index = 500 or ls_item-matnr = 'X' AND sy-tabix > 10 — reach one iteration of a long loop. SAP stops anyway when it cannot evaluate it, and the stop says so.",
       ),
+    message: MessageSchema.optional().describe(
+      "Instead of line/method: stop where a MESSAGE statement issues this message, e.g. { id: 'ZSD', number: '042', type: 'E' } — where does this error come from? Messages built without a MESSAGE statement (RAP new_message, BAPI return tables) are not caught.",
+    ),
+    statement: z
+      .string()
+      .regex(/^[A-Za-z][A-Za-z0-9 _-]{0,59}$/, 'statement must be an ABAP statement kind, e.g. COMMIT WORK')
+      .optional()
+      .describe(
+        'Instead of line/method: stop at every ABAP statement of this kind, e.g. COMMIT WORK or CALL FUNCTION. When SAP does not know the kind, the refusal lists the ones it does.',
+      ),
+    exceptionClass: z
+      .string()
+      .regex(EXCEPTION_CLASS, 'exceptionClass must be an ABAP class name')
+      .optional()
+      .describe('Instead of line/method: stop where this exception class is raised.'),
     hits: z.coerce
       .number()
       .int()
@@ -46,7 +81,7 @@ const DebugBreakpointSchema = z
       .max(50)
       .optional()
       .describe(
-        'How many times this breakpoint may stop the run, e.g. in a loop (1-50, default 1). Its stops after the first carry only the values.',
+        "How many times this breakpoint may stop the run, e.g. in a loop (1-50, default 1). A line or method breakpoint's stops after the first carry only the values.",
       ),
   })
   .strict();
@@ -67,10 +102,12 @@ export const DEBUG_INPUT_SHAPE = {
     .array(DebugBreakpointSchema)
     .max(20)
     .optional()
-    .describe('The stops of the run (max 20): each a line or a CLAS method. One run can stop in several objects.'),
+    .describe(
+      'The stops of the run (max 20): each a line, a CLAS method, a message, a statement kind or an exception class. One run can stop in several objects.',
+    ),
   exceptionClass: z
     .string()
-    .regex(/^[A-Za-z0-9_/]{1,30}$/, 'exceptionClass must be an ABAP class name')
+    .regex(EXCEPTION_CLASS, 'exceptionClass must be an ABAP class name')
     .optional()
     .describe('Also (or only) stop where this exception class is raised, e.g. CX_SY_ZERODIVIDE.'),
   trigger: z
@@ -126,18 +163,38 @@ export const DEBUG_INPUT_SHAPE = {
 
 type DebugBreakpointInput = z.infer<typeof DebugBreakpointSchema>;
 
-/** Rules for each `breakpoints` item (one line or method stop of the run). */
+/** Rules for each `breakpoints` item (one stop of the run: a line, a method, or an event). */
 function refineBreakpoints(
   input: { type?: string; name?: string; breakpoints?: DebugBreakpointInput[] },
   ctx: z.RefinementCtx,
 ): void {
   (input.breakpoints ?? []).forEach((item, index) => {
     const path = ['breakpoints', index];
+    const kinds = [item.line, item.method, item.message, item.statement, item.exceptionClass].filter(
+      (value) => value !== undefined,
+    ).length;
+    if (kinds !== 1) {
+      ctx.addIssue({
+        code: 'custom',
+        path,
+        message: `breakpoints[${index}] needs exactly one of line, method, message, statement or exceptionClass.`,
+      });
+    }
+    if (item.line === undefined && item.method === undefined) {
+      // An event breakpoint: no object, and nothing that only a line or method has.
+      for (const field of ['type', 'name', 'include', 'condition'] as const) {
+        if (item[field] !== undefined && kinds === 1) {
+          ctx.addIssue({
+            code: 'custom',
+            path,
+            message: `breakpoints[${index}].${field} only applies to a line or method breakpoint.`,
+          });
+        }
+      }
+      return;
+    }
     const rawType = item.type ?? input.type;
     const type = rawType ? normalizeObjectType(rawType) : '';
-    if ((item.line === undefined) === (item.method === undefined)) {
-      ctx.addIssue({ code: 'custom', path, message: `breakpoints[${index}] needs line or method (one of them).` });
-    }
     if (item.line !== undefined && (!Number.isInteger(item.line) || item.line < 1)) {
       ctx.addIssue({ code: 'custom', path, message: `breakpoints[${index}].line must be a positive integer.` });
     }

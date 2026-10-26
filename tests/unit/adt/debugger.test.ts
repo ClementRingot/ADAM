@@ -17,6 +17,7 @@ import {
   deleteBreakpoint,
   endSession,
   findListenerConflict,
+  listDebugStatements,
   listenForDebuggee,
   openSessionOnServer,
   openSessionsAhead,
@@ -112,6 +113,52 @@ describe('breakpoints', () => {
         '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core"><breakpoint kind="line" clientId="c" id="BP" adtcore:uri="/x#start=9" condition="lv_total &lt; 10"/></dbg:breakpoints>',
       ),
     ).toEqual([{ clientId: 'c', kind: 'line', id: 'BP', uri: '/x', line: 9, condition: 'lv_total < 10' }]);
+  });
+
+  it('builds message and statement breakpoints, and reads them back', () => {
+    const xml = buildBreakpointsXml(
+      IDENTITY,
+      [
+        { kind: 'message', clientId: 'dbg-0-message', msgId: 'ZSD', msgNo: '042', msgTy: '' },
+        { kind: 'statement', clientId: 'dbg-1-statement', statement: 'COMMIT WORK' },
+      ],
+      'external',
+    );
+    expect(xml).toContain(
+      '<breakpoint kind="message" clientId="dbg-0-message" skipCount="0" msgId="ZSD" msgNo="042" msgTy=""/>',
+    );
+    expect(xml).toContain(
+      '<breakpoint kind="statement" clientId="dbg-1-statement" skipCount="0" statement="COMMIT WORK"/>',
+    );
+    expect(
+      parseBreakpointsResponse(
+        '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"><breakpoint kind="message" clientId="m" id="BP-M" msgId="ZSD" msgNo="042" msgTy=""/><breakpoint kind="statement" clientId="s" id="BP-S" statement="COMMIT WORK"/></dbg:breakpoints>',
+      ),
+    ).toEqual([
+      { clientId: 'm', kind: 'message', id: 'BP-M', msgId: 'ZSD', msgNo: '042' },
+      { clientId: 's', kind: 'statement', id: 'BP-S', statement: 'COMMIT WORK' },
+    ]);
+  });
+
+  it('lists the statement kinds SAP offers', async () => {
+    const http = mockHttp({
+      get: vi
+        .fn()
+        .mockResolvedValue(
+          ok(
+            '<dbg:statements xmlns:dbg="http://www.sap.com/adt/debugger"><statement name="COMMIT WORK" description="Commit" group="LUW"/><statement name="MESSAGE" description="Message" group="Dialog"/></dbg:statements>',
+          ),
+        ),
+    });
+    expect(await listDebugStatements(http)).toEqual([
+      { name: 'COMMIT WORK', description: 'Commit', group: 'LUW' },
+      { name: 'MESSAGE', description: 'Message', group: 'Dialog' },
+    ]);
+    expect(http.get).toHaveBeenCalledWith(
+      '/sap/bc/adt/debugger/breakpoints/statements',
+      { Accept: 'application/xml' },
+      undefined,
+    );
   });
 
   it('parses accepted and refused breakpoints, keeping SAP refusal text', () => {

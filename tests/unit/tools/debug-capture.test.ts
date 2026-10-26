@@ -59,12 +59,17 @@ const AUNIT_PASSED = `<?xml version="1.0" encoding="utf-8"?><aunit:runResult xml
 const ENDED = `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><type id="ExceptionResourceFailure"/><message lang="EN">Debuggee ended</message><properties><entry key="com.sap.adt.communicationFramework.subType">debuggeeEnded</entry></properties></exc:exception>`;
 
 const MAIN = '/sap/bc/adt/oo/classes/zcl_order/source/main';
+/** The statement kinds the fake SAP offers for statement breakpoints. */
+const KNOWN_STATEMENTS = ['CALL FUNCTION', 'COMMIT WORK', 'MESSAGE'];
 const REPORT = '/sap/bc/adt/programs/programs/zreport/source/main';
 
 /** A source position the fake program passes: the source path and its line. */
 interface Position {
   path: string;
   line: number;
+  /** What the statement at this position does, for event breakpoints: `exception:CX_…`,
+   *  `message:<class>:<number>:<type>`, `statement:<kind>`. */
+  event?: string;
 }
 
 /** `withUri: false` — SAP leaves the frame's uri out, so only reachedBreakpoints can name the stop.
@@ -218,8 +223,16 @@ function installFakeSap(options: FakeSapOptions = {}) {
     const at = options.execution?.[index] as Position;
     const key = positionKey(at.path, at.line);
     const condition = conditions.get(key);
-    return armed.has(key) && (condition === undefined || evaluate(condition, passOf(index)) !== false);
+    const byLine = armed.has(key) && (condition === undefined || evaluate(condition, passOf(index)) !== false);
+    return byLine || eventIds(at, armed).length > 0;
   };
+  /** The ids of the armed event breakpoints the statement at `at` triggers (a message of any type included). */
+  function eventIds(at: Position | undefined, armed: Map<string, string>): string[] {
+    if (!at?.event) return [];
+    const keys = [`event:${at.event}`];
+    if (at.event.startsWith('message:')) keys.push(`event:${at.event.replace(/:[^:]*$/, ':')}`);
+    return keys.flatMap((key) => (armed.has(key) ? [armed.get(key) as string] : []));
+  }
   let released: () => void = () => {};
   const releasedPromise = new Promise<void>((resolve) => {
     released = resolve;
@@ -359,10 +372,35 @@ function installFakeSap(options: FakeSapOptions = {}) {
         if (condition !== undefined) conditions.set(positionKey(path, line), condition);
         return `<breakpoint kind="line" clientId="${clientId}" id="${breakpointId(path, line)}" adtcore:uri="${path}#start=${line}"${rawCondition !== undefined ? ` condition="${rawCondition}"` : ''}/>`;
       });
-      if (body.includes('kind="exception"')) {
+      // Event breakpoints: armed under an `event:` key next to the line positions.
+      for (const [, clientId, exceptionClass] of body.matchAll(
+        /kind="exception" clientId="([^"]+)" skipCount="0" exceptionClass="([^"]+)"/g,
+      )) {
+        armed.set(`event:exception:${exceptionClass}`, `BP-EXC-${exceptionClass}`);
         items.push(
-          '<breakpoint kind="exception" clientId="dbg-exception" id="BP-EXC" exceptionClass="CX_SY_ZERODIVIDE"/>',
+          `<breakpoint kind="exception" clientId="${clientId}" id="BP-EXC-${exceptionClass}" exceptionClass="${exceptionClass}"/>`,
         );
+      }
+      for (const [, clientId, msgId, msgNo, msgTy] of body.matchAll(
+        /kind="message" clientId="([^"]+)" skipCount="0" msgId="([^"]*)" msgNo="([^"]*)" msgTy="([^"]*)"/g,
+      )) {
+        armed.set(`event:message:${msgId}:${msgNo}:${msgTy}`, `BP-MSG-${msgId}-${msgNo}`);
+        items.push(
+          `<breakpoint kind="message" clientId="${clientId}" id="BP-MSG-${msgId}-${msgNo}" msgId="${msgId}" msgNo="${msgNo}" msgTy="${msgTy}"/>`,
+        );
+      }
+      for (const [, clientId, statement = ''] of body.matchAll(
+        /kind="statement" clientId="([^"]+)" skipCount="0" statement="([^"]*)"/g,
+      )) {
+        if (!KNOWN_STATEMENTS.includes(statement)) {
+          items.push(
+            `<breakpoint kind="statement" clientId="${clientId}" errorMessage="Statement ${statement} is not supported"/>`,
+          );
+          continue;
+        }
+        const id = `BP-STMT-${statement.replace(/ /g, '_')}`;
+        armed.set(`event:statement:${statement}`, id);
+        items.push(`<breakpoint kind="statement" clientId="${clientId}" id="${id}" statement="${statement}"/>`);
       }
       if (body.includes('scope="debugger"')) {
         sessionBreakpoints = armed;
@@ -375,6 +413,13 @@ function installFakeSap(options: FakeSapOptions = {}) {
       return mockResponse(
         200,
         `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
+      );
+    }
+    if (path === '/sap/bc/adt/debugger/breakpoints/statements' && method === 'GET') {
+      const rows = KNOWN_STATEMENTS.map((name) => `<statement name="${name}" description="${name}" group="ABAP"/>`);
+      return mockResponse(
+        200,
+        `<dbg:statements xmlns:dbg="http://www.sap.com/adt/debugger">${rows.join('')}</dbg:statements>`,
       );
     }
     if (path.startsWith('/sap/bc/adt/debugger/breakpoints/') && method === 'DELETE') {
@@ -418,7 +463,7 @@ function installFakeSap(options: FakeSapOptions = {}) {
           // A step that lands on one of the run's breakpoints stops there as at a breakpoint.
           return mockResponse(
             200,
-            `<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:step>`,
+            `<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached(true)}</dbg:step>`,
           );
         case 'stepContinue':
           for (cursor++; options.execution && cursor < options.execution.length; cursor++) {
@@ -498,16 +543,21 @@ function installFakeSap(options: FakeSapOptions = {}) {
 
   /** `<reachedBreakpoints>` naming the session breakpoint at the current position, when SAP names it —
    *  always when SAP could not evaluate its condition. */
-  function reached(): string {
+  function reached(afterStep = false): string {
     const key = positionKey(position.path, position.line);
     const id = sessionBreakpoints.get(key);
     const condition = sessionConditions.get(key);
     const unresolvable = condition !== undefined && evaluate(condition, passOf(cursor)) === 'unresolvable';
-    if (!id || !(options.namesBreakpoints || unresolvable)) return '';
-    const failure = unresolvable
-      ? ` unresolvableCondition="${condition.replace(/"/g, '&quot;')}" unresolvableConditionErrorOffset="0"`
-      : '';
-    return `<reachedBreakpoints><breakpoint id="${id}" kind="line"${failure}/></reachedBreakpoints>`;
+    // SAP always names an event breakpoint it stopped at (a step raises no event here).
+    const events = afterStep ? [] : eventIds(options.execution?.[cursor], sessionBreakpoints);
+    const entries = events.map((eventId) => `<breakpoint id="${eventId}" kind="event"/>`);
+    if (id && (options.namesBreakpoints || unresolvable)) {
+      const failure = unresolvable
+        ? ` unresolvableCondition="${condition.replace(/"/g, '&quot;')}" unresolvableConditionErrorOffset="0"`
+        : '';
+      entries.push(`<breakpoint id="${id}" kind="line"${failure}/>`);
+    }
+    return entries.length > 0 ? `<reachedBreakpoints>${entries.join('')}</reachedBreakpoints>` : '';
   }
   return { calls };
 }
@@ -1307,7 +1357,9 @@ describe('abap_debug — several stops in one run', () => {
   it('validates each breakpoint before anything reaches SAP', async () => {
     installFakeSap();
     const both = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, method: 'get_total' }] });
-    expect(both.text).toContain('breakpoints[0] needs line or method');
+    expect(both.text).toContain(
+      'breakpoints[0] needs exactly one of line, method, message, statement or exceptionClass',
+    );
     const noObject = await debug({ breakpoints: [{ line: 9 }] });
     expect(noObject.text).toContain('needs type (CLAS, PROG or FUNC) and name');
     const tooMany = await debug({
@@ -1321,6 +1373,117 @@ describe('abap_debug — several stops in one run', () => {
     // The method is a breakpoints item now, not a top-level argument.
     const topLevelMethod = await debug({ type: 'CLAS', name: 'ZCL_ORDER', method: 'get_total' });
     expect(topLevelMethod.result.isError).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('abap_debug — event breakpoints', () => {
+  const at9 = { path: MAIN, line: 9 };
+  const order = { type: 'CLAS', name: 'ZCL_ORDER' };
+
+  it('stops where a message is issued, wherever that is', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      execution: [at9, { path: MAIN, line: 10, event: 'message:ZSD:042:E' }],
+    });
+    const { result, json } = await debug({
+      ...order,
+      breakpoints: [{ message: { id: 'zsd', number: 42, type: 'e' } }],
+      variables: ['LV_TOTAL'],
+    });
+    expect(result.isError).toBeFalsy();
+    expect(json?.breakpoints).toEqual([{ kind: 'message', message: 'E042(ZSD)', status: 'set', hits: 1 }]);
+    expect(json?.stops).toEqual([
+      expect.objectContaining({
+        at: 'message E042(ZSD)',
+        stoppedAt: expect.objectContaining({ line: 10 }),
+        stack: expect.any(Array),
+        variables: [expect.objectContaining({ name: 'LV_TOTAL', value: '40' })],
+      }),
+    ]);
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]?.body).toContain(
+      'kind="message" clientId="dbg-0-message" skipCount="0" msgId="ZSD" msgNo="042" msgTy="E"',
+    );
+  });
+
+  it('catches a message of any type when the type is left out', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      execution: [{ path: MAIN, line: 10, event: 'message:ZSD:042:W' }],
+    });
+    const { json } = await debug({ ...order, breakpoints: [{ message: { id: 'ZSD', number: '042' } }] });
+    expect(json?.stops).toEqual([expect.objectContaining({ at: 'message 042(ZSD)' })]);
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]?.body).toContain('msgTy=""');
+  });
+
+  it('stops at each statement of a kind, every stop with its own position', async () => {
+    installFakeSap({
+      hit: true,
+      execution: [
+        at9,
+        { path: MAIN, line: 10, event: 'statement:COMMIT WORK' },
+        { path: REPORT, line: 30, event: 'statement:COMMIT WORK' },
+      ],
+    });
+    const { json } = await debug({ ...order, breakpoints: [{ statement: 'commit   work', hits: 2 }] });
+    expect(json?.breakpoints).toEqual([{ kind: 'statement', statement: 'COMMIT WORK', status: 'set', hits: 2 }]);
+    // Not compact like a loop's line breakpoint: each stop is somewhere else.
+    expect(json?.stops.map((stop: Record<string, any>) => [stop.at, stop.hit, stop.stoppedAt?.line])).toEqual([
+      ['statement COMMIT WORK', 1, 10],
+      ['statement COMMIT WORK', 2, 30],
+    ]);
+    expect(json?.stops[1]).toHaveProperty('variables');
+  });
+
+  it('refuses a statement kind SAP does not know, listing the ones it does', async () => {
+    const { calls } = installFakeSap({ hit: true, execution: [at9] });
+    const { result, json } = await debug({ ...order, breakpoints: [{ statement: 'COMMIT' }] });
+    expect(result.isError).toBe(true);
+    expect(json?.breakpoints).toEqual([
+      {
+        kind: 'statement',
+        statement: 'COMMIT',
+        status: 'refused',
+        error: 'Statement COMMIT is not supported',
+        known: ['CALL FUNCTION', 'COMMIT WORK', 'MESSAGE'],
+      },
+    ]);
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/listeners')).toHaveLength(0);
+  });
+
+  it('arms several exception classes beside the top-level one', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      execution: [{ path: MAIN, line: 10, event: 'exception:CX_SY_ITAB_LINE_NOT_FOUND' }],
+    });
+    const { json } = await debug({
+      ...order,
+      line: 9,
+      breakpoints: [{ exceptionClass: 'cx_sy_itab_line_not_found' }],
+      exceptionClass: 'CX_SY_ZERODIVIDE',
+    });
+    expect(json?.breakpoints).toEqual([
+      expect.objectContaining({ kind: 'line', status: 'set', line: 9, hits: 0 }),
+      { kind: 'exception', exceptionClass: 'CX_SY_ITAB_LINE_NOT_FOUND', status: 'set', hits: 1 },
+      { kind: 'exception', exceptionClass: 'CX_SY_ZERODIVIDE', status: 'set', hits: 0 },
+    ]);
+    expect(json?.stops).toEqual([expect.objectContaining({ at: 'exception CX_SY_ITAB_LINE_NOT_FOUND' })]);
+    const probe = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]?.body ?? '';
+    expect(probe).toContain('clientId="dbg-0-exception" skipCount="0" exceptionClass="CX_SY_ITAB_LINE_NOT_FOUND"');
+    expect(probe).toContain('clientId="dbg-1-exception" skipCount="0" exceptionClass="CX_SY_ZERODIVIDE"');
+  });
+
+  it('validates event breakpoints before anything reaches SAP', async () => {
+    installFakeSap();
+    const lineAndMessage = await debug({
+      ...order,
+      breakpoints: [{ line: 9, message: { id: 'ZSD', number: '042' } }],
+    });
+    expect(lineAndMessage.text).toContain('needs exactly one of line, method, message, statement or exceptionClass');
+    const withObject = await debug({ breakpoints: [{ type: 'CLAS', name: 'X', statement: 'COMMIT WORK' }] });
+    expect(withObject.text).toContain('breakpoints[0].type only applies to a line or method breakpoint');
+    const badNumber = await debug({ ...order, breakpoints: [{ message: { id: 'ZSD', number: '1234' } }] });
+    expect(badNumber.text).toContain('message.number must be 1-3 digits');
     expect(mockFetch).not.toHaveBeenCalled();
   });
 });

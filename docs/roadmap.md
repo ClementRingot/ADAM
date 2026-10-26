@@ -4,7 +4,6 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 
 | ID | Idea | Priority | Effort | Status |
 |---|---|---|---|---|
-| [MSG-1](#msg-1) | Message breakpoints: where is this message raised? | P2 | S | Needs live check |
 | [WATCH-1](#watch-1) | Watchpoints: stop where a variable changes | P3 | M | Needs live check |
 | [LOG-1](#log-1) | Dynamic logpoints: observe a line across many runs | P3 | M | Needs research |
 | [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
@@ -25,7 +24,9 @@ behavior pool with `trigger: "none"`), then the BTP browser login; record the an
 Conditional breakpoints follow the reference clients (abap-adt-api, vscode_abap_remote_fs) and need
 their own checks: how SAP answers an invalid condition (refused at the final sync, or a stop flagged
 `unresolvableCondition`), and that a step onto the line of a condition that does not hold carries no
-`reachedBreakpoints`.
+`reachedBreakpoints`. Message and statement breakpoints are reference-derived too (abap-adt-api
+`formatBreakpoint`, `debuggerStatements`): check which message types SAP accepts, the statement kinds it
+lists, and that it names the event breakpoint it stopped at in `reachedBreakpoints`.
 
 <a id="net-1"></a>
 ## NET-1 — Corporate HTTP proxy
@@ -40,19 +41,6 @@ a corporate proxy, with `SAP_INSECURE` applied to the proxied TLS connection too
 
 **Resume with.** Verify the breakpoint URI SAP expects for an include used by one main program, and
 how it answers for an include several programs use (Eclipse asks for the main-program context).
-
-<a id="msg-1"></a>
-## MSG-1 — Message breakpoints
-
-**Idea.** Stop where a given message is issued — `{ "message": { "id": "ZSD", "number": "042", "type":
-"E" } }` — next to `exceptionClass`: "which code raises this error?" is one of the most common debugging
-questions, and the message text alone rarely finds the statement.
-
-**Evidence.** abap-adt-api 9.2.0 sends `<breakpoint kind="message" … msgId msgNo msgTy/>` through the
-same breakpoint sync (`formatBreakpoint`), so it fits the existing arming and cleanup unchanged.
-
-**Resume with.** Verify live which message types SAP accepts and how the stop looks on the stack, then
-add the item kind beside `exceptionClass`.
 
 <a id="watch-1"></a>
 ## WATCH-1 — Watchpoints

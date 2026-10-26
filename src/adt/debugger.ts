@@ -157,7 +157,26 @@ export type DebugBreakpointSpec =
       /** ABAP condition SAP evaluates at the line: the run stops there only where it holds. */
       condition?: string;
     }
-  | { kind: 'exception'; clientId: string; exceptionClass: string };
+  | { kind: 'exception'; clientId: string; exceptionClass: string }
+  /** A MESSAGE statement issuing this message; an empty `msgTy` matches every type. */
+  | { kind: 'message'; clientId: string; msgId: string; msgNo: string; msgTy: string }
+  /** Every ABAP statement of a kind SAP lists (`listDebugStatements`), e.g. COMMIT WORK. */
+  | { kind: 'statement'; clientId: string; statement: string };
+
+/** One breakpoint of a full sync, as the ADT debugger takes it (abap-adt-api `formatBreakpoint`). */
+function breakpointXml(spec: DebugBreakpointSpec): string {
+  const client = `clientId="${escapeXml(spec.clientId)}" skipCount="0"`;
+  switch (spec.kind) {
+    case 'line':
+      return `<breakpoint xmlns:adtcore="http://www.sap.com/adt/core" kind="line" ${client} adtcore:uri="${escapeXml(`${spec.uri}#start=${spec.line}`)}"${spec.condition ? ` condition="${escapeXml(spec.condition)}"` : ''}/>`;
+    case 'exception':
+      return `<breakpoint kind="exception" ${client} exceptionClass="${escapeXml(spec.exceptionClass)}"/>`;
+    case 'message':
+      return `<breakpoint kind="message" ${client} msgId="${escapeXml(spec.msgId)}" msgNo="${escapeXml(spec.msgNo)}" msgTy="${escapeXml(spec.msgTy)}"/>`;
+    case 'statement':
+      return `<breakpoint kind="statement" ${client} statement="${escapeXml(spec.statement)}"/>`;
+  }
+}
 
 export interface DebugBreakpointState {
   clientId: string;
@@ -168,6 +187,9 @@ export interface DebugBreakpointState {
   line?: number;
   exceptionClass?: string;
   condition?: string;
+  msgId?: string;
+  msgNo?: string;
+  statement?: string;
   /** SAP's refusal, e.g. "Cannot create a breakpoint at this position". */
   error?: string;
 }
@@ -178,13 +200,7 @@ export function buildBreakpointsXml(
   specs: readonly DebugBreakpointSpec[],
   scope: DebugBreakpointScope,
 ): string {
-  const items = specs
-    .map((spec) =>
-      spec.kind === 'line'
-        ? `<breakpoint xmlns:adtcore="http://www.sap.com/adt/core" kind="line" clientId="${escapeXml(spec.clientId)}" skipCount="0" adtcore:uri="${escapeXml(`${spec.uri}#start=${spec.line}`)}"${spec.condition ? ` condition="${escapeXml(spec.condition)}"` : ''}/>`
-        : `<breakpoint kind="exception" clientId="${escapeXml(spec.clientId)}" skipCount="0" exceptionClass="${escapeXml(spec.exceptionClass)}"/>`,
-    )
-    .join('');
+  const items = specs.map(breakpointXml).join('');
   return (
     '<?xml version="1.0" encoding="UTF-8"?>' +
     `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" scope="${scope}" debuggingMode="user"` +
@@ -202,16 +218,21 @@ export function parseBreakpointsResponse(xml: string): DebugBreakpointState[] {
     const line = fragment ? toInt(/start=(\d+)/.exec(fragment)?.[1] ?? '') : undefined;
     const id = attr(node, 'id');
     const error = attr(node, 'errorMessage');
-    const exceptionClass = attr(node, 'exceptionClass');
-    const condition = attr(node, 'condition');
+    const optional = (name: string, key = name): Record<string, string> => {
+      const value = attr(node, name);
+      return value ? { [key]: value } : {};
+    };
     return {
       clientId: attr(node, 'clientId'),
       kind: attr(node, 'kind'),
       ...(id ? { id } : {}),
       ...(uri ? { uri } : {}),
       ...(line !== undefined ? { line } : {}),
-      ...(exceptionClass ? { exceptionClass } : {}),
-      ...(condition ? { condition } : {}),
+      ...optional('exceptionClass'),
+      ...optional('condition'),
+      ...optional('msgId'),
+      ...optional('msgNo'),
+      ...optional('statement'),
       ...(error ? { error } : {}),
     };
   });
@@ -247,6 +268,24 @@ export async function deleteBreakpoint(
     { Accept: 'application/xml' },
     options,
   );
+}
+
+/** An ABAP statement kind a `statement` breakpoint can stop at. */
+export interface DebugStatement {
+  name: string;
+  description: string;
+  group: string;
+}
+
+/** The statement kinds SAP offers for statement breakpoints (abap-adt-api `debuggerStatements`). */
+export async function listDebugStatements(http: AdtHttpClient, options?: AdtRequestOptions): Promise<DebugStatement[]> {
+  const resp = await http.get(`${BREAKPOINTS_PATH}/statements`, { Accept: 'application/xml' }, options);
+  if (!resp.body.trim()) return [];
+  return asNodes(asNode(parseDocument(resp.body).statements)?.statement).map((node) => ({
+    name: attr(node, 'name'),
+    description: attr(node, 'description'),
+    group: attr(node, 'group'),
+  }));
 }
 
 // ─── Listener ──────────────────────────────────────────────────────

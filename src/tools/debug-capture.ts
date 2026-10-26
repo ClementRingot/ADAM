@@ -32,6 +32,7 @@ import {
   deleteBreakpoint,
   endSession,
   findListenerConflict,
+  listDebugStatements,
   listenForDebuggee,
   openSessionOnServer,
   openSessionsAhead,
@@ -153,12 +154,20 @@ interface BreakpointLocation {
   hits: number;
 }
 
+/** A breakpoint on something the run does rather than a line: raise an exception, issue a message,
+ *  execute a statement of a kind. SAP names where it stopped; there is no line to probe. */
+type EventLocation =
+  | { kind: 'exception'; exceptionClass: string; hits: number }
+  | { kind: 'message'; id: string; number: string; type: string; hits: number }
+  | { kind: 'statement'; statement: string; hits: number };
+
 interface DebugRequest {
   type: string;
   name: string;
   /** The top-level line first, then `breakpoints`: all armed for the same run. */
   locations: BreakpointLocation[];
-  exceptionClass?: string;
+  /** The event breakpoints of `breakpoints`, then the top-level `exceptionClass`. */
+  events: EventLocation[];
   trigger: DebugTrigger;
   triggerName?: string;
   url?: string;
@@ -191,6 +200,32 @@ function readLocation(raw: Record<string, unknown>, type: string, name: string):
   };
 }
 
+/** An exception, message or statement breakpoint from a `breakpoints` item. */
+function readEvent(raw: Record<string, unknown>): EventLocation | undefined {
+  const hits = typeof raw.hits === 'number' ? raw.hits : 1;
+  const exceptionClass = trimmed(raw.exceptionClass)?.toUpperCase();
+  if (exceptionClass) return { kind: 'exception', exceptionClass, hits };
+  const statement = trimmed(raw.statement)?.toUpperCase().replace(/\s+/g, ' ');
+  if (statement) return { kind: 'statement', statement, hits };
+  if (raw.message && typeof raw.message === 'object') {
+    const message = raw.message as Record<string, unknown>;
+    return {
+      kind: 'message',
+      id: String(message.id ?? '')
+        .trim()
+        .toUpperCase(),
+      number: String(message.number ?? '')
+        .trim()
+        .padStart(3, '0'),
+      type: String(message.type ?? '')
+        .trim()
+        .toUpperCase(),
+      hits,
+    };
+  }
+  return undefined;
+}
+
 function readRequest(args: Record<string, unknown>, type: string, name: string): DebugRequest {
   const str = (key: string): string | undefined => trimmed(args[key]);
   const variables = Array.isArray(args.variables)
@@ -203,11 +238,17 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
       raw && typeof raw === 'object' ? readLocation(raw as Record<string, unknown>, type, top) : undefined;
     return location ? [location] : [];
   });
+  const events = extra.flatMap((raw) => {
+    const event = raw && typeof raw === 'object' ? readEvent(raw as Record<string, unknown>) : undefined;
+    return event ? [event] : [];
+  });
+  const exceptionClass = str('exceptionClass')?.toUpperCase();
+  if (exceptionClass) events.push({ kind: 'exception', exceptionClass, hits: 1 });
   return {
     type,
     name: top,
     locations,
-    ...(str('exceptionClass') ? { exceptionClass: str('exceptionClass')?.toUpperCase() } : {}),
+    events,
     trigger: (str('trigger') as DebugTrigger | undefined) ?? 'unittest',
     ...(str('triggerName') ? { triggerName: str('triggerName')?.toUpperCase() } : {}),
     ...(str('url') ? { url: str('url') } : {}),
@@ -450,7 +491,7 @@ interface ArmedBreakpoint {
   /** Server id, shared by the external breakpoint and its debug-session copy. */
   id: string;
   label: string;
-  kind: 'line' | 'exception';
+  kind: 'line' | EventLocation['kind'];
   /** Line breakpoints: lower-cased source URI + the line SAP armed — how a stop is recognised on the stack. */
   uri?: string;
   line?: number;
@@ -471,10 +512,55 @@ interface ArmedBreakpoints {
 
 /** `target`: the location's position in the request — two locations may probe the same line numbers. */
 const lineClientId = (target: number, line: number): string => `dbg-${target}-line-${line}`;
-const EXCEPTION_CLIENT_ID = 'dbg-exception';
+const eventClientId = (index: number, event: EventLocation): string => `dbg-${index}-${event.kind}`;
 
 const isLineState = (state: DebugBreakpointState): boolean =>
-  state.clientId !== EXCEPTION_CLIENT_ID && state.kind !== 'exception';
+  state.kind ? state.kind === 'line' : /-line-\d+$/.test(state.clientId);
+
+/** How an event breakpoint reads in stops (`at`): `exception CX_…`, `message E042(ZSD)`, `statement COMMIT WORK`. */
+function eventLabel(event: EventLocation): string {
+  if (event.kind === 'exception') return `exception ${event.exceptionClass}`;
+  if (event.kind === 'message') return `message ${event.type}${event.number}(${event.id})`;
+  return `statement ${event.statement}`;
+}
+
+/** Its entry in the breakpoints report. */
+function eventReport(event: EventLocation): Record<string, unknown> {
+  if (event.kind === 'exception') return { kind: 'exception', exceptionClass: event.exceptionClass };
+  if (event.kind === 'message') return { kind: 'message', message: `${event.type}${event.number}(${event.id})` };
+  return { kind: 'statement', statement: event.statement };
+}
+
+function eventSpec(event: EventLocation, index: number): DebugBreakpointSpec {
+  const clientId = eventClientId(index, event);
+  if (event.kind === 'exception') return { kind: 'exception', clientId, exceptionClass: event.exceptionClass };
+  if (event.kind === 'message') {
+    return { kind: 'message', clientId, msgId: event.id, msgNo: event.number, msgTy: event.type };
+  }
+  return { kind: 'statement', clientId, statement: event.statement };
+}
+
+/** SAP's answer for event breakpoint `index`: by the clientId it echoes, else by what the breakpoint names. */
+function eventState(
+  states: DebugBreakpointState[],
+  event: EventLocation,
+  index: number,
+): DebugBreakpointState | undefined {
+  const clientId = eventClientId(index, event);
+  return (
+    states.find((state) => state.clientId === clientId) ??
+    states.find(
+      (state) =>
+        state.kind === event.kind &&
+        !state.clientId &&
+        (event.kind === 'exception'
+          ? state.exceptionClass?.toUpperCase() === event.exceptionClass
+          : event.kind === 'message'
+            ? state.msgId?.toUpperCase() === event.id && state.msgNo === event.number
+            : state.statement?.toUpperCase() === event.statement),
+    )
+  );
+}
 
 /**
  * SAP's answer for candidate `line` of target `index`: by the clientId it echoes, else by position —
@@ -512,19 +598,18 @@ function acceptedLine(
 /**
  * Arm every line target on the first candidate SAP accepts (one probe POST carrying all candidates,
  * then a second sync keeping one line per target — two targets on the same line arm it once) plus
- * the optional exception breakpoint. Conditions ride on the second sync only, as vscode_abap_remote_fs
- * sends them: the probe finds the line, then the condition goes onto the line SAP armed.
+ * the event breakpoints, sent as they are in both. Conditions ride on the second sync only, as
+ * vscode_abap_remote_fs sends them: the probe finds the line, then the condition goes onto the line
+ * SAP armed. The report lists the line breakpoints first, then the event ones.
  */
 async function armBreakpoints(
   conn: SapConnection,
   identity: DebugIdentity,
   targets: readonly StopTarget[],
-  exceptionClass: string | undefined,
+  events: readonly EventLocation[],
   armedIds: string[],
 ): Promise<ArmedBreakpoints> {
-  const exceptionSpec: DebugBreakpointSpec[] = exceptionClass
-    ? [{ kind: 'exception', clientId: EXCEPTION_CLIENT_ID, exceptionClass }]
-    : [];
+  const eventSpecs = events.map(eventSpec);
   const lineSpec = (index: number, line: number, withCondition = false): DebugBreakpointSpec => {
     const condition = withCondition ? targets[index]?.condition : undefined;
     return {
@@ -543,7 +628,7 @@ async function armBreakpoints(
   const probe = remember(
     await syncBreakpoints(conn.http, identity, [
       ...targets.flatMap((target, index) => target.candidates.map((line) => lineSpec(index, line))),
-      ...exceptionSpec,
+      ...eventSpecs,
     ]),
   );
   const sole = targets.length === 1;
@@ -561,7 +646,7 @@ async function armBreakpoints(
     states = remember(
       await syncBreakpoints(conn.http, identity, [
         ...[...owner.values()].map((index) => lineSpec(index, accepted[index]?.requested ?? 0, true)),
-        ...exceptionSpec,
+        ...eventSpecs,
       ]),
     );
   }
@@ -632,24 +717,32 @@ async function armBreakpoints(
       });
     }
   });
-  if (exceptionClass) {
-    const state = states.find(
-      (candidate) => candidate.clientId === EXCEPTION_CLIENT_ID || candidate.kind === 'exception',
-    );
+  const unknownStatements: Array<Record<string, unknown>> = [];
+  events.forEach((event, index) => {
+    const state = eventState(states, event, index);
     if (state?.id) {
       armed.push({
         id: state.id,
-        label: `exception ${exceptionClass}`,
-        kind: 'exception',
-        maxHits: 1,
+        label: eventLabel(event),
+        kind: event.kind,
+        maxHits: event.hits,
         reportIndex: report.length,
       });
+      report.push({ ...eventReport(event), status: 'set' });
+    } else {
+      const entry = { ...eventReport(event), status: 'refused', error: state?.error ?? 'not accepted by SAP' };
+      report.push(entry);
+      if (event.kind === 'statement') unknownStatements.push(entry);
     }
-    report.push(
-      state?.id
-        ? { kind: 'exception', exceptionClass, status: 'set' }
-        : { kind: 'exception', exceptionClass, status: 'refused', error: state?.error ?? 'not accepted by SAP' },
-    );
+  });
+  if (unknownStatements.length > 0) {
+    // Best effort: SAP's own list of statement kinds lets the next call name one it knows.
+    try {
+      const known = (await listDebugStatements(conn.http)).map((statement) => statement.name).filter(Boolean);
+      if (known.length > 0) for (const entry of unknownStatements) entry.known = known.slice(0, 100);
+    } catch {
+      // the refusal stands on its own
+    }
   }
   return { ids: [...armedIds], armed, report };
 }
@@ -1145,7 +1238,8 @@ async function collectStops(
     if (at) inspection.hits.set(at.id, hits);
     // A breakpoint's later stops (a loop) are compact: the position and call stack of its first stop
     // would only repeat, so they carry its values alone.
-    const repeated = at ? lastValues.get(at.id) : undefined;
+    // An event breakpoint stops wherever the run raises it: each of its stops shows where.
+    const repeated = at?.kind === 'line' ? lastValues.get(at.id) : undefined;
     const stop: Record<string, unknown> = {
       stop: inspection.stops.length + 1,
       ...(at ? { at: at.label } : {}),
@@ -1187,7 +1281,7 @@ async function collectStops(
       Object.assign(stop, compactValues(variables, repeated));
     } else {
       stop.variables = variables;
-      if (at) {
+      if (at?.kind === 'line') {
         const seen = new Map<string, string>();
         compactValues(variables, seen);
         lastValues.set(at.id, seen);
@@ -1400,9 +1494,9 @@ async function runCapture(conn: SapConnection, req: DebugRequest, user: string):
       ...(location.condition ? { condition: location.condition } : {}),
     });
   }
-  if (targets.length === 0 && !req.exceptionClass) {
+  if (targets.length === 0 && req.events.length === 0) {
     throw new DebugInputError(
-      'Give a breakpoint: breakpoints (line or CLAS method each), line (with type + name), and/or exceptionClass.',
+      'Give a breakpoint: breakpoints (a line, a CLAS method, a message, a statement or an exception class each), line (with type + name), and/or exceptionClass.',
     );
   }
   const plan = await planTrigger(conn, req, cache);
@@ -1452,7 +1546,7 @@ async function runCapture(conn: SapConnection, req: DebugRequest, user: string):
   };
 
   try {
-    const armed = await armBreakpoints(conn, identity, targets, req.exceptionClass, armedIds);
+    const armed = await armBreakpoints(conn, identity, targets, req.events, armedIds);
     if (armed.ids.length === 0) {
       return errorResult(
         toolJson({ hit: false, error: 'SAP refused every breakpoint — nothing was armed.', breakpoints: armed.report }),

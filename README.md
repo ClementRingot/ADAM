@@ -124,8 +124,8 @@ A server that is not configured still starts; every tool call then lists what is
 |---|---|
 | `type`, `name` | Object of `line`, and the default object of every breakpoint and of the unit-test trigger: `CLAS`, `PROG` or `FUNC` |
 | `line` | Shorthand for one breakpoint at this line of `type` + `name` |
-| `breakpoints` | Up to 20 breakpoints, each `{ line \| method, include?, condition?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `condition`: an ABAP condition SAP evaluates there, so the run stops only where it holds (`lv_index = 500`, `ls_item-matnr = 'X' AND sy-tabix > 10`) — one pass of a long loop; when SAP cannot evaluate it, it stops anyway and the stop says so. `hits` (1-50, default 1): how often this breakpoint may stop the run |
-| `exceptionClass` | Also (or only) stop where this exception class is raised, e.g. `CX_SY_ZERODIVIDE` |
+| `breakpoints` | Up to 20 breakpoints. A line or method breakpoint is `{ line \| method, include?, condition?, hits?, type?, name? }`; an event breakpoint is `{ message \| statement \| exceptionClass, hits? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `condition`: an ABAP condition SAP evaluates there, so the run stops only where it holds (`lv_index = 500`, `ls_item-matnr = 'X' AND sy-tabix > 10`) — one pass of a long loop; when SAP cannot evaluate it, it stops anyway and the stop says so. `message`: `{ id, number, type? }` — stop where a `MESSAGE` statement issues it (any type when `type` is left out), e.g. `{ id: "ZSD", number: "042", type: "E" }`. `statement`: stop at every statement of a kind, e.g. `COMMIT WORK` or `CALL FUNCTION` (a kind SAP does not know is refused with the list of those it does). `exceptionClass`: stop where it is raised. `hits` (1-50, default 1): how often this breakpoint may stop the run |
+| `exceptionClass` | Shorthand for one exception breakpoint, e.g. `CX_SY_ZERODIVIDE` |
 | `trigger` | `unittest` (default): the harmless ABAP Unit tests of `triggerName`, else of `type` + `name`, else of the first breakpoint's object (a function module's tests are its group's). `http`: a `GET` of `url`. `none`: wait `timeoutSeconds` while you run the code yourself as the same SAP user |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint object |
 | `url` | `trigger: "http"`: a host-relative OData path, `/sap/opu/odata4/…` or `/sap/opu/odata/sap/<SRV>/…` |
@@ -187,6 +187,13 @@ abap_debug {type: "PROG", name: "ZREPORT", line: 30, trigger: "none", timeoutSec
 
 abap_debug {exceptionClass: "CX_SY_ITAB_LINE_NOT_FOUND", trigger: "unittest", triggerName: "ZCL_ORDER"}
     where is it raised?
+
+abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{message: {id: "ZSD", number: "042", type: "E"}}],
+            variables: ["LS_ORDER"]}
+    which code issues error ZSD 042, and with which order?
+
+abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{statement: "COMMIT WORK", hits: 3}]}
+    who commits during this run? Each stop shows its own position and call stack
 ```
 
 ## Guarantees and limits
@@ -226,6 +233,9 @@ result says which server was missed — retry.
   meant. Start the capture once the page has loaded, then trigger the action, and prefer breakpoints in
   code only that action runs.
 - **An unassigned field symbol** reads like an empty value; read it where it is assigned.
+- **A message breakpoint never stops** although the message appears: it catches `MESSAGE` statements
+  only. RAP messages (`new_message( … )` in `reported`) and BAPI return tables carry a message without
+  issuing it; search the message number in the source (`abap_source` with `grep`) instead.
 
 ## Status
 

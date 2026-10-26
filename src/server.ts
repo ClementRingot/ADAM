@@ -22,6 +22,7 @@ export const SERVER_INSTRUCTIONS = [
   'ABAP debugger for the connected SAP system. Workflow: find the object (abap_search), read its active source with line numbers (abap_source; a class method with method=…), then capture one run with abap_debug — breakpoints, the trigger that runs the code, and every variable you want to see, all in the same call.',
   'A capture follows one run of the program and releases it before returning: nothing can be inspected afterwards, so ask for all variables, steps and stops up front, and run another capture to look again.',
   'Triggers: unittest runs the harmless ABAP Unit tests (of triggerName or the breakpoint object); http GETs an OData path; none waits while the user runs the code themselves as the same SAP user (a Fiori app, a report).',
+  'Not sure where the code runs? Stop on what it does instead of a line: the message it issues, the exception it raises, a statement kind such as COMMIT WORK.',
 ].join('\n');
 
 function describeError(err: unknown): string {
