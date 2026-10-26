@@ -100,8 +100,8 @@ deployment a single person uses.
 ## 2. Configure and deploy
 
 ```bash
-git clone https://github.com/ClementRingot/abap-debugger.git
-cd abap-debugger
+git clone https://github.com/ClementRingot/ADAM.git
+cd ADAM
 cp mta-overrides.mtaext.example mta-overrides.mtaext    # set SAP_BTP_DESTINATION (and a route if you like)
 
 cf login -a https://api.cf.<region>.hana.ondemand.com
@@ -134,10 +134,10 @@ BTP login; it registers itself (dynamic client registration) — nothing to conf
 
 | Client | How |
 |---|---|
-| Claude Code | `claude mcp add --transport http abap-debugger https://<route>/mcp` |
+| Claude Code | `claude mcp add --transport http adam https://<route>/mcp` |
 | Claude Desktop, claude.ai | Settings → Connectors → Add custom connector → `https://<route>/mcp` |
-| VS Code (`.vscode/mcp.json`) | `{ "servers": { "abap-debugger": { "type": "http", "url": "https://<route>/mcp" } } }` |
-| Cursor (`.cursor/mcp.json`) | `{ "mcpServers": { "abap-debugger": { "url": "https://<route>/mcp" } } }` |
+| VS Code (`.vscode/mcp.json`) | `{ "servers": { "adam": { "type": "http", "url": "https://<route>/mcp" } } }` |
+| Cursor (`.cursor/mcp.json`) | `{ "mcpServers": { "adam": { "url": "https://<route>/mcp" } } }` |
 
 Clients that cannot sign in through OAuth can use an API key (`ABAP_DEBUGGER_API_KEYS`, sent as
 `Authorization: Bearer <key>`) — but an API key names no SAP user, so it works only with a shared

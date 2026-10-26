@@ -43,10 +43,10 @@ SAP BTP ABAP Environment), and an SAP user with ADT access (`S_ADT_RES`) and deb
 **Claude Code**
 
 ```bash
-claude mcp add abap-debugger \
+claude mcp add adam \
   -e SAP_URL=https://my-sap-host:44300 -e SAP_CLIENT=100 \
   -e SAP_USER=DEVELOPER -e SAP_PASSWORD=secret \
-  -- npx -y --allow-git=root github:ClementRingot/abap-debugger
+  -- npx -y --allow-git=root github:ClementRingot/ADAM
 ```
 
 **Claude Desktop, Cursor, VS Code and other clients** — `claude_desktop_config.json`,
@@ -55,9 +55,9 @@ claude mcp add abap-debugger \
 ```json
 {
   "mcpServers": {
-    "abap-debugger": {
+    "adam": {
       "command": "npx",
-      "args": ["-y", "--allow-git=root", "github:ClementRingot/abap-debugger"],
+      "args": ["-y", "--allow-git=root", "github:ClementRingot/ADAM"],
       "env": {
         "SAP_URL": "https://my-sap-host:44300",
         "SAP_CLIENT": "100",
@@ -79,15 +79,15 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
 <summary>Installation notes</summary>
 
 - npx fetches the repository from GitHub and builds it once: the first start takes a while. Run
-  `npx -y --allow-git=root github:ClementRingot/abap-debugger --version` once in a terminal first, so
+  `npx -y --allow-git=root github:ClementRingot/ADAM --version` once in a terminal first, so
   the client does not wait for the build.
 - `--allow-git=root`: npm 12 refuses to install from git unless allowed; earlier versions accept the
   flag too.
 - Pin a version by appending `#<tag or commit>` to the repository name.
 - On Windows, some clients start `npx` only through the shell: `"command": "cmd"` with
-  `"args": ["/c", "npx", "-y", "--allow-git=root", "github:ClementRingot/abap-debugger"]`.
-- From a clone: `git clone https://github.com/ClementRingot/abap-debugger.git`, then `npm ci` (it also
-  builds), and register `node /path/to/abap-debugger/dist/index.js` as the command.
+  `"args": ["/c", "npx", "-y", "--allow-git=root", "github:ClementRingot/ADAM"]`.
+- From a clone: `git clone https://github.com/ClementRingot/ADAM.git`, then `npm ci` (it also
+  builds), and register `node /path/to/ADAM/dist/index.js` as the command.
 - Instead of an `env` block, the server can read a file: add `"--env-file", "/path/to/.env"` to `args`
   (see [.env.example](.env.example)).
 
