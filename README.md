@@ -1,4 +1,4 @@
-# abap-debugger-mcp
+# ADAM
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant debug ABAP code on an SAP
 system, in two modes:
