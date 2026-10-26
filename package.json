@@ -38,7 +38,7 @@
     "test:watch": "vitest",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build"
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@abaplint/core": "^2.120.86",

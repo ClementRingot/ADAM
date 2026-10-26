@@ -49,16 +49,9 @@ look again, it runs another capture.
 
 ## Installation
 
-The package is not on npm yet; build it from source:
-
-```bash
-git clone https://github.com/ClementRingot/abap-debugger.git
-cd abap-debugger
-npm ci
-npm run build          # → dist/index.js
-```
-
-Then register `node /path/to/abap-debugger/dist/index.js` as a stdio MCP server in your client.
+The package is not on npm yet. npx can run it straight from GitHub: it fetches the repository, builds
+it once — the first start takes a while, later ones come from npm's cache — and starts the server. It
+needs Node.js 22.12+ and git.
 
 **Claude Code**
 
@@ -66,7 +59,7 @@ Then register `node /path/to/abap-debugger/dist/index.js` as a stdio MCP server 
 claude mcp add abap-debugger \
   -e SAP_URL=https://my-sap-host:44300 -e SAP_CLIENT=100 \
   -e SAP_USER=DEVELOPER -e SAP_PASSWORD=secret \
-  -- node /path/to/abap-debugger/dist/index.js
+  -- npx -y --allow-git=root github:ClementRingot/abap-debugger
 ```
 
 **Claude Desktop, Cursor, VS Code and other clients** (`claude_desktop_config.json`, `.cursor/mcp.json`,
@@ -76,8 +69,8 @@ claude mcp add abap-debugger \
 {
   "mcpServers": {
     "abap-debugger": {
-      "command": "node",
-      "args": ["/path/to/abap-debugger/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "--allow-git=root", "github:ClementRingot/abap-debugger"],
       "env": {
         "SAP_URL": "https://my-sap-host:44300",
         "SAP_CLIENT": "100",
@@ -89,7 +82,25 @@ claude mcp add abap-debugger \
 }
 ```
 
-Instead of `env`, the server can read a file: `"args": ["…/dist/index.js", "--env-file", "/path/to/.env"]`
+- Run `npx -y --allow-git=root github:ClementRingot/abap-debugger --version` once in a terminal first,
+  so the client's first start does not wait for the build.
+- `--allow-git=root`: npm 12 refuses to install from git unless allowed; earlier versions accept the
+  flag too.
+- Pin a version by appending `#<tag or commit>` to the repository name.
+- On Windows, some clients start `npx` only through the shell: `"command": "cmd"` with
+  `"args": ["/c", "npx", "-y", "--allow-git=root", "github:ClementRingot/abap-debugger"]`.
+
+**From a clone** — for development, or to run a build you control:
+
+```bash
+git clone https://github.com/ClementRingot/abap-debugger.git
+cd abap-debugger
+npm ci                 # also builds → dist/index.js
+```
+
+Then register `node /path/to/abap-debugger/dist/index.js` as the command instead of npx.
+
+Instead of `env`, the server can read a file: add `"--env-file", "/path/to/.env"` to `args`
 (see [.env.example](.env.example)). The variable names are ARC-1's, so an ARC-1 `.env` works unchanged.
 
 **SAP BTP ABAP Environment.** Create a service key for the ABAP instance in the BTP cockpit, save it
@@ -256,7 +267,7 @@ against a simulated SAP. Live runs of this standalone build, and on-premise chec
 ## Development
 
 ```bash
-npm ci
+npm ci              # installs, then builds (the prepare script)
 npm test            # unit tests (vitest)
 npm run typecheck   # tsc over sources and tests
 npm run lint        # biome
