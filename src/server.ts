@@ -7,7 +7,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { parseDebuggerException } from './adt/debugger.js';
 import { AdtApiError, AdtNetworkError } from './adt/errors.js';
-import type { SapConnection } from './tools/connection.js';
+import type { SapConnection, ToolContext } from './tools/connection.js';
+import { throttledProgress } from './tools/debug-limits.js';
 import { listTools, TOOLS } from './tools/definitions.js';
 import { errorResult, formatIssues, type ToolResult } from './tools/result.js';
 import { VERSION } from './version.js';
@@ -44,7 +45,12 @@ function describeError(err: unknown): string {
 }
 
 /** One tool call: validate, then run on the connection, never letting an exception escape. */
-export async function callTool(state: ServerState, name: string, args: unknown): Promise<ToolResult> {
+export async function callTool(
+  state: ServerState,
+  name: string,
+  args: unknown,
+  context: ToolContext = {},
+): Promise<ToolResult> {
   const tool = TOOLS.find((candidate) => candidate.name === name);
   if (!tool) return errorResult(`Unknown tool "${name}". Tools: ${TOOLS.map((t) => t.name).join(', ')}.`);
   const parsed = tool.schema.safeParse(args ?? {});
@@ -55,7 +61,7 @@ export async function callTool(state: ServerState, name: string, args: unknown):
     );
   }
   try {
-    return await tool.run(state.connection, parsed.data as never);
+    return await tool.run(state.connection, parsed.data as never, context);
   } catch (err) {
     return errorResult(describeError(err));
   }
@@ -67,8 +73,26 @@ export function createMcpServer(state: ServerState): Server {
     { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools() }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) =>
-    callTool(state, request.params.name, request.params.arguments),
-  );
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    // Progress only when the client asked for it (a progressToken); a cancelled call ends early.
+    const progressToken = request.params._meta?.progressToken;
+    let sent = 0;
+    const progress =
+      progressToken === undefined
+        ? undefined
+        : throttledProgress((message) => {
+            sent += 1;
+            extra
+              .sendNotification({
+                method: 'notifications/progress',
+                params: { progressToken, progress: sent, message },
+              })
+              .catch(() => {});
+          });
+    return callTool(state, request.params.name, request.params.arguments, {
+      signal: extra.signal,
+      ...(progress ? { progress } : {}),
+    });
+  });
   return server;
 }

@@ -36,7 +36,7 @@ import type { AdtHttpClient } from '../adt/http.js';
 import { isHostRelativeODataPath } from '../adt/odata-path.js';
 import { searchObjects } from '../adt/repository.js';
 import { getSessionUser, isPlausibleSapUser } from '../adt/session-user.js';
-import type { SapConnection } from './connection.js';
+import type { SapConnection, ToolContext } from './connection.js';
 import {
   type ArmedBreakpoints,
   armBreakpoints,
@@ -50,9 +50,17 @@ import {
   resolveLineTarget,
   type StopTarget,
 } from './debug-arm.js';
-import { collectStops, type Inspection, type StepMode } from './debug-follow.js';
+import { collectStops, type FirstStop, type Inspection, type StepMode, type StepUntil } from './debug-follow.js';
 import type { DebugInput } from './debug-input.js';
-import { AHEAD_BUDGET_MS, INSPECTION_BUDGET_MS, RELEASE_BUDGET_MS, timings } from './debug-limits.js';
+import {
+  AHEAD_BUDGET_MS,
+  type CallBudget,
+  DEFAULT_LIMITS,
+  MAX_TOTAL_STEPS,
+  planCallBudget,
+  RELEASE_BUDGET_MS,
+  timings,
+} from './debug-limits.js';
 import { debuggeePosition } from './debug-view.js';
 import { errorResult, type ToolResult, textResult, toolJson } from './result.js';
 
@@ -61,12 +69,9 @@ export { setDebugTimingsForTests, setResultBudgetForTests } from './debug-limits
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 
-/** Captures in flight in this process, by SAP user: SAP keys the listener by user, so one at a time each. */
-const activeCaptures = new Set<string>();
-
 type DebugTrigger = 'unittest' | 'http' | 'none';
 
-interface DebugRequest {
+export interface DebugRequest {
   type: string;
   name: string;
   /** The top-level line first, then `breakpoints`: all armed for the same run. */
@@ -80,7 +85,13 @@ interface DebugRequest {
   /** Steps after each stop. */
   steps: number;
   stepMode: StepMode;
+  /** The steps end early once this holds. */
+  until?: StepUntil;
   timeoutSeconds: number;
+  /** The inspection's time budget, within the server's ceiling. */
+  maxSeconds?: number;
+  /** The result's size budget, within the server's ceiling. */
+  maxResultKB?: number;
 }
 
 const trimmed = (value: unknown): string | undefined =>
@@ -149,6 +160,7 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
   });
   const exceptionClass = str('exceptionClass')?.toUpperCase();
   if (exceptionClass) events.push({ kind: 'exception', exceptionClass, hits: 1 });
+  const until = readUntil(args.until);
   return {
     type,
     name: top,
@@ -158,10 +170,32 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
     ...(str('triggerName') ? { triggerName: str('triggerName')?.toUpperCase() } : {}),
     ...(str('url') ? { url: str('url') } : {}),
     variables: [...new Set(variables)],
-    steps: typeof args.steps === 'number' ? args.steps : 0,
+    // `until` without `steps`: step until it holds, within the budgets.
+    steps: typeof args.steps === 'number' ? args.steps : until ? MAX_TOTAL_STEPS : 0,
     stepMode: (str('stepMode') as StepMode | undefined) ?? 'over',
+    ...(until ? { until } : {}),
     timeoutSeconds: typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : DEFAULT_TIMEOUT_SECONDS,
+    ...(typeof args.maxSeconds === 'number' ? { maxSeconds: args.maxSeconds } : {}),
+    ...(typeof args.maxResultKB === 'number' ? { maxResultKB: args.maxResultKB } : {}),
   };
+}
+
+/** `until`: a line and/or a variable whose change ends the steps. */
+export function readUntil(raw: unknown): StepUntil | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const { line, changed } = raw as Record<string, unknown>;
+  const variable = trimmed(changed)?.toUpperCase();
+  const until: StepUntil = {
+    ...(typeof line === 'number' ? { line } : {}),
+    ...(variable ? { changed: variable } : {}),
+  };
+  return until.line !== undefined || until.changed ? until : undefined;
+}
+
+/** The request of a validated abap_debug call. */
+export function readDebugRequest(input: DebugInput): DebugRequest {
+  const type = input.type ? normalizeObjectType(input.type) : '';
+  return readRequest(input as Record<string, unknown>, type, input.name ?? '');
 }
 
 /**
@@ -274,17 +308,27 @@ function attachDefinitelyFailed(err: unknown): boolean {
   return (err.statusCode >= 400 && err.statusCode < 500) || debuggerErrorSubType(err) === 'invalidDebuggee';
 }
 
-async function inspect(
-  conn: SapConnection,
-  identity: DebugIdentity,
+/** What `inspect` leaves behind: the inspection, and the attached session when the caller keeps it. */
+export interface Attachment extends Inspection {
+  session?: DebuggerSession;
+  sessionHttp?: AdtHttpClient;
+}
+
+/**
+ * Attach to the caught debuggee from a session on its application server, then `follow` the run.
+ * Afterwards the run is released and the session ended — unless `keep()` says the caller holds on
+ * to both (an interactive session).
+ */
+export async function inspect(
+  run: CaptureRun,
   debuggee: Debuggee,
-  req: DebugRequest,
-  armed: ArmedBreakpoints,
-  onAttached: () => Promise<void>,
-  warnings: string[],
-  ready: AdtHttpClient | undefined,
-): Promise<Inspection> {
-  const inspection: Inspection = { attached: false, stops: [], hits: new Map() };
+  budget: CallBudget,
+  follow: (session: DebuggerSession, first: FirstStop, inspection: Inspection) => Promise<void>,
+  keep: () => boolean = () => false,
+): Promise<Attachment> {
+  const { conn, identity, warnings } = run;
+  const ready = run.attachedFrom;
+  const inspection: Attachment = { attached: false, stops: [], hits: new Map() };
   if (debuggee.attachImpossible) {
     if (ready) await endSession(ready, { deadline: Date.now() + RELEASE_BUDGET_MS });
     return {
@@ -293,7 +337,7 @@ async function inspect(
         'SAP reports this debuggee cannot be attached (IS_ATTACH_IMPOSSIBLE), e.g. it runs on another application server.',
     };
   }
-  const deadline = Date.now() + INSPECTION_BUDGET_MS;
+  const { deadline } = budget;
   let pinned: PinnedSession;
   try {
     pinned = ready
@@ -310,11 +354,9 @@ async function inspect(
     attachState = 'attached';
     inspection.attached = true;
     if (attach.postMortem) warnings.push('SAP attached a post-mortem (short dump) session — inspection only.');
-    await onAttached();
-    await collectStops(
+    await run.clearExternal();
+    await follow(
       session,
-      req,
-      armed.armed,
       {
         reachedBreakpoints: attach.reachedBreakpoints.map((bp) => bp.id).filter(Boolean),
         steppingPossible: attach.steppingPossible,
@@ -322,8 +364,6 @@ async function inspect(
         unresolvable: attach.reachedBreakpoints.filter((bp) => bp.unresolvableCondition),
       },
       inspection,
-      deadline,
-      warnings,
     );
   } catch (err) {
     if (attachState === 'unknown' && attachDefinitelyFailed(err)) attachState = 'none';
@@ -339,16 +379,21 @@ async function inspect(
       inspection.error += ` — SAP attaches only from the debuggee's application server (${debuggee.instance}), and none of ${pinned.probes} new sessions landed there (the last on ${pinned.instance}): while a debuggee waits, SAP's load balancer sends new sessions elsewhere. Retry the capture.`;
     }
   } finally {
-    // A run that already ended needs no release.
-    if (attachState !== 'none' && !inspection.release) {
-      const releaser = new DebuggerSession(sessionHttp, identity, {
-        deadline: Date.now() + RELEASE_BUDGET_MS,
-      });
-      inspection.release = await releaser.release(armed.ids);
-    }
-    // A debuggee that could not be released keeps its debugger session; any other ends here.
-    if (attachState === 'none' || inspection.release?.released) {
-      await endSession(sessionHttp, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    if (attachState === 'attached' && !inspection.error && !inspection.release && keep()) {
+      inspection.session = session;
+      inspection.sessionHttp = sessionHttp;
+    } else {
+      // A run that already ended needs no release.
+      if (attachState !== 'none' && !inspection.release) {
+        const releaser = new DebuggerSession(sessionHttp, identity, {
+          deadline: Date.now() + RELEASE_BUDGET_MS,
+        });
+        inspection.release = await releaser.release(run.armedIds);
+      }
+      // A debuggee that could not be released keeps its debugger session; any other ends here.
+      if (attachState === 'none' || inspection.release?.released) {
+        await endSession(sessionHttp, { deadline: Date.now() + RELEASE_BUDGET_MS });
+      }
     }
   }
   return inspection;
@@ -394,166 +439,274 @@ async function openAhead(conn: SapConnection, plan: TriggerPlan, warnings: strin
   return ahead;
 }
 
-async function runCapture(conn: SapConnection, req: DebugRequest, user: string): Promise<ToolResult> {
-  const identity = createDebugIdentity(user);
-  const warnings: string[] = [];
-  // Everything that can fail on input is resolved BEFORE any debugger state exists on SAP.
-  const cache = newResolutionCache();
-  const targets: StopTarget[] = [];
-  for (const location of req.locations) {
-    targets.push({
-      ...(await resolveLineTarget(conn, location, cache)),
-      hits: location.hits,
-      ...(location.condition ? { condition: location.condition } : {}),
-    });
-  }
-  if (targets.length === 0 && req.events.length === 0) {
-    throw new DebugInputError(
-      'Give a breakpoint: breakpoints (a line, a CLAS method, a message, a statement or an exception class each), line (with type + name), and/or exceptionClass.',
-    );
-  }
-  const plan = await planTrigger(conn, req, cache);
+/** The parts of every capture result: the user, the breakpoints, the trigger. */
+export interface CaptureBase {
+  user: string;
+  breakpoints: Array<Record<string, unknown>>;
+  trigger: Record<string, unknown>;
+}
 
-  const conflict = await findListenerConflict(conn.http, identity);
-  if (conflict) {
-    return errorResult(
-      `Another debugger is already listening for SAP user ${user}: ${conflict}. A capture never takes over an active debug session (Eclipse, VS Code or another capture) — stop that session first.`,
-    );
+/** A caught run: the debuggee waiting at its first stop, the breakpoints armed for it. */
+export interface Caught {
+  debuggee: Debuggee;
+  armed: ArmedBreakpoints;
+  base: CaptureBase;
+}
+
+/**
+ * Everything one capture sets up on SAP — external breakpoints, the listener, sessions opened ahead,
+ * the trigger — and how it all comes down again.
+ */
+export class CaptureRun {
+  readonly identity: DebugIdentity;
+  readonly warnings: string[] = [];
+  /** Server ids of every breakpoint the capture left armed — the cleanup list. */
+  readonly armedIds: string[] = [];
+  /** The session opened ahead on the debuggee's server, which the attach uses. */
+  attachedFrom: AdtHttpClient | undefined;
+  private ahead: SessionsAhead = { byServer: new Map() };
+  private listenerStarted = false;
+  private externalCleared = false;
+  private tornDown = false;
+  private running: RunningTrigger | undefined;
+  private readonly listenAbort = new AbortController();
+
+  constructor(
+    readonly conn: SapConnection,
+    readonly req: DebugRequest,
+    readonly user: string,
+  ) {
+    this.identity = createDebugIdentity(user);
   }
 
-  const armedIds: string[] = [];
-  let ahead: SessionsAhead = { byServer: new Map() };
-  let attachedFrom: AdtHttpClient | undefined;
-  let listenerStarted = false;
-  let externalCleared = false;
-  let tornDown = false;
-  let running: RunningTrigger | undefined;
-  const listenAbort = new AbortController();
-  const clearExternal = async () => {
-    if (externalCleared) return;
-    externalCleared = true;
-    await disarm(conn, identity, armedIds, warnings);
-  };
-  // Idempotent: runs before the result is built (so its warnings are reported) and again in finally.
-  const teardown = async () => {
-    if (tornDown) return;
-    tornDown = true;
-    listenAbort.abort();
-    await clearExternal();
-    for (const session of ahead.byServer.values()) {
-      if (session !== attachedFrom) await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
+  /** The external breakpoints go once SAP copied them into the attached session (or nothing stopped). */
+  async clearExternal(): Promise<void> {
+    if (this.externalCleared) return;
+    this.externalCleared = true;
+    await disarm(this.conn, this.identity, this.armedIds, this.warnings);
+  }
+
+  /** Idempotent: runs before a result is built (so its warnings are reported) and again in finally. */
+  async teardown(): Promise<void> {
+    if (this.tornDown) return;
+    this.tornDown = true;
+    this.listenAbort.abort();
+    await this.clearExternal();
+    for (const session of this.ahead.byServer.values()) {
+      if (session !== this.attachedFrom) await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
     }
-    if (!listenerStarted) return;
+    if (!this.listenerStarted) return;
     try {
-      await stopListener(conn.http, identity.user);
+      await stopListener(this.conn.http, this.identity.user);
     } catch (err) {
-      warnings.push(`Could not remove the debugger listener for ${identity.user}: ${debuggerErrorText(err)}.`);
+      this.warnings.push(
+        `Could not remove the debugger listener for ${this.identity.user}: ${debuggerErrorText(err)}.`,
+      );
     }
-  };
-  const settleTrigger = async (): Promise<Record<string, unknown> | undefined> => {
+  }
+
+  /** The trigger's own answer once the run is released, waited for a little while. */
+  async settleTrigger(): Promise<Record<string, unknown> | undefined> {
+    const running = this.running;
     if (!running) return undefined;
     const settled = await Promise.race([running.settled, sleep(timings.triggerSettleMs).then(() => undefined)]);
     // The trigger's session ends with its run; a run still going keeps it until SAP's session timeout.
-    if (settled && ahead.trigger) await endSession(ahead.trigger, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    if (settled && this.ahead.trigger) {
+      await endSession(this.ahead.trigger, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    }
     return settled ?? { status: 'running', note: 'still running when the capture returned' };
-  };
+  }
 
-  try {
-    const armed = await armBreakpoints(conn, identity, targets, req.events, armedIds);
-    if (armed.ids.length === 0) {
-      return errorResult(
-        toolJson({ hit: false, error: 'SAP refused every breakpoint — nothing was armed.', breakpoints: armed.report }),
+  /**
+   * Resolve the breakpoints, arm them, start the listener and the trigger, and wait for the run to
+   * stop. Everything that can fail on input is resolved BEFORE any debugger state exists on SAP.
+   * `triggerTimeoutMs`: how long the trigger's own request may wait — through the stop and the
+   * inspection that follows it.
+   */
+  async catchDebuggee(context: ToolContext, triggerTimeoutMs: number): Promise<{ result: ToolResult } | Caught> {
+    const { conn, req, user, identity, warnings } = this;
+    const cache = newResolutionCache();
+    const targets: StopTarget[] = [];
+    for (const location of req.locations) {
+      targets.push({
+        ...(await resolveLineTarget(conn, location, cache)),
+        hits: location.hits,
+        ...(location.condition ? { condition: location.condition } : {}),
+      });
+    }
+    if (targets.length === 0 && req.events.length === 0) {
+      throw new DebugInputError(
+        'Give a breakpoint: breakpoints (a line, a CLAS method, a message, a statement or an exception class each), line (with type + name), and/or exceptionClass.',
       );
     }
+    const plan = await planTrigger(conn, req, cache);
 
-    ahead = await openAhead(conn, plan, warnings);
-    listenerStarted = true;
+    const conflict = await findListenerConflict(conn.http, identity);
+    if (conflict) {
+      return {
+        result: errorResult(
+          `Another debugger is already listening for SAP user ${user}: ${conflict}. A capture never takes over an active debug session (Eclipse, VS Code or another capture) — stop that session first.`,
+        ),
+      };
+    }
+
+    const armed = await armBreakpoints(conn, identity, targets, req.events, this.armedIds);
+    if (armed.ids.length === 0) {
+      return {
+        result: errorResult(
+          toolJson({
+            hit: false,
+            error: 'SAP refused every breakpoint — nothing was armed.',
+            breakpoints: armed.report,
+          }),
+        ),
+      };
+    }
+
+    this.ahead = await openAhead(conn, plan, warnings);
+    this.listenerStarted = true;
     const listen: Promise<ListenSettled> = listenForDebuggee(conn.http, identity, req.timeoutSeconds, {
-      signal: listenAbort.signal,
+      signal: this.listenAbort.signal,
     }).catch((error: unknown) => ({ status: 'error' as const, error }));
 
     if (plan.kind !== 'none') {
       await sleep(timings.armDelayMs);
-      running = startTrigger(
-        conn,
-        plan,
-        req.timeoutSeconds * 1000 + INSPECTION_BUDGET_MS + RELEASE_BUDGET_MS,
-        ahead.trigger,
-      );
+      this.running = startTrigger(conn, plan, triggerTimeoutMs, this.ahead.trigger);
     }
-    const first = await Promise.race([
-      listen.then((outcome) => ({ source: 'listener' as const, outcome })),
-      ...(running ? [running.settled.then((outcome) => ({ source: 'trigger' as const, outcome }))] : []),
-    ]);
+    const running = this.running;
+    const signal = context.signal;
+    const cancelled = signal
+      ? new Promise<{ source: 'cancelled' }>((resolve) => {
+          if (signal.aborted) resolve({ source: 'cancelled' });
+          else signal.addEventListener('abort', () => resolve({ source: 'cancelled' }), { once: true });
+        })
+      : undefined;
+    const waitStart = Date.now();
+    const ticker = context.progress
+      ? setInterval(
+          () =>
+            context.progress?.(
+              `waiting for the run to stop at a breakpoint (${Math.round((Date.now() - waitStart) / 1000)} of ${req.timeoutSeconds} s)`,
+            ),
+          timings.waitTickMs,
+        )
+      : undefined;
+    let first:
+      | { source: 'listener'; outcome: ListenSettled }
+      | { source: 'trigger'; outcome: TriggerOutcome }
+      | { source: 'cancelled' };
+    try {
+      first = await Promise.race([
+        listen.then((outcome) => ({ source: 'listener' as const, outcome })),
+        ...(running ? [running.settled.then((outcome) => ({ source: 'trigger' as const, outcome }))] : []),
+        ...(cancelled ? [cancelled] : []),
+      ]);
+    } finally {
+      if (ticker) clearInterval(ticker);
+    }
     // A suspended run cannot finish: a trigger that settles first ran without stopping — end the poll.
     const triggerFinished = first.source === 'trigger';
-    if (triggerFinished) listenAbort.abort();
+    if (first.source !== 'listener') this.listenAbort.abort();
     const outcome: ListenSettled = first.source === 'listener' ? first.outcome : await listen;
     // Where the capture's own run went (pinned ahead of it): the server the debuggee stops on.
-    const triggerServer = running && ahead.trigger ? contextServer(ahead.trigger.sessionContextId) : undefined;
-    const base = {
+    const triggerServer =
+      running && this.ahead.trigger ? contextServer(this.ahead.trigger.sessionContextId) : undefined;
+    const base: CaptureBase = {
       user,
       breakpoints: armed.report,
       trigger: { kind: plan.kind, target: plan.label, ...(triggerServer ? { server: triggerServer } : {}) },
     };
 
     if (outcome.status !== 'caught') {
-      await teardown();
-      const triggerOutcome = await settleTrigger();
+      await this.teardown();
+      const triggerOutcome = await this.settleTrigger();
       const triggerFailure =
         first.source === 'trigger' && first.outcome.status === 'failed' ? first.outcome : undefined;
       const reason =
-        outcome.status === 'conflict'
-          ? `conflict: ${outcome.message}`
-          : triggerFailure
-            ? `trigger failed: ${triggerFailure.error}`
-            : triggerFinished
-              ? 'trigger finished without reaching the breakpoint'
-              : outcome.status === 'error'
-                ? `listener failed: ${debuggerErrorText(outcome.error)}`
-                : 'timeout';
-      return textResult(
-        toolJson({
-          hit: false,
-          reason,
-          ...base,
-          trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
-          ...(warnings.length > 0 ? { warnings } : {}),
-          hint: notHitHint(req, user, triggerFinished, triggerFailure !== undefined),
-        }),
-      );
+        first.source === 'cancelled'
+          ? 'cancelled'
+          : outcome.status === 'conflict'
+            ? `conflict: ${outcome.message}`
+            : triggerFailure
+              ? `trigger failed: ${triggerFailure.error}`
+              : triggerFinished
+                ? 'trigger finished without reaching the breakpoint'
+                : outcome.status === 'error'
+                  ? `listener failed: ${debuggerErrorText(outcome.error)}`
+                  : 'timeout';
+      return {
+        result: textResult(
+          toolJson({
+            hit: false,
+            reason,
+            ...base,
+            trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
+            ...(warnings.length > 0 ? { warnings } : {}),
+            hint: notHitHint(req, user, triggerFinished, triggerFailure !== undefined),
+          }),
+        ),
+      };
     }
 
     const { debuggee } = outcome;
-    attachedFrom = debuggee.instance ? ahead.byServer.get(debuggee.instance.toUpperCase()) : undefined;
-    const inspection = await inspect(conn, identity, debuggee, req, armed, clearExternal, warnings, attachedFrom);
-    await teardown();
-    const triggerOutcome = await settleTrigger();
+    this.attachedFrom = debuggee.instance ? this.ahead.byServer.get(debuggee.instance.toUpperCase()) : undefined;
+    return { debuggee, armed, base };
+  }
+}
+
+/** The debuggee as a result shows it. */
+export function describeDebuggee(debuggee: Debuggee): Record<string, unknown> {
+  return {
+    user: debuggee.user,
+    program: debuggee.program,
+    ...debuggeePosition(debuggee),
+    ...(debuggee.kind ? { kind: debuggee.kind } : {}),
+    ...(debuggee.instance ? { server: debuggee.instance } : {}),
+  };
+}
+
+/** The breakpoints report with how often each stopped the run (0 = never while it was followed). */
+export function breakpointsWithHits(armed: ArmedBreakpoints, hits: ReadonlyMap<string, number>) {
+  const breakpoints = armed.report.map((entry) => ({ ...entry }));
+  for (const bp of armed.armed) {
+    const entry = breakpoints[bp.reportIndex];
+    if (entry) entry.hits = hits.get(bp.id) ?? 0;
+  }
+  return breakpoints;
+}
+
+async function runCapture(conn: SapConnection, req: DebugRequest, user: string, context: ToolContext) {
+  const run = new CaptureRun(conn, req, user);
+  const { warnings } = run;
+  const budget = planCallBudget(conn.limits ?? DEFAULT_LIMITS, req, warnings, {
+    ...(context.signal ? { signal: context.signal } : {}),
+    ...(context.progress ? { progress: context.progress } : {}),
+  });
+  try {
+    const caught = await run.catchDebuggee(
+      context,
+      req.timeoutSeconds * 1000 + budget.seconds * 1000 + RELEASE_BUDGET_MS,
+    );
+    if ('result' in caught) return caught.result;
+    const { debuggee, armed, base } = caught;
+    // The inspection budget starts at the stop.
+    budget.deadline = Date.now() + budget.seconds * 1000;
+    const inspection = await inspect(run, debuggee, budget, (session, first, record) =>
+      collectStops(session, req, armed.armed, first, record, budget, warnings),
+    );
+    await run.teardown();
+    const triggerOutcome = await run.settleTrigger();
     if (inspection.release && !inspection.release.released) {
       warnings.push(
         `The debuggee could not be released (${inspection.release.detail ?? 'unknown'}); it stays suspended until SAP's debugger timeout ends its session.`,
       );
     }
-    // How often each breakpoint stopped the run (0 = the run never reached it while the capture followed it).
-    const breakpoints = armed.report.map((entry) => ({ ...entry }));
-    if (inspection.attached) {
-      for (const bp of armed.armed) {
-        const entry = breakpoints[bp.reportIndex];
-        if (entry) entry.hits = inspection.hits.get(bp.id) ?? 0;
-      }
-    }
     return textResult(
       toolJson({
         hit: true,
         ...base,
-        breakpoints,
-        debuggee: {
-          user: debuggee.user,
-          program: debuggee.program,
-          ...debuggeePosition(debuggee),
-          ...(debuggee.kind ? { kind: debuggee.kind } : {}),
-          ...(debuggee.instance ? { server: debuggee.instance } : {}),
-        },
+        breakpoints: inspection.attached ? breakpointsWithHits(armed, inspection.hits) : armed.report,
+        debuggee: describeDebuggee(debuggee),
         attached: inspection.attached,
         ...(inspection.stops.length > 0 ? { stops: inspection.stops } : {}),
         ...(inspection.release ? { release: inspection.release } : {}),
@@ -564,32 +717,49 @@ async function runCapture(conn: SapConnection, req: DebugRequest, user: string):
       }),
     );
   } finally {
-    await teardown();
+    await run.teardown();
   }
 }
 
+/** Who debugs which SAP user in this process — SAP keys the listener by user, so one at a time each —
+ *  as the message a second claim gets. */
+const debugHolders = new Map<string, string>();
+
+/** Claim `user` for a capture or a session: undefined when granted, else why it is busy. */
+export function claimDebugUser(user: string, busyMessage: string): string | undefined {
+  const holder = debugHolders.get(user);
+  if (holder) return holder;
+  debugHolders.set(user, busyMessage);
+  return undefined;
+}
+
+export function releaseDebugUser(user: string): void {
+  debugHolders.delete(user);
+}
+
+export const UNKNOWN_USER_MESSAGE =
+  "Cannot tell which SAP user this session runs as, and SAP's debugger needs that logon user (requestUser) to catch anything. SAP did not name it (/sap/bc/adt/core/http/systeminformation is missing on SAP_BASIS 7.50 and older); there, set SAP_USER to the logon user (Basic or cookie authentication).";
+
 /** The abap_debug tool: one capture per SAP user at a time. */
-export async function handleDebugCapture(conn: SapConnection, input: DebugInput): Promise<ToolResult> {
+export async function handleDebugCapture(
+  conn: SapConnection,
+  input: DebugInput,
+  context: ToolContext = {},
+): Promise<ToolResult> {
   const user = await resolveDebugUser(conn);
-  if (!user) {
-    return errorResult(
-      "Cannot tell which SAP user this session runs as, and SAP's debugger needs that logon user (requestUser) to catch anything. SAP did not name it (/sap/bc/adt/core/http/systeminformation is missing on SAP_BASIS 7.50 and older); there, set SAP_USER to the logon user (Basic or cookie authentication).",
-    );
-  }
-  // From here to activeCaptures.add() nothing awaits, so the check and the claim are atomic.
-  if (activeCaptures.has(user)) {
-    return errorResult(
-      `A debug capture for SAP user ${user} is already running on this server — wait for it to finish.`,
-    );
-  }
-  activeCaptures.add(user);
+  if (!user) return errorResult(UNKNOWN_USER_MESSAGE);
+  // From here to the claim nothing awaits, so the check and the claim are atomic.
+  const busy = claimDebugUser(
+    user,
+    `A debug capture for SAP user ${user} is already running on this server — wait for it to finish.`,
+  );
+  if (busy) return errorResult(busy);
   try {
-    const type = input.type ? normalizeObjectType(input.type) : '';
-    return await runCapture(conn, readRequest(input as Record<string, unknown>, type, input.name ?? ''), user);
+    return await runCapture(conn, readDebugRequest(input), user, context);
   } catch (err) {
     if (err instanceof DebugInputError) return errorResult(err.message);
     throw err;
   } finally {
-    activeCaptures.delete(user);
+    releaseDebugUser(user);
   }
 }

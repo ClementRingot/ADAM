@@ -84,6 +84,28 @@ describe('loadConfig', () => {
     ).toEqual(['SAP_PROXY must be an http(s) proxy URL, e.g. http://proxy.example:8080.']);
   });
 
+  it('reads the debugging ceilings, defaults where unset, and names an invalid one', () => {
+    const base = { SAP_URL: 'https://sap', SAP_USER: 'u', SAP_PASSWORD: 'p' };
+    expect(loadConfig(base).config?.limits).toEqual({
+      maxSeconds: 600,
+      maxResultKB: 200,
+      idleSeconds: 120,
+      sessionSeconds: 900,
+    });
+    const { config } = loadConfig({
+      ...base,
+      ABAP_DEBUGGER_MAX_SECONDS: '1200',
+      ABAP_DEBUGGER_MAX_RESULT_KB: '80',
+      ABAP_DEBUGGER_IDLE_SECONDS: '300',
+      ABAP_DEBUGGER_SESSION_SECONDS: '1800',
+    });
+    expect(config?.limits).toEqual({ maxSeconds: 1200, maxResultKB: 80, idleSeconds: 300, sessionSeconds: 1800 });
+    expect(createConnection(config as NonNullable<typeof config>).limits).toEqual(config?.limits);
+    expect(loadConfig({ ...base, ABAP_DEBUGGER_IDLE_SECONDS: '5' }).problems).toEqual([
+      'ABAP_DEBUGGER_IDLE_SECONDS must be a whole number from 10 to 3600 (got "5").',
+    ]);
+  });
+
   it('names each invalid value', () => {
     expect(loadConfig({ SAP_URL: 'ftp://sap', SAP_USER: 'u', SAP_PASSWORD: 'p' }).problems).toEqual([
       'SAP_URL must be an http(s) URL (got "ftp://sap").',

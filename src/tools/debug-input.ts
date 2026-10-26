@@ -29,6 +29,27 @@ const MessageSchema = z
   })
   .strict();
 
+/** Where a run of steps ends early. */
+export const UntilSchema = z
+  .object({
+    line: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe('Stop stepping once the run stands on this line (of the source the steps started in).'),
+    changed: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Stop stepping once this variable differs from its value where the steps started, e.g. LV_STATUS.'),
+  })
+  .strict()
+  .refine((until) => until.line !== undefined || until.changed !== undefined, {
+    message: 'until needs line and/or changed.',
+  });
+
 /** One stop of the debugged run; type/name default to the top-level ones. */
 const DebugBreakpointSchema = z
   .object({
@@ -141,16 +162,37 @@ export const DEBUG_INPUT_SHAPE = {
     .number()
     .int()
     .min(0)
-    .max(20)
+    .max(10_000)
     .optional()
     .describe(
-      'Steps after each stop (0-20, default 0; at most 100 per capture); each records the new position and the variables.',
+      'Steps after each stop (default 0; with until and no steps: step until it holds). Up to 20 come back one entry each (position and variables); more come back as a compact trace — the lines executed, loops folded as (9-12)×300, the variables only where they changed. Only maxSeconds and maxResultKB bound how far it goes.',
     ),
   stepMode: z
     .enum(['over', 'into', 'out'])
     .optional()
     .describe(
       'over (default): stay in the method; into: follow calls into the called method; out: return to the caller.',
+    ),
+  until: UntilSchema.optional().describe(
+    'End the steps early: once the run stands on a line of the source the steps started in, and/or once a variable changed.',
+  ),
+  maxSeconds: z.coerce
+    .number()
+    .int()
+    .min(10)
+    .max(3600)
+    .optional()
+    .describe(
+      "Time budget of the inspection once the run stopped (default 120): long step runs need more — each step costs two or three requests to SAP. The server's ceiling applies (ABAP_DEBUGGER_MAX_SECONDS, default 600). The program waits in a work process meanwhile.",
+    ),
+  maxResultKB: z.coerce
+    .number()
+    .int()
+    .min(5)
+    .max(1000)
+    .optional()
+    .describe(
+      "Size budget of the result in KB of JSON (default 40, about 10k tokens); the server's ceiling applies (ABAP_DEBUGGER_MAX_RESULT_KB, default 200).",
     ),
   timeoutSeconds: z.coerce
     .number()
@@ -249,6 +291,13 @@ export const DebugInputSchema = z
         code: 'custom',
         path: ['type'],
         message: `type must be CLAS, PROG or FUNC (got "${input.type}").`,
+      });
+    }
+    if (input.until && input.steps === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['until'],
+        message: 'until ends a run of steps: leave steps out to step until it holds, or give steps > 0.',
       });
     }
     if (input.trigger === 'http' && !input.url) {

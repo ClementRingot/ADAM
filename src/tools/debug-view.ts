@@ -250,7 +250,7 @@ export const FRAME_MOVE_WARNING =
   'A step with "frame" moved to another method (entered = into a call, returned = back to the caller): its values are read there, so a variable of the same name is a different variable.';
 
 /** A watched variable after a step, as at a stop: its text, a structure's components, or a table's line count and first rows. */
-function stepValue(variable: CapturedVariable): string | Record<string, unknown> {
+export function stepValue(variable: CapturedVariable): string | Record<string, unknown> {
   if (variable.kind === 'structure') return variable.components ?? {};
   if (variable.kind === 'table') {
     const lines = variable.lines ?? 0;

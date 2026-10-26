@@ -1137,7 +1137,7 @@ describe('abap_debug — several stops in one run', () => {
     }
   });
 
-  it('records at most 100 steps across all stops', async () => {
+  it('records more than 100 steps across stops: only time and size bound them now', async () => {
     installFakeSap({ hit: true, execution: Array.from({ length: 6 }, () => at9) });
     const { json } = await debug({
       type: 'CLAS',
@@ -1148,8 +1148,8 @@ describe('abap_debug — several stops in one run', () => {
     });
     expect(
       json?.stops.map((stop: Record<string, unknown>) => (stop.steps as unknown[] | undefined)?.length ?? 0),
-    ).toEqual([20, 20, 20, 20, 20, 0]);
-    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 100 steps'));
+    ).toEqual([20, 20, 20, 20, 20, 20]);
+    expect(json?.warnings ?? []).not.toContainEqual(expect.stringContaining('at most'));
   });
 
   it('arms up to 20 breakpoints in one run', async () => {
@@ -1374,6 +1374,179 @@ describe('abap_debug — several stops in one run', () => {
     const topLevelMethod = await debug({ type: 'CLAS', name: 'ZCL_ORDER', method: 'get_total' });
     expect(topLevelMethod.result.isError).toBe(true);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('abap_debug — long step runs', () => {
+  const stepCalls = (calls: Call[]) =>
+    named(calls, 'POST', '/sap/bc/adt/debugger').filter((call) => call.query.get('method') === 'stepOver');
+
+  it('follows thousands of steps from one stop as a compact trace, loops folded', { timeout: 30_000 }, async () => {
+    const loop = Array.from({ length: 500 }, () => [10, 11, 12, 9]).flat();
+    const { calls } = installFakeSap({ hit: true, stepPath: loop });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      steps: 2000,
+      variables: ['LV_HELPER'],
+      maxSeconds: 600,
+    });
+    const [stop] = json?.stops ?? [];
+    expect(stop).not.toHaveProperty('steps');
+    expect(stop.trace).toEqual({
+      steps: 2000,
+      path: [{ procedure: 'METHOD GET_TOTAL', program: 'ZCL_ORDER=====================CP', lines: '(10-12 9)×500' }],
+      // Watched values only where they changed: LV_HELPER never does after the first step.
+      changes: [{ step: 1, line: 10, values: { LV_HELPER: '7' } }],
+    });
+    expect(stepCalls(calls)).toHaveLength(2000);
+    expect(json?.release).toMatchObject({ released: true });
+  });
+
+  it('marks the frames a long run enters and leaves in its trace', async () => {
+    const path = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
+    installFakeSap({ hit: true, stepPath: path, helperLines: [13, 14, 15] });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 22, stepMode: 'into' });
+    expect(json?.stops[0].trace).toEqual({
+      steps: 22,
+      path: [
+        { procedure: 'METHOD GET_TOTAL', program: 'ZCL_ORDER=====================CP', lines: '10-12' },
+        { frame: 'entered', procedure: 'METHOD HELPER', program: 'ZCL_ORDER=====================CP', lines: '13-15' },
+        {
+          frame: 'returned',
+          procedure: 'METHOD GET_TOTAL',
+          program: 'ZCL_ORDER=====================CP',
+          lines: '16-31',
+        },
+      ],
+    });
+  });
+
+  it('keeps a long run that ends early one entry per step', async () => {
+    installFakeSap({ hit: true, stepPath: [10, 11, 10, 11, 12, 13] });
+    // until without steps: step until it holds.
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, until: { line: 12 } });
+    const steps = json?.stops[0].steps as Array<Record<string, unknown>>;
+    expect(steps.map((step) => step.line)).toEqual([10, 11, 10, 11, 12]);
+    expect(steps.at(-1)).toMatchObject({ line: 12, until: 'line 12' });
+    expect(json?.stops[0]).not.toHaveProperty('trace');
+  });
+
+  it('steps until a variable changed', async () => {
+    installFakeSap({ hit: true, stepPath: [9, 9, 10, 11] });
+    // The fake's LV_TOTAL is 30 + the line the run stands on.
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      steps: 50,
+      until: { changed: 'lv_total' },
+    });
+    const steps = json?.stops[0].steps as Array<Record<string, unknown>>;
+    expect(steps).toHaveLength(3);
+    expect(steps.at(-1)).toMatchObject({ line: 10, values: { LV_TOTAL: '40' }, until: 'LV_TOTAL changed' });
+  });
+
+  it('ends a long run on its size budget, keeping the trace of what it followed', async () => {
+    installFakeSap({ hit: true });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      steps: 3000,
+      variables: ['LV_TOTAL'],
+      maxResultKB: 5,
+    });
+    const trace = json?.stops[0].trace as { steps: number; changes: unknown[] };
+    expect(trace.steps).toBeGreaterThan(20);
+    expect(trace.steps).toBeLessThan(3000);
+    expect(trace.changes).toHaveLength(trace.steps);
+    expect(json?.warnings).toContainEqual(expect.stringContaining('size budget (about 5 KB)'));
+    expect(json?.release).toMatchObject({ released: true });
+  });
+
+  it('ends a long run on its time budget', async () => {
+    setDebugTimingsForTests({ continueMarginMs: 9_900 });
+    try {
+      installFakeSap({ hit: true });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 5000, maxSeconds: 10 });
+      expect(json?.warnings).toContainEqual(expect.stringContaining('10s inspection budget ran low'));
+      const stop = json?.stops[0] as { trace?: { steps: number }; steps?: unknown[] };
+      expect(stop.trace?.steps ?? stop.steps?.length ?? 0).toBeLessThan(5000);
+      expect(json?.release).toMatchObject({ released: true });
+    } finally {
+      setDebugTimingsForTests({ continueMarginMs: 15_000 });
+    }
+  });
+
+  it("caps the budgets a call asks for at the server's ceilings", async () => {
+    installFakeSap({ hit: true });
+    const conn = {
+      ...createConnection(),
+      limits: { maxSeconds: 30, maxResultKB: 10, idleSeconds: 60, sessionSeconds: 300 },
+    };
+    const { json } = await debug(
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, maxSeconds: 3600, maxResultKB: 1000 },
+      conn,
+    );
+    expect(json?.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('30 s apply (ABAP_DEBUGGER_MAX_SECONDS)'),
+        expect.stringContaining('10 KB apply (ABAP_DEBUGGER_MAX_RESULT_KB)'),
+      ]),
+    );
+  });
+
+  it('reports progress and stops stepping once the client cancels the call', async () => {
+    setDebugTimingsForTests({ progressIntervalMs: 0 });
+    try {
+      const { calls } = installFakeSap({ hit: true });
+      const messages: string[] = [];
+      const abort = new AbortController();
+      const progress = (message: string) => {
+        messages.push(message);
+        if (message.startsWith('step 5 ')) abort.abort();
+      };
+      const result = await callTool(
+        { connection: createConnection(), problems: [] },
+        'abap_debug',
+        { type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 100 },
+        { signal: abort.signal, progress },
+      );
+      const json = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(messages[0]).toBe('stop 1 at CLAS ZCL_ORDER the main source line 9');
+      expect(messages).toContain('step 1 of 100, line 10');
+      expect(json.stops[0].steps).toHaveLength(5);
+      expect(json.warnings).toContainEqual(expect.stringContaining('cancelled after 5 step(s)'));
+      expect(stepCalls(calls)).toHaveLength(5);
+      expect(json.release).toMatchObject({ released: true });
+    } finally {
+      setDebugTimingsForTests({ progressIntervalMs: 2000 });
+    }
+  });
+
+  it('stops waiting for the first stop when the client cancels, and cleans up', async () => {
+    const { calls } = installFakeSap({ hit: false });
+    const abort = new AbortController();
+    abort.abort();
+    const result = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      { signal: abort.signal },
+    );
+    expect(JSON.parse(result.content[0]?.text ?? '{}')).toMatchObject({ hit: false, reason: 'cancelled' });
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+
+  it('validates until before anything reaches SAP', async () => {
+    const { calls } = installFakeSap();
+    const empty = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, until: {} });
+    expect(empty.text).toContain('until needs line and/or changed');
+    const zero = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 0, until: { line: 12 } });
+    expect(zero.text).toContain('leave steps out to step until it holds');
+    expect(calls).toHaveLength(0);
   });
 });
 

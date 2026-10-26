@@ -7,6 +7,7 @@ import { resolveCookies } from './adt/cookies.js';
 import { AdtHttpClient, createDispatcher } from './adt/http.js';
 import { type BTPServiceKey, createBearerTokenProvider, loadServiceKeyFile, parseServiceKey } from './adt/oauth.js';
 import type { SapConnection } from './tools/connection.js';
+import { DEFAULT_LIMITS, type DebugLimits } from './tools/debug-limits.js';
 
 export type AuthMode = 'btp' | 'basic' | 'cookies';
 
@@ -27,6 +28,8 @@ export interface Config {
   disableSaml: boolean;
   /** SAP_BASIS release, e.g. 758 — only picks the ABAP grammar that locates methods. */
   abapRelease?: string;
+  /** Ceilings for debugging: time, result size, interactive sessions. */
+  limits: DebugLimits;
 }
 
 export interface ConfigResult {
@@ -44,6 +47,24 @@ function value(env: NodeJS.ProcessEnv, key: string): string | undefined {
 
 function flag(env: NodeJS.ProcessEnv, key: string): boolean {
   return TRUE_VALUES.has((value(env, key) ?? '').toLowerCase());
+}
+
+/** The debugging ceilings: each variable a whole number within its bounds, else a problem. */
+function readLimits(env: NodeJS.ProcessEnv, problems: string[]): DebugLimits {
+  const bounded = (key: string, fallback: number, min: number, max: number): number => {
+    const text = value(env, key);
+    if (text === undefined) return fallback;
+    const number = Number(text);
+    if (Number.isInteger(number) && number >= min && number <= max) return number;
+    problems.push(`${key} must be a whole number from ${min} to ${max} (got "${text}").`);
+    return fallback;
+  };
+  return {
+    maxSeconds: bounded('ABAP_DEBUGGER_MAX_SECONDS', DEFAULT_LIMITS.maxSeconds, 10, 3600),
+    maxResultKB: bounded('ABAP_DEBUGGER_MAX_RESULT_KB', DEFAULT_LIMITS.maxResultKB, 5, 1000),
+    idleSeconds: bounded('ABAP_DEBUGGER_IDLE_SECONDS', DEFAULT_LIMITS.idleSeconds, 10, 3600),
+    sessionSeconds: bounded('ABAP_DEBUGGER_SESSION_SECONDS', DEFAULT_LIMITS.sessionSeconds, 60, 14_400),
+  };
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
@@ -124,6 +145,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
     }
   }
 
+  const limits = readLimits(env, problems);
+
   if (problems.length > 0 || !url || !auth) return { problems };
   return {
     problems,
@@ -142,6 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
       insecure: flag(env, 'SAP_INSECURE'),
       disableSaml: flag(env, 'SAP_DISABLE_SAML'),
       ...(value(env, 'SAP_ABAP_RELEASE') ? { abapRelease: value(env, 'SAP_ABAP_RELEASE') } : {}),
+      limits,
     },
   };
 }
@@ -177,5 +201,6 @@ export function createConnection(config: Config): SapConnection {
     // Behind Basic or cookies SAP_USER IS the logon user; a BTP token names nobody (SAP does).
     ...(config.auth !== 'btp' && config.username ? { logonUser: config.username } : {}),
     ...(config.abapRelease ? { abapRelease: config.abapRelease } : {}),
+    limits: config.limits,
   };
 }
