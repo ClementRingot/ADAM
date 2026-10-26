@@ -381,4 +381,4 @@ MIT — see [LICENSE](LICENSE). This server is derived from [ARC-1](https://gith
 (MIT), from which the ADT HTTP conventions, the BTP login, the method locator
 and the ABAP Unit parsing were ported. The ADT debugger contract was corroborated against
 [abap-adt-api](https://github.com/marcellourbani/abap-adt-api),
-[vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) and vibing-steampunk(https://github.com/oisee/vibing-steampunk).
+[vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) and [vibing-steampunk](https://github.com/oisee/vibing-steampunk).
