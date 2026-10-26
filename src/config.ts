@@ -204,3 +204,84 @@ export function createConnection(config: Config): SapConnection {
     limits: config.limits,
   };
 }
+
+/** The MCP server over HTTP (ABAP_DEBUGGER_TRANSPORT=http): on SAP BTP Cloud Foundry, or any host. */
+export interface HttpConfig {
+  port: number;
+  host: string;
+  /** The public URL OAuth metadata advertises, behind a reverse proxy (else the CF route). */
+  publicUrl?: string;
+  /** Static API keys (each grants the debug scope). */
+  apiKeys: string[];
+  /** CORS allowlist for browser MCP clients (exact origins). */
+  allowedOrigins: string[];
+  /** Keeps OAuth client registrations valid across deployments (else XSUAA's client secret signs them). */
+  dcrSigningSecret?: string;
+  /** Accept one SAP identity for every MCP user (a Basic destination, or SAP_USER). */
+  allowSharedUser: boolean;
+  /** SAP_BTP_DESTINATION: the system, and how each user logs on to it. */
+  btpDestination?: string;
+}
+
+const list = (text: string | undefined): string[] =>
+  (text ?? '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): { http?: HttpConfig; problems: string[] } {
+  const problems: string[] = [];
+  // Cloud Foundry hands the port over in PORT and routes to every interface.
+  const portText = value(env, 'PORT') ?? value(env, 'ABAP_DEBUGGER_PORT') ?? '8080';
+  const port = Number(portText);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    problems.push(`ABAP_DEBUGGER_PORT must be a port number (got "${portText}").`);
+  }
+  const publicUrl = value(env, 'ABAP_DEBUGGER_PUBLIC_URL')?.replace(/\/+$/, '');
+  if (publicUrl) {
+    try {
+      if (!['http:', 'https:'].includes(new URL(publicUrl).protocol)) throw new Error('protocol');
+    } catch {
+      problems.push(`ABAP_DEBUGGER_PUBLIC_URL must be an http(s) URL (got "${publicUrl}").`);
+    }
+  }
+  const apiKeys = list(env.ABAP_DEBUGGER_API_KEYS);
+  if (apiKeys.some((key) => key.length < 20)) {
+    problems.push(
+      'ABAP_DEBUGGER_API_KEYS: each key must be at least 20 characters (a random secret, e.g. openssl rand -hex 24).',
+    );
+  }
+  const dcrSigningSecret = value(env, 'ABAP_DEBUGGER_DCR_SIGNING_SECRET');
+  if (dcrSigningSecret && dcrSigningSecret.length < 32) {
+    problems.push('ABAP_DEBUGGER_DCR_SIGNING_SECRET must be at least 32 characters.');
+  }
+  if (problems.length > 0) return { problems };
+  const btpDestination = value(env, 'SAP_BTP_DESTINATION');
+  return {
+    problems,
+    http: {
+      port,
+      host: value(env, 'ABAP_DEBUGGER_HOST') ?? (value(env, 'PORT') ? '0.0.0.0' : '127.0.0.1'),
+      ...(publicUrl ? { publicUrl } : {}),
+      apiKeys,
+      allowedOrigins: list(env.ABAP_DEBUGGER_ALLOWED_ORIGINS),
+      ...(dcrSigningSecret ? { dcrSigningSecret } : {}),
+      allowSharedUser: flag(env, 'ABAP_DEBUGGER_ALLOW_SHARED_USER'),
+      ...(btpDestination ? { btpDestination } : {}),
+    },
+  };
+}
+
+/** What every SAP connection takes from the environment, whichever way it logs on. */
+export function loadConnectionSettings(env: NodeJS.ProcessEnv = process.env): {
+  settings: { language: string; limits: DebugLimits; abapRelease?: string };
+  problems: string[];
+} {
+  const problems: string[] = [];
+  const limits = readLimits(env, problems);
+  const abapRelease = value(env, 'SAP_ABAP_RELEASE');
+  return {
+    problems,
+    settings: { language: value(env, 'SAP_LANGUAGE') ?? 'EN', limits, ...(abapRelease ? { abapRelease } : {}) },
+  };
+}

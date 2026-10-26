@@ -7,6 +7,9 @@
  * broken DB connection) and content negotiation: a debugger POST — a step, a continue — must never
  * be sent twice. The only resends are of requests SAP refused before running anything: an expired
  * session (401) and a stale CSRF token (403 "Required").
+ *
+ * On SAP BTP the identity comes per user from the Destination Service (`authHeaders`), and an
+ * on-premise system is reached through the Connectivity proxy (`connectivityProxy`).
  */
 
 import { Agent, type Dispatcher, fetch, ProxyAgent } from 'undici';
@@ -19,6 +22,23 @@ export type SessionType = 'stateful' | 'stateless';
 
 /** A valid OAuth access token; `forceRefresh` once SAP rejected the cached one. */
 export type BearerTokenProvider = (options?: { forceRefresh?: boolean }) => Promise<string>;
+
+/**
+ * The BTP Connectivity proxy to an on-premise system behind the Cloud Connector. It speaks plain
+ * HTTP forward proxying only (it refuses CONNECT), so the system's URL must be `http://`.
+ */
+export interface ConnectivityProxy {
+  protocol: string;
+  host: string;
+  port: number;
+  /** A valid Connectivity-service token (the caller caches and refreshes it). */
+  getProxyToken: () => Promise<string>;
+  /** Cloud Connector location id (`SAP-Connectivity-SCC-Location_ID`). */
+  locationId?: string;
+}
+
+/** Where a request's connection pool comes from: fixed, or chosen per request (a proxy token that expires). */
+export type DispatcherSource = Dispatcher | (() => Promise<Dispatcher>);
 
 export interface AdtHttpConfig {
   baseUrl: string;
@@ -33,6 +53,14 @@ export interface AdtHttpConfig {
   cookieString?: string;
   /** BTP ABAP Environment: `Authorization: Bearer`, replacing Basic auth. */
   bearerTokenProvider?: BearerTokenProvider;
+  /**
+   * The user's identity headers for each request, from the BTP Destination Service: principal
+   * propagation (`SAP-Connectivity-Authentication`), a user token (`Authorization: Bearer`) or a
+   * SAML assertion. Replaces every other authentication.
+   */
+  authHeaders?: () => Promise<Record<string, string>>;
+  /** SAP BTP: reach an on-premise system through the Connectivity proxy (Cloud Connector). */
+  connectivityProxy?: ConnectivityProxy;
   /** Corporate proxy every request goes through (`http://user:password@proxy:8080`); HTTPS is tunnelled. */
   proxy?: string;
   /** Skip TLS certificate verification (test systems with self-signed certificates only). */
@@ -65,14 +93,16 @@ const LEGACY_DISCOVERY = '/sap/bc/adt/discovery';
 
 export class AdtHttpClient {
   private readonly config: AdtHttpConfig;
-  private readonly dispatcher: Dispatcher;
+  private readonly dispatcher: DispatcherSource;
   private csrfToken = '';
   /** Cookies SAP set (session ids, `sap-contextid`); they win over the static ones on a name clash. */
   private cookieJar = new Map<string, string>();
 
-  constructor(config: AdtHttpConfig, dispatcher?: Dispatcher) {
+  constructor(config: AdtHttpConfig, dispatcher?: DispatcherSource) {
     this.config = { ...config };
-    this.dispatcher = dispatcher ?? createDispatcher(config);
+    this.dispatcher =
+      dispatcher ??
+      (config.connectivityProxy ? connectivityDispatcher(config.connectivityProxy) : createDispatcher(config));
   }
 
   async get(path: string, headers?: Record<string, string>, options?: AdtRequestOptions): Promise<AdtResponse> {
@@ -308,7 +338,7 @@ export class AdtHttpClient {
       headers: { ...headers, 'User-Agent': `abap-debugger-mcp/${VERSION}` },
       body,
       signal: requestSignal(options),
-      dispatcher: this.dispatcher,
+      dispatcher: typeof this.dispatcher === 'function' ? await this.dispatcher() : this.dispatcher,
     })) as unknown as Response;
     this.storeCookies(response);
     // Any answer may renew the token; a fetch probe's token counts only when the probe succeeded.
@@ -318,7 +348,9 @@ export class AdtHttpClient {
   }
 
   private async applyAuth(headers: Record<string, string>, forceRefresh = false): Promise<void> {
-    if (this.config.bearerTokenProvider) {
+    if (this.config.authHeaders) {
+      Object.assign(headers, await this.config.authHeaders());
+    } else if (this.config.bearerTokenProvider) {
       headers.Authorization = `Bearer ${await this.config.bearerTokenProvider({ forceRefresh })}`;
     } else if (this.config.username && this.config.password) {
       headers.Authorization = `Basic ${Buffer.from(`${this.config.username}:${this.config.password}`).toString('base64')}`;
@@ -383,6 +415,33 @@ export function createDispatcher(config: Pick<AdtHttpConfig, 'proxy' | 'insecure
     return new ProxyAgent({ uri: config.proxy, ...timeouts, ...(config.insecure ? { requestTls: lenient } : {}) });
   }
   return new Agent({ ...timeouts, ...(config.insecure ? { connect: lenient } : {}) });
+}
+
+/**
+ * The Connectivity proxy's pool: standard HTTP forward proxying (undici's ProxyAgent does that for
+ * an `http:` target), with the current token as Proxy-Authorization — a new agent once the token
+ * changes, the previous one closed after its requests.
+ */
+export function connectivityDispatcher(proxy: ConnectivityProxy): () => Promise<Dispatcher> {
+  let current: { token: string; agent: ProxyAgent } | undefined;
+  return async () => {
+    const token = await proxy.getProxyToken();
+    if (current?.token !== token) {
+      const previous = current;
+      current = {
+        token,
+        agent: new ProxyAgent({
+          uri: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+          token: `Bearer ${token}`,
+          ...(proxy.locationId ? { headers: { 'SAP-Connectivity-SCC-Location_ID': proxy.locationId } } : {}),
+          headersTimeout: 0,
+          bodyTimeout: 0,
+        }),
+      };
+      previous?.agent.close().catch(() => undefined);
+    }
+    return current.agent;
+  };
 }
 
 /** A token on a failed answer proves nothing; `Required` is SAP asking for one. */

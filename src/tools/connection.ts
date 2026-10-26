@@ -23,4 +23,9 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** A progress notification, when the client asked for them (some clients keep a long call alive on them). */
   progress?: (message: string) => void;
+  /**
+   * Who calls: the MCP user over HTTP (their sessions are theirs alone); unset over stdio, where
+   * the one local user calls.
+   */
+  owner?: string;
 }

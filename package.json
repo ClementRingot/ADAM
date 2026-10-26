@@ -1,7 +1,7 @@
 {
   "name": "abap-debugger-mcp",
   "version": "0.1.0",
-  "description": "MCP server that captures one run of ABAP code in SAP's debugger: breakpoints, call stack, variables and steps in a single tool call.",
+  "description": "MCP server that debugs ABAP code in SAP's debugger for AI assistants: one-shot captures and interactive sessions, over stdio or HTTP (SAP BTP Cloud Foundry).",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -10,6 +10,7 @@
   "main": "dist/index.js",
   "files": [
     "dist",
+    "scripts/prepare.mjs",
     "README.md",
     "LICENSE"
   ],
@@ -38,17 +39,20 @@
     "test:watch": "vitest",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "prepare": "npm run build"
+    "prepare": "node scripts/prepare.mjs"
   },
   "dependencies": {
     "@abaplint/core": "^2.120.86",
+    "@arc-mcp/xsuaa-auth": "^1.2.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "express": "^5.3.0",
     "fast-xml-parser": "^5.11.2",
     "undici": "^8.12.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.3",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.20.5",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",

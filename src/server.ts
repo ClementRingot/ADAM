@@ -13,6 +13,10 @@ import { VERSION } from './version.js';
 
 export interface ServerState {
   connection?: SapConnection;
+  /** Over HTTP: the calling user's connection, opened on the first tool call that needs SAP. */
+  connect?: () => Promise<SapConnection>;
+  /** Over HTTP: the calling MCP user, who alone reaches their interactive session. */
+  owner?: string;
   /** Why there is no connection (configuration problems), reported by every tool call. */
   problems: string[];
 }
@@ -36,13 +40,24 @@ export async function callTool(
   if (!tool) return errorResult(`Unknown tool "${name}". Tools: ${TOOLS.map((t) => t.name).join(', ')}.`);
   const parsed = tool.schema.safeParse(args ?? {});
   if (!parsed.success) return errorResult(`Invalid ${name} input:\n${formatIssues(parsed.error)}`);
-  if (!state.connection) {
+  if (!state.connection && !state.connect) {
     return errorResult(
       `abap-debugger is not configured:\n- ${state.problems.join('\n- ')}\nSet these in the env block of the MCP client's abap-debugger entry, then restart the server.`,
     );
   }
+  let connection = state.connection;
+  if (!connection) {
+    try {
+      connection = await (state.connect as () => Promise<SapConnection>)();
+    } catch (err) {
+      return errorResult(`Cannot open your SAP connection: ${describeError(err)}`);
+    }
+  }
   try {
-    return await tool.run(state.connection, parsed.data as never, context);
+    return await tool.run(connection, parsed.data as never, {
+      ...context,
+      ...(state.owner ? { owner: state.owner } : {}),
+    });
   } catch (err) {
     return errorResult(describeError(err));
   }

@@ -1,0 +1,39 @@
+# ──────────────────────────────────────────────────────────────────────
+# Landscape-specific values for mta.yaml (a template: copy it, the copy is gitignored).
+#
+#   cp mta-overrides.mtaext.example mta-overrides.mtaext
+#   mbt build
+#   cf deploy mta_archives/abap-debugger-mcp_0.1.0.mtar -e mta-overrides.mtaext
+#
+# An extension can ADD or OVERRIDE a property, never remove one: write the explicit value.
+# ──────────────────────────────────────────────────────────────────────
+
+_schema-version: "3.1"
+ID: abap-debugger-mcp-overrides
+extends: abap-debugger-mcp
+
+modules:
+  - name: abap-debugger-mcp
+    # A short route of your choice (globally unique on the shared domain):
+    # parameters:
+    #   host: abap-debugger-dev
+    properties:
+      # The SAP system: a subaccount destination. PrincipalPropagation (on-premise, Cloud
+      # Connector) or OAuth2UserTokenExchange (BTP ABAP Environment) — each user as themselves.
+      SAP_BTP_DESTINATION: "A4H_PP"
+
+      # Logon language of the debugger session.
+      # SAP_LANGUAGE: "DE"
+
+      # Keeps MCP clients' OAuth registrations valid across deployments (32+ characters).
+      # Better set once with `cf set-env abap-debugger-mcp ABAP_DEBUGGER_DCR_SIGNING_SECRET …`
+      # and `cf restage`: properties here are rewritten on every deploy, like any secret in Git.
+
+      # Bounds: ceilings a call may ask for, and how long an interactive session may last.
+      # ABAP_DEBUGGER_MAX_SECONDS: "600"
+      # ABAP_DEBUGGER_MAX_RESULT_KB: "200"
+      # ABAP_DEBUGGER_IDLE_SECONDS: "120"
+      # ABAP_DEBUGGER_SESSION_SECONDS: "900"
+
+      # Browser MCP clients calling /mcp directly (native clients do not need this).
+      # ABAP_DEBUGGER_ALLOWED_ORIGINS: "https://claude.ai"

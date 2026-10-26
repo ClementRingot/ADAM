@@ -1,0 +1,137 @@
+_schema-version: "3.1"
+ID: abap-debugger-mcp
+version: 0.1.0
+description: ABAP debugger MCP server — one-shot and interactive debugging of ABAP code for AI assistants
+
+# ──────────────────────────────────────────────────────────────────────
+# SAP BTP Cloud Foundry deployment, the way ARC-1 deploys:
+#   - XSUAA authenticates MCP clients (OAuth, with dynamic client registration)
+#   - the Destination service names the SAP system and how each user logs on
+#     (PrincipalPropagation: every user debugs as their own SAP user)
+#   - the Connectivity service reaches an on-premise system through the Cloud Connector
+#
+#   cp mta-overrides.mtaext.example mta-overrides.mtaext   # set SAP_BTP_DESTINATION
+#   mbt build
+#   cf deploy mta_archives/abap-debugger-mcp_0.1.0.mtar -e mta-overrides.mtaext
+#
+# See docs/btp-deployment.md.
+# ──────────────────────────────────────────────────────────────────────
+
+parameters:
+  enable-parallel-deployments: true
+
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm ci
+        - npm run build
+
+modules:
+  - name: abap-debugger-mcp
+    type: nodejs
+    path: .
+    parameters:
+      memory: 256M
+      disk-quota: 512M
+      # ONE instance: interactive sessions hold the program and its debugger session in this
+      # process, and a later call must reach the same process.
+      instances: 1
+      # No `host:` — the deploy service derives a globally unique route (read it with
+      # `cf app abap-debugger-mcp`); pin a short one in mta-overrides.mtaext if you want.
+      health-check-type: http
+      health-check-http-endpoint: /health
+      buildpack: nodejs_buildpack
+      command: node --max-old-space-size=192 dist/index.js --http
+    build-parameters:
+      builder: custom
+      commands: []
+      # Only the runtime goes up: dist/, package*.json, scripts/prepare.mjs. The buildpack
+      # installs the runtime dependencies; `prepare` then keeps the prebuilt dist/.
+      ignore:
+        - .env*
+        - .npmrc
+        - "*key*.json"
+        - cookie*
+        - .mcp*.json
+        - default-env*.json
+        - "*.key"
+        - "*.pem"
+        - "*.p12"
+        - .git/
+        - .github/
+        - .gitignore
+        - src/
+        - tests/
+        - docs/
+        - node_modules/
+        - coverage/
+        - mta_archives/
+        - Makefile_*.mta
+        - "*.md"
+        - biome.json
+        - tsconfig*.json
+        - vitest.config.ts
+        - mta.yaml
+        - mta-*.mtaext*
+        - xs-security.json
+    properties:
+      # Set in mta-overrides.mtaext (an extension can add or override, never remove):
+      # SAP_BTP_DESTINATION: "A4H_PP"
+      SAP_LANGUAGE: EN
+      # Every MCP user debugs as their own SAP user; "true" only for a deployment one person uses.
+      ABAP_DEBUGGER_ALLOW_SHARED_USER: "false"
+      # Bounds (see README): inspection time and result size ceilings, interactive sessions.
+      ABAP_DEBUGGER_MAX_SECONDS: "600"
+      ABAP_DEBUGGER_MAX_RESULT_KB: "200"
+      ABAP_DEBUGGER_IDLE_SECONDS: "120"
+      ABAP_DEBUGGER_SESSION_SECONDS: "900"
+    provides:
+      - name: abap-debugger-api
+        properties:
+          url: ${default-url}
+    requires:
+      - name: abap-debugger-xsuaa
+      - name: abap-debugger-destination
+      - name: abap-debugger-connectivity
+
+resources:
+  - name: abap-debugger-xsuaa
+    type: com.sap.xs.uaa
+    parameters:
+      service-plan: application
+      # Scopes and role templates; the inline config below overrides/augments it.
+      path: xs-security.json
+      config:
+        # xsappname is unique per subaccount: derived from the space, so spaces can sit side by side.
+        xsappname: abap-debugger-${space}
+        # XSUAA only ever sees this server's own callback (the OAuth proxy); MCP clients' redirect
+        # URIs are checked by the server itself.
+        oauth2-configuration:
+          redirect-uris:
+            - ~{abap-debugger-api/url}/oauth/callback
+          grant-types:
+            - authorization_code
+            - refresh_token
+            - urn:ietf:params:oauth:grant-type:jwt-bearer
+          token-validity: 3600
+          refresh-token-validity: 2592000
+        role-collections:
+          - name: "ABAP Debugger (${space})"
+            description: "Debug ABAP code as yourself through the ABAP Debugger MCP server"
+            role-template-references:
+              - "$XSAPPNAME.Debugger"
+    requires:
+      - name: abap-debugger-api
+
+  - name: abap-debugger-destination
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: destination
+      service-plan: lite
+
+  - name: abap-debugger-connectivity
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: connectivity
+      service-plan: lite

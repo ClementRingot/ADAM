@@ -19,7 +19,9 @@ Claude:  abap_source  {type: "CLAS", name: "ZCL_ORDER", method: "get_total"}
 ```
 
 It talks to SAP through the ABAP Development Tools (ADT) REST API — the same resources Eclipse ADT
-uses — so nothing has to be installed on the SAP system.
+uses — so nothing has to be installed on the SAP system. It runs locally next to the assistant (stdio),
+or as a shared server on **SAP BTP Cloud Foundry** like ARC-1 — XSUAA sign-in, every user debugging as
+their own SAP user through principal propagation ([deployment guide](docs/btp-deployment.md)).
 
 ## How a capture works
 
@@ -113,6 +115,12 @@ as a file, and set `SAP_BTP_SERVICE_KEY_FILE` instead of URL and credentials. On
 server opens your browser for the SAP login (the flow Eclipse ADT uses); the token is then refreshed
 automatically.
 
+**As a shared server on SAP BTP.** Deploy the MTA to Cloud Foundry (`mbt build`, `cf deploy`), point it
+at a principal-propagation destination, assign the role collection, and connect the clients to
+`https://<route>/mcp` — they sign in through XSUAA in the browser, and each user debugs as their own
+SAP user. See the [deployment guide](docs/btp-deployment.md). The same HTTP mode
+(`ABAP_DEBUGGER_TRANSPORT=http`) runs on any host with API keys.
+
 ## Configuration
 
 | Variable | Meaning |
@@ -136,6 +144,19 @@ automatically.
 | `ABAP_DEBUGGER_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error` — logs go to stderr |
 
 A server that is not configured still starts; every tool call then lists what is missing.
+
+Over HTTP (`--http` or `ABAP_DEBUGGER_TRANSPORT=http`), on SAP BTP or any host, these apply too — see
+the [deployment guide](docs/btp-deployment.md#settings):
+
+| Variable | Meaning |
+|---|---|
+| `SAP_BTP_DESTINATION` | BTP destination of the SAP system: `PrincipalPropagation` (on-premise, Cloud Connector) or `OAuth2UserTokenExchange` (BTP ABAP Environment) — each user as themselves |
+| `ABAP_DEBUGGER_API_KEYS` | Comma-separated API keys (20+ characters each), besides XSUAA OAuth when an XSUAA instance is bound |
+| `ABAP_DEBUGGER_ALLOW_SHARED_USER` | `true` accepts one SAP identity for every MCP user (`SAP_URL` + `SAP_USER`, a Basic destination) — they can then catch each other's runs |
+| `ABAP_DEBUGGER_PORT`, `ABAP_DEBUGGER_HOST` | Port (default `8080`, `PORT` on Cloud Foundry) and bind address (default `127.0.0.1`, `0.0.0.0` on Cloud Foundry) |
+| `ABAP_DEBUGGER_PUBLIC_URL` | Public URL for the OAuth metadata behind a reverse proxy (default: the Cloud Foundry route) |
+| `ABAP_DEBUGGER_DCR_SIGNING_SECRET` | 32+ characters: keeps the MCP clients' OAuth registrations valid across deployments |
+| `ABAP_DEBUGGER_ALLOWED_ORIGINS` | CORS origins of browser MCP clients |
 
 ## Tools
 
@@ -330,7 +351,10 @@ ABAP Environment (multi-server attach, multi-stop runs, steps); the contract and
 [docs/research](docs/research/2026-10-22-abap-debugger-one-shot-capture.md). This server ports that
 code unchanged in behavior over its own minimal HTTP client; its unit tests run the whole capture
 against a simulated SAP. Live runs of this standalone build, and on-premise checks on 7.50, 7.58 and
-8.16, are still to come — see the [roadmap](docs/roadmap.md).
+8.16, are still to come — see the [roadmap](docs/roadmap.md). The SAP BTP mode is tested with XSUAA
+and the Destination service simulated (OAuth discovery, API keys, per-user identities, the
+Connectivity proxy against a real local proxy) and its MTA builds; a first deployment on a real
+subaccount is still to come.
 
 ## Development
 
@@ -344,9 +368,12 @@ npm run dev         # run from source (tsx)
 ```
 
 Source layout: `src/adt/` (HTTP client, debugger protocol, ABAP Unit, repository reads, BTP login),
-`src/abap/` (object types, method locator), `src/tools/` (the three tools), `src/server.ts` (MCP),
-`src/config.ts`, `src/index.ts` (stdio entry point). Logs go to stderr only: stdout carries the MCP
-protocol.
+`src/abap/` (object types, method locator), `src/tools/` (the tools: `debug-capture.ts` orchestrates
+a capture, `debug-follow.ts` follows a run, `debug-session.ts` holds interactive sessions,
+`debug-arm.ts`/`debug-view.ts`/`debug-trace.ts` arm breakpoints and render what was seen),
+`src/btp/` (per-user SAP connections through the Destination service), `src/http-server.ts`
+(Streamable HTTP with XSUAA/API-key auth), `src/server.ts` (MCP), `src/config.ts`, `src/index.ts`
+(entry point, stdio or `--http`). Logs go to stderr only: stdout carries the MCP protocol over stdio.
 
 ## License and attribution
 

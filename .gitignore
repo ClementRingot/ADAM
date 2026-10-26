@@ -12,3 +12,11 @@ cookies.txt
 cookie.txt
 *service-key*.json
 .mcp*.json
+
+# SAP BTP deployment (MTA)
+mta-overrides.mtaext
+mta_archives/
+*.mtar
+Makefile_*.mta
+.mta/
+default-env*.json

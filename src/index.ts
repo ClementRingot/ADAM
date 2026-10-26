@@ -4,7 +4,8 @@
  */
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createConnection, loadConfig } from './config.js';
+import { createConnection, loadConfig, loadHttpConfig } from './config.js';
+import { createHttpApp, httpSap, listen } from './http-server.js';
 import { logger } from './logger.js';
 import { createMcpServer } from './server.js';
 import { endDebugSessions } from './tools/debug-session.js';
@@ -12,7 +13,10 @@ import { VERSION } from './version.js';
 
 const USAGE = `abap-debugger-mcp ${VERSION} — MCP server (stdio) that captures one run of ABAP code in SAP's debugger.
 
-Usage: abap-debugger-mcp [--env-file <path>]
+Usage: abap-debugger-mcp [--env-file <path>] [--http]
+
+Over stdio (default) the MCP client starts the server; with --http (or ABAP_DEBUGGER_TRANSPORT=http)
+it serves Streamable HTTP at /mcp — on SAP BTP Cloud Foundry, or any host.
 
 Configuration (environment variables, e.g. the "env" block of the MCP client's server entry):
   SAP_URL                  SAP system URL, e.g. https://my-sap-host:44300
@@ -32,6 +36,15 @@ Configuration (environment variables, e.g. the "env" block of the MCP client's s
   ABAP_DEBUGGER_IDLE_SECONDS   interactive session: released after this long without a call (default 120)
   ABAP_DEBUGGER_SESSION_SECONDS  interactive session: released after this long in all (default 900)
   ABAP_DEBUGGER_LOG_LEVEL  debug | info | warn | error (stderr; default info)
+
+Over HTTP:
+  SAP_BTP_DESTINATION      BTP destination of the SAP system (each user as themselves: principal propagation)
+  ABAP_DEBUGGER_API_KEYS   comma-separated API keys (20+ characters each), besides XSUAA OAuth when bound
+  ABAP_DEBUGGER_PORT       port (default 8080; PORT on Cloud Foundry), ABAP_DEBUGGER_HOST bind address
+  ABAP_DEBUGGER_PUBLIC_URL public URL behind a reverse proxy (default: the Cloud Foundry route)
+  ABAP_DEBUGGER_ALLOWED_ORIGINS  CORS origins of browser MCP clients
+  ABAP_DEBUGGER_DCR_SIGNING_SECRET  32+ characters: keeps MCP client registrations valid across deployments
+  ABAP_DEBUGGER_ALLOW_SHARED_USER   true = every MCP user debugs as the one SAP user (SAP_URL, Basic destination)
 `;
 
 async function main(argv: string[]): Promise<void> {
@@ -48,6 +61,11 @@ async function main(argv: string[]): Promise<void> {
     const envFile = argv[envFileIndex + 1];
     if (!envFile) throw new Error('--env-file needs a path.');
     process.loadEnvFile(envFile);
+  }
+
+  if (argv.includes('--http') || (process.env.ABAP_DEBUGGER_TRANSPORT ?? '').toLowerCase() === 'http') {
+    await serveHttp();
+    return;
   }
 
   const { config, problems } = loadConfig(process.env);
@@ -79,6 +97,32 @@ async function main(argv: string[]): Promise<void> {
   process.on('SIGTERM', () => stop('the server was stopped'));
   process.stdin.on('end', () => stop('the MCP client disconnected'));
   process.stdin.on('close', () => stop('the MCP client disconnected'));
+}
+
+/** Streamable HTTP at /mcp: SAP BTP Cloud Foundry (XSUAA, Destination Service) or any host (API keys). */
+async function serveHttp(): Promise<void> {
+  const { http, problems } = loadHttpConfig(process.env);
+  if (!http) throw new Error(`Cannot serve over HTTP:\n- ${problems.join('\n- ')}`);
+  const sap = httpSap(http, process.env);
+  if (sap.problems.length > 0)
+    logger.warn(`Not configured; every tool call will say so:\n- ${sap.problems.join('\n- ')}`);
+  const server = await listen(createHttpApp(http, sap), http.port, http.host);
+  logger.info(`abap-debugger-mcp ${VERSION} ready (HTTP)`, {
+    address: `${http.host}:${http.port}`,
+    ...(http.btpDestination ? { destination: http.btpDestination } : {}),
+  });
+  // Cloud Foundry stops an app with SIGTERM and kills it ten seconds later: release the programs first.
+  let stopping = false;
+  const stop = (reason: string) => {
+    if (stopping) return;
+    stopping = true;
+    void endDebugSessions(reason, 8000).finally(() => {
+      server.close();
+      process.exit(0);
+    });
+  };
+  process.on('SIGTERM', () => stop('the server was stopped'));
+  process.on('SIGINT', () => stop('the server was interrupted'));
 }
 
 main(process.argv.slice(2)).catch((err: unknown) => {

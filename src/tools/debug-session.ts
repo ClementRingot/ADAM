@@ -8,7 +8,9 @@
  * long-lived stdio process for one user, so it holds the attached debugger session between calls.
  * The program holds a work process and its caller's request meanwhile, so a session is released
  * after `idleSeconds` without a call, after `sessionSeconds` in all, and when the server stops.
- * One session at a time: SAP keys the debugger listener by user, and so does this server.
+ * One session per MCP user (`ToolContext.owner`; the local user over stdio), and one debugger per
+ * SAP user: SAP keys the listener by user, and so does this server. A user reaches only their own
+ * session — on SAP BTP several users share the server.
  */
 
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -66,10 +68,15 @@ const WAITS = 'the program waits where it stands — call step again to go on';
 /** Input this module refuses on its own (the session's state, not the schema). */
 class SessionInputError extends Error {}
 
-let current: InteractiveSession | undefined;
-/** The last session that ended, for a call that still names it. */
-let lastEnded: { id: string; summary: Record<string, unknown> } | undefined;
+/** The owner of every call over stdio: the one local user. */
+const LOCAL_OWNER = 'local';
+/** The open session of each MCP user. */
+const sessions = new Map<string, InteractiveSession>();
+/** Each user's last session that ended, for a call that still names it. */
+const lastEnded = new Map<string, { id: string; summary: Record<string, unknown> }>();
 let sessionCount = 0;
+
+const ownerOf = (context: ToolContext): string => context.owner ?? LOCAL_OWNER;
 
 /** Upper-cased and deduplicated, as abap_debug reads them. */
 function variableNames(names: readonly string[] | undefined): string[] | undefined {
@@ -95,6 +102,8 @@ class InteractiveSession {
   stepsTaken = 0;
 
   constructor(
+    /** The MCP user the session belongs to. */
+    readonly owner: string,
     private readonly conn: SapConnection,
     private readonly run: CaptureRun,
     private readonly caught: Caught,
@@ -125,7 +134,7 @@ class InteractiveSession {
 
   /** What a second capture or session for the same SAP user is told. */
   get busyMessage(): string {
-    return `An interactive debug session (${this.id}) for SAP user ${this.run.user} is open on this server — end it with abap_debug_session action="end" first.`;
+    return `An interactive debug session (${this.id}) for SAP user ${this.run.user} is open on this server — it must end first: abap_debug_session action="end" from its owner, or it is released after ${this.limits.idleSeconds} s without a call.`;
   }
 
   /** One call at a time, in order — the idle and lifetime ends queue behind a call in progress. */
@@ -224,7 +233,7 @@ class InteractiveSession {
   /** One abap_debug_session call. */
   call(input: DebugSessionInput, context: ToolContext): Promise<ToolResult> {
     return this.exclusive(async () => {
-      if (this.closed) return errorResult(endedText(this.id));
+      if (this.closed) return errorResult(endedText(this.owner, this.id));
       clearTimeout(this.idleTimer);
       const warnings: string[] = [];
       this.follower.warnings = warnings;
@@ -367,7 +376,7 @@ class InteractiveSession {
     this.closed = true;
     clearTimeout(this.idleTimer);
     clearTimeout(this.lifeTimer);
-    if (current === this) current = undefined;
+    if (sessions.get(this.owner) === this) sessions.delete(this.owner);
     let outcome = release;
     if (!outcome) {
       const releaser = new DebuggerSession(this.sessionHttp, this.run.identity, {
@@ -403,20 +412,23 @@ class InteractiveSession {
       seconds: Math.round((Date.now() - this.startedAt) / 1000),
       trigger: { ...this.caught.base.trigger, ...(trigger ?? {}) },
     };
-    lastEnded = { id: this.id, summary };
+    lastEnded.set(this.owner, { id: this.id, summary });
     return summary;
   }
 }
 
-function endedText(id: string): string {
-  const summary = lastEnded?.id === id ? ` ${toolJson(lastEnded.summary)}` : '';
+function endedText(owner: string, id: string): string {
+  const ended = lastEnded.get(owner);
+  const summary = ended?.id === id ? ` ${toolJson(ended.summary)}` : '';
   return `Debug session ${id} has ended; start a new one with abap_debug and interactive: true.${summary}`;
 }
 
-/** Which session a call names, or why there is none. */
-function noSessionText(wanted: string | undefined): string {
-  if (current) return `There is no debug session ${wanted}: the open one is ${current.id}.`;
-  if (lastEnded && (!wanted || wanted === lastEnded.id)) return endedText(lastEnded.id);
+/** Which session a call names, or why there is none — about the caller's own sessions only. */
+function noSessionText(owner: string, wanted: string | undefined): string {
+  const open = sessions.get(owner);
+  if (open) return `There is no debug session ${wanted}: your open one is ${open.id}.`;
+  const ended = lastEnded.get(owner);
+  if (ended && (!wanted || wanted === ended.id)) return endedText(owner, ended.id);
   return 'No interactive debug session is open. Start one with abap_debug and interactive: true.';
 }
 
@@ -426,6 +438,13 @@ export async function startDebugSession(
   input: DebugInput,
   context: ToolContext = {},
 ): Promise<ToolResult> {
+  const owner = ownerOf(context);
+  const own = sessions.get(owner);
+  if (own) {
+    return errorResult(
+      `Your interactive debug session ${own.id} is still open: end it with abap_debug_session action="end" before starting another.`,
+    );
+  }
   const user = await resolveDebugUser(conn);
   if (!user) return errorResult(UNKNOWN_USER_MESSAGE);
   const busy = claimDebugUser(
@@ -498,6 +517,7 @@ export async function startDebugSession(
       // The listener, the external breakpoints and the unused sessions go; the attached session stays.
       await run.teardown();
       const session = new InteractiveSession(
+        owner,
         conn,
         run,
         caught,
@@ -512,7 +532,7 @@ export async function startDebugSession(
       // Hand the SAP user over to the session: nothing awaits between the two, so no capture slips in.
       releaseDebugUser(user);
       claimDebugUser(user, session.busyMessage);
-      current = session;
+      sessions.set(owner, session);
       handedOver = true;
       session.armTimers();
       return textResult(toolJson(await session.startResult(first, reached)));
@@ -533,28 +553,28 @@ export async function handleDebugSession(
   input: DebugSessionInput,
   context: ToolContext = {},
 ): Promise<ToolResult> {
+  const owner = ownerOf(context);
   const wanted = input.session?.trim().toUpperCase();
-  const session = current;
-  if (!session || (wanted && wanted !== session.id)) return errorResult(noSessionText(wanted));
+  const session = sessions.get(owner);
+  if (!session || (wanted && wanted !== session.id)) return errorResult(noSessionText(owner, wanted));
   return session.call(input, context);
 }
 
-/** Release the open session (server shutdown), within a bounded time. */
-export async function endDebugSessions(reason: string): Promise<void> {
-  const session = current;
-  if (!session) return;
-  await Promise.race([session.expire(reason), sleep(SHUTDOWN_BUDGET_MS)]);
+/** Release every open session (server shutdown), within a bounded time. */
+export async function endDebugSessions(reason: string, budgetMs = SHUTDOWN_BUDGET_MS): Promise<void> {
+  if (sessions.size === 0) return;
+  await Promise.race([Promise.all([...sessions.values()].map((session) => session.expire(reason))), sleep(budgetMs)]);
 }
 
 /** Forget every session without touching SAP — between unit tests. */
 export function forgetDebugSessionsForTests(): void {
-  current?.forget();
-  current = undefined;
-  lastEnded = undefined;
+  for (const session of sessions.values()) session.forget();
+  sessions.clear();
+  lastEnded.clear();
   sessionCount = 0;
 }
 
-/** The open session's id, for tests. */
-export function openDebugSessionId(): string | undefined {
-  return current?.id;
+/** The id of a user's open session, for tests. */
+export function openDebugSessionId(owner = LOCAL_OWNER): string | undefined {
+  return sessions.get(owner)?.id;
 }

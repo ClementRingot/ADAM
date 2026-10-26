@@ -1,0 +1,24 @@
+{
+  "xsappname": "abap-debugger",
+  "tenant-mode": "dedicated",
+  "description": "ABAP Debugger MCP server",
+  "scopes": [
+    {
+      "name": "$XSAPPNAME.debug",
+      "description": "Debug ABAP code through the MCP server (on SAP, as the user's own SAP user)"
+    }
+  ],
+  "role-templates": [
+    {
+      "name": "Debugger",
+      "description": "Debug ABAP code as yourself: one-shot captures and interactive sessions",
+      "scope-references": ["$XSAPPNAME.debug"]
+    }
+  ],
+  "oauth2-configuration": {
+    "redirect-uris": ["http://localhost:*/oauth/callback"],
+    "grant-types": ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"],
+    "token-validity": 3600,
+    "refresh-token-validity": 2592000
+  }
+}

@@ -24,3 +24,15 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node dist/index.js --version
+
+  mta:
+    # The SAP BTP deployment archive still builds (mta.yaml, xs-security.json, the module's payload).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npx -y mbt@1.2.34 build -t "$RUNNER_TEMP/mta"
+      - run: unzip -l "$RUNNER_TEMP"/mta/*.mtar

@@ -25,8 +25,13 @@ vi.mock('undici', async (importOriginal) => ({
 
 const installFakeSap = (options: FakeSapOptions = {}) => installFakeSapOn(mockFetch, options);
 
-async function call(tool: string, args: Record<string, unknown>, conn: SapConnection = createConnection()) {
-  const result = await callTool({ connection: conn, problems: [] }, tool, args);
+async function call(
+  tool: string,
+  args: Record<string, unknown>,
+  conn: SapConnection = createConnection(),
+  owner?: string,
+) {
+  const result = await callTool({ connection: conn, problems: [] }, tool, args, owner ? { owner } : {});
   const text = result.content[0]?.text ?? '';
   let json: Record<string, any> | undefined;
   try {
@@ -39,7 +44,8 @@ async function call(tool: string, args: Record<string, unknown>, conn: SapConnec
 
 const start = (args: Record<string, unknown>, conn?: SapConnection) =>
   call('abap_debug', { type: 'CLAS', name: 'ZCL_ORDER', interactive: true, ...args }, conn);
-const move = (args: Record<string, unknown>) => call('abap_debug_session', args);
+const move = (args: Record<string, unknown>, owner?: string) =>
+  call('abap_debug_session', args, createConnection(), owner);
 const stepCalls = (calls: Call[], method = 'stepOver') =>
   named(calls, 'POST', '/sap/bc/adt/debugger').filter((c) => c.query.get('method') === method);
 
@@ -260,14 +266,41 @@ describe('abap_debug — interactive sessions', () => {
     const capture = await call('abap_debug', { type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
     expect(capture.result.isError).toBe(true);
     expect(capture.text).toContain('An interactive debug session (S1) for SAP user ADMIN is open');
-    expect((await start({ line: 9 })).text).toContain('(S1)');
+    expect((await start({ line: 9 })).text).toContain('Your interactive debug session S1 is still open');
     expect((await move({ action: 'inspect', session: 's9' })).text).toBe(
-      'There is no debug session S9: the open one is S1.',
+      'There is no debug session S9: your open one is S1.',
     );
     await move({ action: 'end', session: 's1' });
 
     installFakeSap({ hit: true });
     expect((await call('abap_debug', { type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).json).toMatchObject({ hit: true });
+  });
+
+  it("keeps each user's session to that user on a shared server", async () => {
+    installFakeSap({ hit: true });
+    const alice = await call(
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, interactive: true },
+      createConnection(),
+      'alice',
+    );
+    expect(alice.json).toMatchObject({ session: 'S1' });
+    expect(openDebugSessionId('alice')).toBe('S1');
+    // Bob neither sees nor drives it, even by its id.
+    expect((await move({ action: 'step', session: 'S1' }, 'bob')).text).toBe(
+      'No interactive debug session is open. Start one with abap_debug and interactive: true.',
+    );
+    expect((await move({ action: 'end' }, 'bob')).result.isError).toBe(true);
+    expect(openDebugSessionId('alice')).toBe('S1');
+    // The SAP user is shared here (one technical user): Bob's capture waits for Alice's session.
+    const bobCapture = await call(
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9 },
+      createConnection(),
+      'bob',
+    );
+    expect(bobCapture.text).toContain('An interactive debug session (S1) for SAP user ADMIN is open');
+    expect((await move({ action: 'end' }, 'alice')).json).toMatchObject({ ended: true });
   });
 
   it("says when no session is open, and checks each action's fields before anything reaches SAP", async () => {
