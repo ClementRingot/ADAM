@@ -3,8 +3,15 @@
  * concurrent callers share one browser login. The "browser" is simulated: it calls the callback.
  */
 import { get } from 'node:http';
+import { Agent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBearerTokenProvider, parseServiceKey, startCallbackServer } from '../../../src/adt/oauth.js';
+
+const tokenFetch = vi.hoisted(() => vi.fn());
+vi.mock('undici', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('undici')>()),
+  fetch: tokenFetch,
+}));
 
 const browser = vi.hoisted(() => ({ opened: [] as string[] }));
 vi.mock('node:child_process', () => ({
@@ -36,7 +43,7 @@ function hit(url: string): Promise<number> {
 }
 
 afterEach(() => {
-  vi.unstubAllGlobals();
+  tokenFetch.mockReset();
   browser.opened = [];
 });
 
@@ -85,8 +92,9 @@ describe('createBearerTokenProvider', () => {
         { status: 200 },
       );
     });
-    vi.stubGlobal('fetch', tokens);
-    const provider = createBearerTokenProvider(KEY, 0);
+    tokenFetch.mockImplementation(tokens);
+    const proxy = new Agent();
+    const provider = createBearerTokenProvider(KEY, 0, proxy);
 
     expect(await Promise.all([provider(), provider()])).toEqual(['access-1', 'access-1']);
     expect(browser.opened).toHaveLength(1);
@@ -99,6 +107,9 @@ describe('createBearerTokenProvider', () => {
     expect(exchange.get('grant_type')).toBe('authorization_code');
     expect(exchange.get('code')).toBe('CODE-1');
     expect(exchange.get('code_verifier')).toMatch(/^[\w-]{43}$/);
+    // The token requests take the connection's proxy when there is one.
+    const exchangeInit = tokens.mock.calls[0]?.[1] as { dispatcher?: unknown } | undefined;
+    expect(exchangeInit?.dispatcher).toBe(proxy);
     expect(tokens.mock.calls[0]?.[1].headers.Authorization).toBe(
       `Basic ${Buffer.from('sb-client:sec').toString('base64')}`,
     );

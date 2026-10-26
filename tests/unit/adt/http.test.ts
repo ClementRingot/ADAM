@@ -5,6 +5,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Agent, ProxyAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AdtApiError, AdtNetworkError } from '../../../src/adt/errors.js';
 import { AdtHttpClient, type AdtHttpConfig } from '../../../src/adt/http.js';
@@ -172,6 +173,27 @@ describe('resends', () => {
   });
 });
 
+describe('proxy', () => {
+  it('sends every request through SAP_PROXY when one is set, and directly otherwise', async () => {
+    mockFetch.mockResolvedValue(mockResponse(200, 'ok'));
+    await client({ proxy: 'http://proxy.example:8080' }).get('/sap/bc/adt/x');
+    await client().get('/sap/bc/adt/x');
+    const [proxied, direct] = mockFetch.mock.calls.map((call) => (call[1] as { dispatcher: unknown }).dispatcher);
+    expect(proxied).toBeInstanceOf(ProxyAgent);
+    expect(direct).toBeInstanceOf(Agent);
+    expect(direct).not.toBeInstanceOf(ProxyAgent);
+  });
+
+  it('shares one connection pool between a client and its stateful sessions', async () => {
+    mockFetch.mockResolvedValue(mockResponse(200, 'ok'));
+    const root = client({ proxy: 'http://proxy.example:8080' });
+    await root.get('/sap/bc/adt/x');
+    await root.openStatefulSession().get('/sap/bc/adt/x');
+    const [first, second] = mockFetch.mock.calls.map((call) => (call[1] as { dispatcher: unknown }).dispatcher);
+    expect(second).toBe(first);
+  });
+});
+
 describe('stateful sessions', () => {
   const contextCookie = (server: string) => `sap-contextid=SID%3aANON%3a${server}%3aCTX-NEW; path=/`;
 
@@ -250,5 +272,22 @@ describe('deadlines', () => {
     expect((err as AdtNetworkError).isTimeout).toBe(true);
     // The fetch got a signal that ends with the per-fetch timeout.
     expect(sent()[0]).toMatchObject({ signal: expect.any(AbortSignal) });
+  });
+
+  it('names the reason undici keeps in the causes of "fetch failed"', async () => {
+    // A proxy refusing the tunnel, as undici reports it: the reason is two causes down.
+    const tunnel = new Error('Proxy response (407) !== 200 when HTTP Tunneling');
+    mockFetch.mockRejectedValueOnce(
+      new TypeError('fetch failed', { cause: new Error('Request was cancelled.', { cause: tunnel }) }),
+    );
+    await expect(client().get('/sap/bc/adt/x')).rejects.toThrow(
+      'ADT network error: fetch failed: Proxy response (407) !== 200 when HTTP Tunneling',
+    );
+    // A refused connection to every address of a host: no message, only a code.
+    const refused = Object.assign(new AggregateError([], ''), { code: 'ECONNREFUSED' });
+    mockFetch.mockRejectedValueOnce(new TypeError('fetch failed', { cause: refused }));
+    await expect(client().get('/sap/bc/adt/x')).rejects.toThrow('ADT network error: fetch failed: ECONNREFUSED');
+    mockFetch.mockRejectedValueOnce(new TypeError('fetch failed'));
+    await expect(client().get('/sap/bc/adt/x')).rejects.toThrow(/^ADT network error: fetch failed$/);
   });
 });

@@ -109,6 +109,7 @@ automatically.
 | `SAP_COOKIE_STRING` | Inline cookies: `name=value; name2=value2` |
 | `SAP_BTP_SERVICE_KEY_FILE` / `SAP_BTP_SERVICE_KEY` | BTP ABAP Environment service key (file or inline JSON); URL and client come from it |
 | `SAP_BTP_OAUTH_CALLBACK_PORT` | Port of the local login callback (default: a free port) |
+| `SAP_PROXY` | Corporate proxy for SAP and the BTP login, e.g. `http://proxy.example:8080` (`http://user:password@proxy:8080` when it asks for a login); HTTPS goes through it as a tunnel |
 | `SAP_INSECURE` | `true` skips TLS certificate checks — test systems only |
 | `SAP_DISABLE_SAML` | `true` asks SAP not to redirect to SAML single sign-on |
 | `SAP_ABAP_RELEASE` | SAP_BASIS release (e.g. `758`): the ABAP grammar used to locate methods in classic code |
@@ -232,6 +233,12 @@ result says which server was missed — retry.
   that reaches a breakpoint: in a Fiori Elements app the list read may come before the action you
   meant. Start the capture once the page has loaded, then trigger the action, and prefer breakpoints in
   code only that action runs.
+- **`ADT network error: fetch failed: …` behind a corporate proxy.** Set `SAP_PROXY`, with
+  `user:password@` when the proxy answers `Proxy response (407)`; the server does not read
+  `HTTPS_PROXY`, so an internal SAP system is never sent through a proxy by surprise. A proxy that
+  inspects TLS signs with its own certificate authority (`unable to get local issuer certificate`): give
+  Node.js that certificate with `NODE_EXTRA_CA_CERTS=/path/to/corporate-ca.pem` in the client's `env`
+  block — Node.js reads it at startup, so not from `--env-file` — rather than `SAP_INSECURE`.
 - **An unassigned field symbol** reads like an empty value; read it where it is assigned.
 - **A message breakpoint never stops** although the message appears: it catches `MESSAGE` statements
   only. RAP messages (`new_message( … )` in `reported`) and BAPI return tables carry a message without
@@ -242,7 +249,7 @@ result says which server was missed — retry.
 The debugger was built and live-tested inside [ARC-1](https://github.com/arc-mcp/arc-1) on the SAP BTP
 ABAP Environment (multi-server attach, multi-stop runs, steps); the contract and its evidence are in
 [docs/research](docs/research/2026-10-22-abap-debugger-one-shot-capture.md). This server ports that
-code unchanged in behavior over its own minimal HTTP client; its 145 unit tests run the whole capture
+code unchanged in behavior over its own minimal HTTP client; its unit tests run the whole capture
 against a simulated SAP. Live runs of this standalone build, and on-premise checks on 7.50, 7.58 and
 8.16, are still to come — see the [roadmap](docs/roadmap.md).
 

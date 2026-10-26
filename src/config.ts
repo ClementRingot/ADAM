@@ -4,7 +4,7 @@
  */
 
 import { resolveCookies } from './adt/cookies.js';
-import { AdtHttpClient } from './adt/http.js';
+import { AdtHttpClient, createDispatcher } from './adt/http.js';
 import { type BTPServiceKey, createBearerTokenProvider, loadServiceKeyFile, parseServiceKey } from './adt/oauth.js';
 import type { SapConnection } from './tools/debug-capture.js';
 
@@ -21,6 +21,8 @@ export interface Config {
   cookieString?: string;
   serviceKey?: BTPServiceKey;
   oauthCallbackPort: number;
+  /** Corporate proxy for SAP and the BTP token requests (SAP_PROXY). */
+  proxy?: string;
   insecure: boolean;
   disableSaml: boolean;
   /** SAP_BASIS release, e.g. 758 — only picks the ABAP grammar that locates methods. */
@@ -109,6 +111,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
     problems.push(`SAP_BTP_OAUTH_CALLBACK_PORT must be a port number (got "${portText}").`);
   }
 
+  const proxy = value(env, 'SAP_PROXY');
+  if (proxy) {
+    let protocol = '';
+    try {
+      protocol = new URL(proxy).protocol;
+    } catch {
+      // reported below
+    }
+    if (!['http:', 'https:'].includes(protocol)) {
+      problems.push('SAP_PROXY must be an http(s) proxy URL, e.g. http://proxy.example:8080.');
+    }
+  }
+
   if (problems.length > 0 || !url || !auth) return { problems };
   return {
     problems,
@@ -123,6 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
       ...(cookieString && auth === 'cookies' ? { cookieString } : {}),
       ...(serviceKey ? { serviceKey } : {}),
       oauthCallbackPort,
+      ...(proxy ? { proxy } : {}),
       insecure: flag(env, 'SAP_INSECURE'),
       disableSaml: flag(env, 'SAP_DISABLE_SAML'),
       ...(value(env, 'SAP_ABAP_RELEASE') ? { abapRelease: value(env, 'SAP_ABAP_RELEASE') } : {}),
@@ -138,8 +154,16 @@ export function createConnection(config: Config): SapConnection {
     language: config.language,
     insecure: config.insecure,
     disableSaml: config.disableSaml,
+    ...(config.proxy ? { proxy: config.proxy } : {}),
     ...(config.serviceKey
-      ? { bearerTokenProvider: createBearerTokenProvider(config.serviceKey, config.oauthCallbackPort) }
+      ? {
+          bearerTokenProvider: createBearerTokenProvider(
+            config.serviceKey,
+            config.oauthCallbackPort,
+            // The token endpoint takes the proxy too — but never SAP_INSECURE, which is about SAP's certificate.
+            config.proxy ? createDispatcher({ proxy: config.proxy }) : undefined,
+          ),
+        }
       : {
           ...(config.username ? { username: config.username } : {}),
           ...(config.password ? { password: config.password } : {}),

@@ -22,6 +22,7 @@ Configuration (environment variables, e.g. the "env" block of the MCP client's s
   SAP_COOKIE_STRING        inline cookies: name=value; name2=value2
   SAP_BTP_SERVICE_KEY_FILE BTP ABAP Environment service key (browser login); or SAP_BTP_SERVICE_KEY inline
   SAP_BTP_OAUTH_CALLBACK_PORT  port of the login callback (default: a free port)
+  SAP_PROXY                corporate proxy for SAP and the BTP login, e.g. http://proxy.example:8080
   SAP_INSECURE             true = skip TLS certificate checks (test systems only)
   SAP_DISABLE_SAML         true = ask SAP not to redirect to SAML single sign-on
   SAP_ABAP_RELEASE         SAP_BASIS release (e.g. 758) for locating methods in classic code
@@ -47,7 +48,13 @@ async function main(argv: string[]): Promise<void> {
   const { config, problems } = loadConfig(process.env);
   const connection = config ? createConnection(config) : undefined;
   if (config) {
-    logger.info('Connecting to SAP', { url: config.url, client: config.client, auth: config.auth });
+    logger.info('Connecting to SAP', {
+      url: config.url,
+      client: config.client,
+      auth: config.auth,
+      // The proxy's host only: its URL may carry credentials.
+      ...(config.proxy ? { proxy: new URL(config.proxy).host } : {}),
+    });
   } else {
     logger.warn(`Not configured; every tool call will say so:\n- ${problems.join('\n- ')}`);
   }

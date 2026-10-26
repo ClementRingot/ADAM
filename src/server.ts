@@ -37,7 +37,9 @@ function describeError(err: unknown): string {
           : '';
     return `SAP refused the request (HTTP ${err.statusCode} at ${err.path.split('?', 1)[0]}): ${sap}${hint}`;
   }
-  if (err instanceof AdtNetworkError) return `${err.message} Check SAP_URL and the network path to the SAP system.`;
+  if (err instanceof AdtNetworkError) {
+    return `${err.message.replace(/\.?$/, '.')} Check SAP_URL and the network path to the SAP system (SAP_PROXY behind a corporate proxy).`;
+  }
   return err instanceof Error ? err.message : String(err);
 }
 

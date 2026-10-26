@@ -71,6 +71,19 @@ describe('loadConfig', () => {
     expect(connection.abapRelease).toBe('919');
   });
 
+  it('takes a corporate proxy for SAP and the BTP token requests', () => {
+    const { config } = loadConfig({
+      SAP_URL: 'https://sap.example',
+      SAP_USER: 'u',
+      SAP_PASSWORD: 'p',
+      SAP_PROXY: 'http://user:secret@proxy.example:8080',
+    });
+    expect(config?.proxy).toBe('http://user:secret@proxy.example:8080');
+    expect(
+      loadConfig({ SAP_URL: 'https://sap', SAP_USER: 'u', SAP_PASSWORD: 'p', SAP_PROXY: 'proxy:8080' }).problems,
+    ).toEqual(['SAP_PROXY must be an http(s) proxy URL, e.g. http://proxy.example:8080.']);
+  });
+
   it('names each invalid value', () => {
     expect(loadConfig({ SAP_URL: 'ftp://sap', SAP_USER: 'u', SAP_PASSWORD: 'p' }).problems).toEqual([
       'SAP_URL must be an http(s) URL (got "ftp://sap").',

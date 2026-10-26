@@ -4,11 +4,10 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 
 | ID | Idea | Priority | Effort | Status |
 |---|---|---|---|---|
+| [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
+| [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
 | [WATCH-1](#watch-1) | Watchpoints: stop where a variable changes | P3 | M | Needs live check |
 | [LOG-1](#log-1) | Dynamic logpoints: observe a line across many runs | P3 | M | Needs research |
-| [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
-| [NET-1](#net-1) | Corporate HTTP proxy (`HTTPS_PROXY`) | P3 | S | Ready |
-| [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
 
 <a id="live-1"></a>
 ## LIVE-1 — Live verification of this standalone build
@@ -27,12 +26,6 @@ their own checks: how SAP answers an invalid condition (refused at the final syn
 `reachedBreakpoints`. Message and statement breakpoints are reference-derived too (abap-adt-api
 `formatBreakpoint`, `debuggerStatements`): check which message types SAP accepts, the statement kinds it
 lists, and that it names the event breakpoint it stopped at in `reachedBreakpoints`.
-
-<a id="net-1"></a>
-## NET-1 — Corporate HTTP proxy
-
-**Idea.** Honor `HTTPS_PROXY` / `NO_PROXY` (undici's `EnvHttpProxyAgent`) for systems reached through
-a corporate proxy, with `SAP_INSECURE` applied to the proxied TLS connection too.
 
 <a id="inc-1"></a>
 ## INC-1 — Breakpoints in includes

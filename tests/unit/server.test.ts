@@ -105,7 +105,7 @@ describe('tools/call', () => {
       { query: 'Z*' },
     );
     expect(offline.content[0]?.text).toBe(
-      'ADT network error: connect ECONNREFUSED Check SAP_URL and the network path to the SAP system.',
+      'ADT network error: connect ECONNREFUSED. Check SAP_URL and the network path to the SAP system (SAP_PROXY behind a corporate proxy).',
     );
   });
 });

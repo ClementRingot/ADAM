@@ -10,6 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { platform } from 'node:os';
+import { type Dispatcher, fetch } from 'undici';
 import { logger } from '../logger.js';
 import type { BearerTokenProvider } from './http.js';
 
@@ -63,7 +64,12 @@ function clientAuthorization(serviceKey: BTPServiceKey): string {
   return `Basic ${Buffer.from(`${serviceKey.uaa.clientid}:${serviceKey.uaa.clientsecret}`).toString('base64')}`;
 }
 
-async function requestToken(serviceKey: BTPServiceKey, params: URLSearchParams, what: string) {
+async function requestToken(
+  serviceKey: BTPServiceKey,
+  params: URLSearchParams,
+  what: string,
+  dispatcher: Dispatcher | undefined,
+) {
   const response = await fetch(`${serviceKey.uaa.url}/oauth/token`, {
     method: 'POST',
     headers: {
@@ -71,6 +77,7 @@ async function requestToken(serviceKey: BTPServiceKey, params: URLSearchParams, 
       Authorization: clientAuthorization(serviceKey),
     },
     body: params.toString(),
+    ...(dispatcher ? { dispatcher } : {}),
   });
   if (!response.ok) {
     throw new Error(`OAuth token ${what} failed (${response.status}): ${(await response.text()).slice(0, 500)}`);
@@ -83,6 +90,7 @@ export async function exchangeCodeForToken(
   code: string,
   redirectUri: string,
   codeVerifier: string,
+  dispatcher?: Dispatcher,
 ): Promise<OAuthTokenResponse> {
   return requestToken(
     serviceKey,
@@ -94,14 +102,20 @@ export async function exchangeCodeForToken(
       code_verifier: codeVerifier,
     }),
     'exchange',
+    dispatcher,
   );
 }
 
-export async function refreshAccessToken(serviceKey: BTPServiceKey, refreshToken: string): Promise<OAuthTokenResponse> {
+export async function refreshAccessToken(
+  serviceKey: BTPServiceKey,
+  refreshToken: string,
+  dispatcher?: Dispatcher,
+): Promise<OAuthTokenResponse> {
   return requestToken(
     serviceKey,
     new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }),
     'refresh',
+    dispatcher,
   );
 }
 
@@ -193,7 +207,11 @@ export function startCallbackServer(
 }
 
 /** Browser login: callback server, authorize URL with PKCE + state, then the code exchange. */
-export async function performBrowserLogin(serviceKey: BTPServiceKey, callbackPort = 0): Promise<OAuthTokenResponse> {
+export async function performBrowserLogin(
+  serviceKey: BTPServiceKey,
+  callbackPort = 0,
+  dispatcher?: Dispatcher,
+): Promise<OAuthTokenResponse> {
   const { codeVerifier, codeChallenge } = generatePkce();
   const state = randomBytes(32).toString('base64url');
   const { code, server } = startCallbackServer(callbackPort, state);
@@ -217,23 +235,28 @@ export async function performBrowserLogin(serviceKey: BTPServiceKey, callbackPor
   } catch {
     logger.warn('Could not open a browser. Open this URL to sign in:', { url: authorizeUrl });
   }
-  const tokens = await exchangeCodeForToken(serviceKey, await code, redirectUri, codeVerifier);
+  const tokens = await exchangeCodeForToken(serviceKey, await code, redirectUri, codeVerifier, dispatcher);
   logger.info('SAP BTP login succeeded', { expiresIn: tokens.expires_in, refreshable: !!tokens.refresh_token });
   return tokens;
 }
 
 /**
  * Bearer tokens for the ADT client: the cached token while valid (60 s margin), else a refresh,
- * else a browser login. Callers arriving during a login or refresh wait for it.
+ * else a browser login. Callers arriving during a login or refresh wait for it. `dispatcher`: the
+ * connection's pool, so the token requests take the same proxy as SAP's.
  */
-export function createBearerTokenProvider(serviceKey: BTPServiceKey, callbackPort = 0): BearerTokenProvider {
+export function createBearerTokenProvider(
+  serviceKey: BTPServiceKey,
+  callbackPort = 0,
+  dispatcher?: Dispatcher,
+): BearerTokenProvider {
   let cache: { accessToken: string; refreshToken?: string; expiresAt: number } | undefined;
   let pending: Promise<string> | undefined;
 
   const renew = async (): Promise<string> => {
     if (cache?.refreshToken) {
       try {
-        const refreshed = await refreshAccessToken(serviceKey, cache.refreshToken);
+        const refreshed = await refreshAccessToken(serviceKey, cache.refreshToken, dispatcher);
         cache = {
           accessToken: refreshed.access_token,
           refreshToken: refreshed.refresh_token ?? cache.refreshToken,
@@ -246,7 +269,7 @@ export function createBearerTokenProvider(serviceKey: BTPServiceKey, callbackPor
         });
       }
     }
-    const tokens = await performBrowserLogin(serviceKey, callbackPort);
+    const tokens = await performBrowserLogin(serviceKey, callbackPort, dispatcher);
     cache = {
       accessToken: tokens.access_token,
       ...(tokens.refresh_token ? { refreshToken: tokens.refresh_token } : {}),

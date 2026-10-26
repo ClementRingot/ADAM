@@ -9,7 +9,7 @@
  * session (401) and a stale CSRF token (403 "Required").
  */
 
-import { Agent, type Dispatcher, fetch } from 'undici';
+import { Agent, type Dispatcher, fetch, ProxyAgent } from 'undici';
 import { logger } from '../logger.js';
 import { VERSION } from '../version.js';
 import { resolveCookies } from './cookies.js';
@@ -33,6 +33,8 @@ export interface AdtHttpConfig {
   cookieString?: string;
   /** BTP ABAP Environment: `Authorization: Bearer`, replacing Basic auth. */
   bearerTokenProvider?: BearerTokenProvider;
+  /** Corporate proxy every request goes through (`http://user:password@proxy:8080`); HTTPS is tunnelled. */
+  proxy?: string;
   /** Skip TLS certificate verification (test systems with self-signed certificates only). */
   insecure?: boolean;
   /** Ask SAP not to answer with a SAML redirect (SSO systems reached with Basic auth). */
@@ -70,15 +72,7 @@ export class AdtHttpClient {
 
   constructor(config: AdtHttpConfig, dispatcher?: Dispatcher) {
     this.config = { ...config };
-    // No undici header/body timeouts: every request carries its own deadline (requestSignal), and a
-    // trigger may legitimately wait longer than undici's 300 s default while the debugger holds it.
-    this.dispatcher =
-      dispatcher ??
-      new Agent({
-        headersTimeout: 0,
-        bodyTimeout: 0,
-        ...(config.insecure ? { connect: { rejectUnauthorized: false } } : {}),
-      });
+    this.dispatcher = dispatcher ?? createDispatcher(config);
   }
 
   async get(path: string, headers?: Record<string, string>, options?: AdtRequestOptions): Promise<AdtResponse> {
@@ -174,7 +168,7 @@ export class AdtHttpClient {
       if (err instanceof AdtNetworkError) throw err;
       if (options?.signal?.aborted) throw cancelledError(options.signal);
       const cause = err instanceof Error ? err : new Error(String(err));
-      throw new AdtNetworkError(cause.message, cause);
+      throw new AdtNetworkError(networkReason(cause), cause);
     }
   }
 
@@ -376,6 +370,21 @@ export class AdtHttpClient {
   }
 }
 
+/**
+ * The connection pool every request (and the BTP token requests) goes through. No undici header or
+ * body timeouts: each request carries its own deadline (requestSignal), and a trigger may legitimately
+ * wait longer than undici's 300 s default while the debugger holds it. Behind a proxy, HTTPS runs
+ * through a CONNECT tunnel and `insecure` applies to the SAP certificate inside it.
+ */
+export function createDispatcher(config: Pick<AdtHttpConfig, 'proxy' | 'insecure'>): Dispatcher {
+  const timeouts = { headersTimeout: 0, bodyTimeout: 0 };
+  const lenient = { rejectUnauthorized: false };
+  if (config.proxy) {
+    return new ProxyAgent({ uri: config.proxy, ...timeouts, ...(config.insecure ? { requestTls: lenient } : {}) });
+  }
+  return new Agent({ ...timeouts, ...(config.insecure ? { connect: lenient } : {}) });
+}
+
 /** A token on a failed answer proves nothing; `Required` is SAP asking for one. */
 function usableCsrfToken(response: Response): string | undefined {
   const token = response.headers.get('x-csrf-token')?.trim();
@@ -396,6 +405,19 @@ function looksLikeLoginPage(body: string): boolean {
   const lower = head.toLowerCase();
   if (lower.startsWith('<!doctype html') || lower.startsWith('<html')) return true;
   return /sap-system-login|logonform|sap-ui-bootstrap|sapsystemlogin|sap-logon/i.test(head);
+}
+
+/**
+ * undici's "fetch failed" keeps the reason in its causes, the deepest one naming it: a refused
+ * connection, an unknown host, a certificate, the proxy's answer to the tunnel.
+ */
+function networkReason(err: Error): string {
+  let reason = '';
+  for (let cause = err.cause, depth = 0; cause instanceof Error && depth < 5; cause = cause.cause, depth++) {
+    const code = (cause as { code?: unknown }).code;
+    reason = cause.message || (typeof code === 'string' ? code : reason);
+  }
+  return reason && reason !== err.message ? `${err.message}: ${reason}` : err.message;
 }
 
 function cancelledError(signal: AbortSignal): AdtNetworkError {
