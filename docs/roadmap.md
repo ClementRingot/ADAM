@@ -26,6 +26,12 @@ their own checks: how SAP answers an invalid condition (refused at the final syn
 `reachedBreakpoints`. Message and statement breakpoints are reference-derived too (abap-adt-api
 `formatBreakpoint`, `debuggerStatements`): check which message types SAP accepts, the statement kinds it
 lists, and that it names the event breakpoint it stopped at in `reachedBreakpoints`.
+Long step runs: measure the time a step costs (step + stack + variables) on-premise and on BTP, to
+tune the default `maxSeconds`. Interactive sessions: how long SAP keeps an attached debuggee and its
+stateful session between calls (a held program with no request for minutes), how the trigger's own
+request (unit test, OData GET, a Fiori app's call) fares while it waits that long, and what
+`stepRunToLine` (reference-derived: abap-adt-api, vscode_abap_remote_fs, vibing-steampunk) and
+`terminateDebuggee` answer — and that the latter rolls back the program's uncommitted work.
 
 <a id="inc-1"></a>
 ## INC-1 — Breakpoints in includes

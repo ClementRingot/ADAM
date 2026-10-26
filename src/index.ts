@@ -7,6 +7,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createConnection, loadConfig } from './config.js';
 import { logger } from './logger.js';
 import { createMcpServer } from './server.js';
+import { endDebugSessions } from './tools/debug-session.js';
 import { VERSION } from './version.js';
 
 const USAGE = `abap-debugger-mcp ${VERSION} — MCP server (stdio) that captures one run of ABAP code in SAP's debugger.
@@ -26,6 +27,10 @@ Configuration (environment variables, e.g. the "env" block of the MCP client's s
   SAP_INSECURE             true = skip TLS certificate checks (test systems only)
   SAP_DISABLE_SAML         true = ask SAP not to redirect to SAML single sign-on
   SAP_ABAP_RELEASE         SAP_BASIS release (e.g. 758) for locating methods in classic code
+  ABAP_DEBUGGER_MAX_SECONDS    ceiling of a call's inspection time (default 600)
+  ABAP_DEBUGGER_MAX_RESULT_KB  ceiling of a call's result size (default 200)
+  ABAP_DEBUGGER_IDLE_SECONDS   interactive session: released after this long without a call (default 120)
+  ABAP_DEBUGGER_SESSION_SECONDS  interactive session: released after this long in all (default 900)
   ABAP_DEBUGGER_LOG_LEVEL  debug | info | warn | error (stderr; default info)
 `;
 
@@ -62,6 +67,18 @@ async function main(argv: string[]): Promise<void> {
   const server = createMcpServer({ ...(connection ? { connection } : {}), problems });
   await server.connect(new StdioServerTransport());
   logger.info(`abap-debugger-mcp ${VERSION} ready (stdio)`);
+
+  // An interactive session holds a program on SAP: release it before the process goes away.
+  let stopping = false;
+  const stop = (reason: string) => {
+    if (stopping) return;
+    stopping = true;
+    void endDebugSessions(reason).finally(() => process.exit(0));
+  };
+  process.on('SIGINT', () => stop('the server was interrupted'));
+  process.on('SIGTERM', () => stop('the server was stopped'));
+  process.stdin.on('end', () => stop('the MCP client disconnected'));
+  process.stdin.on('close', () => stop('the MCP client disconnected'));
 }
 
 main(process.argv.slice(2)).catch((err: unknown) => {

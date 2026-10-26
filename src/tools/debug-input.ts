@@ -194,6 +194,12 @@ export const DEBUG_INPUT_SHAPE = {
     .describe(
       "Size budget of the result in KB of JSON (default 40, about 10k tokens); the server's ceiling applies (ABAP_DEBUGGER_MAX_RESULT_KB, default 200).",
     ),
+  interactive: z
+    .boolean()
+    .optional()
+    .describe(
+      'true: an interactive session — return at the first stop and keep the program waiting there, then drive it call by call with abap_debug_session (step, continue, inspect, end), deciding each move from what you see. steps, if given, run before this call returns. The program holds a work process until the session ends; it is released after a while without a call. Default false: the whole capture in this one call.',
+    ),
   timeoutSeconds: z.coerce
     .number()
     .int()

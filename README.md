@@ -1,10 +1,14 @@
 # abap-debugger-mcp
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant debug ABAP code on an SAP
-system. In **one tool call** it arms breakpoints, runs the code, and at every stop of that run records
-where the program stands, the call stack, the variables and optional steps — then lets the program
-finish and removes everything it set. The assistant gets snapshots of one run, never a remote control
-of a stopped program.
+system, in two modes:
+
+- **One-shot** (default): in **one tool call** it arms breakpoints, runs the code, and at every stop
+  of that run records where the program stands, the call stack, the variables and as many steps as
+  the call's time and size budgets allow — then lets the program finish and removes everything it set.
+- **Interactive** (`interactive: true`): it stops at the first breakpoint and keeps the program
+  waiting there; the assistant then drives it one move per call — step in, over or out, continue,
+  inspect any variable — deciding each move from what it sees, until it ends the session.
 
 ```text
 You:     Why does ZCL_ORDER=>GET_TOTAL return 0 for order 4711?
@@ -34,9 +38,10 @@ uses — so nothing has to be installed on the SAP system.
    every case, including errors and timeouts.
 
 The program runs **once**, however many stops you ask for: a breakpoint in a loop with `hits: 5`
-shows five iterations of one run. Because nothing stays stopped after the call returns (a suspended
-program holds an SAP work process), the assistant must ask for every variable it needs up front; to
-look again, it runs another capture.
+shows five iterations of one run. In the one-shot mode nothing stays stopped after the call returns
+(a suspended program holds an SAP work process), so the assistant asks for every variable it needs up
+front; to look again, it runs another capture — or starts an interactive session, which holds the
+program at step 4 until the session ends (see [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session)).
 
 ## Requirements
 
@@ -124,6 +129,10 @@ automatically.
 | `SAP_INSECURE` | `true` skips TLS certificate checks — test systems only |
 | `SAP_DISABLE_SAML` | `true` asks SAP not to redirect to SAML single sign-on |
 | `SAP_ABAP_RELEASE` | SAP_BASIS release (e.g. `758`): the ABAP grammar used to locate methods in classic code |
+| `ABAP_DEBUGGER_MAX_SECONDS` | Ceiling of a call's `maxSeconds` (10-3600, default 600) |
+| `ABAP_DEBUGGER_MAX_RESULT_KB` | Ceiling of a call's `maxResultKB` (5-1000, default 200) |
+| `ABAP_DEBUGGER_IDLE_SECONDS` | An interactive session is released after this long without a call (10-3600, default 120) |
+| `ABAP_DEBUGGER_SESSION_SECONDS` | An interactive session is released after this long in all (60-14400, default 900) |
 | `ABAP_DEBUGGER_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error` — logs go to stderr |
 
 A server that is not configured still starts; every tool call then lists what is missing.
@@ -142,8 +151,12 @@ A server that is not configured still starts; every tool call then lists what is
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint object |
 | `url` | `trigger: "http"`: a host-relative OData path, `/sap/opu/odata4/…` or `/sap/opu/odata/sap/<SRV>/…` |
 | `variables` | Up to 20 expressions read at every stop and after every step: `LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `LT_ITEMS[3]`, `ME->MV_STATE`, `SY-SUBRC`. Default: every variable of the stopped frame (up to 60) |
-| `steps` | Steps after each stop (0-20, at most 100 per capture) |
+| `steps` | Steps after each stop (default 0, up to 10,000): as far as the budgets allow. Up to 20 come back one entry each; more come back as a compact trace (below) |
 | `stepMode` | `over` (default), `into` (follow calls) or `out` (return to the caller) |
+| `until` | End the steps early: `{ line }` once the program stands on that line of the source the steps started in, `{ changed: "LV_STATUS" }` once that variable's value changed. Without `steps`: step until it holds |
+| `maxSeconds` | Time budget of the inspection once the program stopped (default 120; ceiling `ABAP_DEBUGGER_MAX_SECONDS`, default 600). Each step costs two or three requests to SAP |
+| `maxResultKB` | Size budget of the result in KB of JSON (default 40, about 10k tokens; ceiling `ABAP_DEBUGGER_MAX_RESULT_KB`, default 200) |
+| `interactive` | `true`: return at the first stop and keep the program waiting there for [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) |
 | `timeoutSeconds` | How long to wait for the first stop (1-240, default 60) |
 
 The result is JSON: `hit`; `breakpoints` (each set, with the `hits` it made — `0` = the run never got
@@ -154,15 +167,48 @@ carries the `reason` (timeout, trigger finished first, conflict) and a `hint`.
 
 A breakpoint's later stops — a loop — are compact: `{ stop, at, hit, values }`, without the position
 and call stack its first stop already showed, and with `unchanged` for a structure or table equal to
-the breakpoint's previous stop. A capture is bounded by what its result costs, not by counting: it
-follows the run until the stops and steps fill about 40 KB of JSON, so two named values allow many more
-iterations than sixty frame variables.
+the breakpoint's previous stop. A capture is bounded by what its result costs and by time, not by
+counting: it follows the run until the stops and steps fill `maxResultKB` of JSON or `maxSeconds` run
+out, so two named values allow many more iterations than sixty frame variables.
+
+**Long step runs.** Past 20 steps from one stop, the steps come back as a compact `trace` instead of
+one entry each: `path` lists the lines executed frame by frame — `10-12 (9-12)×497 13` is lines 10 to
+12, then a loop over 9-12 run 497 times, then 13; a segment with `frame: entered` or `returned` is a
+call or a return — and `changes` lists the watched variables only at the steps where they changed.
+Two thousand steps of a loop fit in a few hundred characters; the time budget is then the real limit.
 
 Values are shown as SAP renders them: structures one level deep, tables with their line count and
 first 5 rows, values up to 500 characters. A string keeps its leading and trailing blanks (they
 count: `CONV string( 124 )` is `"124 "`); other values are trimmed. After a step, a structure or table
 equal to the previous step's reads `unchanged`, and a step that entered or left a method says so
 (`frame: entered | returned | changed`) — a variable of the same name is then a different variable.
+
+### `abap_debug_session` — drive an interactive session
+
+`abap_debug` with `interactive: true` takes the same parameters as a one-shot capture, returns at the
+first stop with a session id, and keeps the program waiting there. Each `abap_debug_session` call then
+makes one move and answers where the program stands: its `position`, the `code` around it (the
+current line marked `>`), and the watched variables.
+
+| Parameter | Description |
+|---|---|
+| `action` | `step`, `continue`, `inspect` or `end` |
+| `session` | The id `abap_debug` returned (default: the open session) |
+| `stepMode`, `count`, `until` | `step`: `over` (default), `into` or `out`; how many steps (default 1, past 20 a compact trace); end early on a line or a change |
+| `toLine` | `continue`: run to this line of the source the program stands in instead of the next breakpoint |
+| `timeoutSeconds` | `continue`: how long to wait for the next stop (1-240, default 60) |
+| `variables` | `step` / `continue`: the variables to watch from now on. `inspect`: read these now — any variable, structures expanded, tables' first rows (default: the whole frame) |
+| `stack` | `inspect`: include the call stack |
+| `terminate` | `end`: abort the program where it stands instead of letting it run to its end — e.g. before it commits |
+| `maxSeconds`, `maxResultKB` | Budgets of this call, as for `abap_debug` |
+
+The program holds an SAP work process — and its caller's request — while the session is open, exactly
+as when a developer stops at a breakpoint in Eclipse. So end the session when done: `end` lets the
+program run to its end, removes the breakpoints and reports the trigger's outcome. A session is also
+released automatically after `ABAP_DEBUGGER_IDLE_SECONDS` without a call (default 120 s), after
+`ABAP_DEBUGGER_SESSION_SECONDS` in all (default 15 min), and when the server stops or the MCP client
+disconnects; every answer says how long it has left. One session at a time: while it is open, other
+captures for the same SAP user are refused.
 
 ### `abap_source` — the active source with line numbers
 
@@ -206,12 +252,27 @@ abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{message: {id: "ZSD",
 
 abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{statement: "COMMIT WORK", hits: 3}]}
     who commits during this run? Each stop shows its own position and call stack
+
+abap_debug {type: "CLAS", name: "ZCL_ORDER", line: 42, steps: 2000, variables: ["LV_TOTAL"], maxSeconds: 600}
+    follow the run for 2000 statements: a compact trace of the lines, LV_TOTAL where it changed
+
+abap_debug {type: "CLAS", name: "ZCL_ORDER", line: 42, until: {changed: "LV_STATUS"}}
+    step until LV_STATUS changes, and show where
+
+abap_debug         {type: "CLAS", name: "ZCL_ORDER", line: 42, interactive: true}
+abap_debug_session {action: "step", variables: ["LV_TOTAL"]}
+abap_debug_session {action: "step", stepMode: "into"}
+abap_debug_session {action: "inspect", variables: ["LS_HEAD", "ME->MT_ITEMS"], stack: true}
+abap_debug_session {action: "continue", toLine: 80}
+abap_debug_session {action: "end"}
+    an interactive session: each answer shows the position, the code around it and the watched values
 ```
 
 ## Guarantees and limits
 
 - **Observes, never changes.** No variable writes, no jumps, no system debugging; the program's flow
-  is the one it would have taken anyway. Frames of SAP system programs are skipped.
+  is the one it would have taken anyway — unless an interactive session is ended with
+  `terminate: true`, which aborts the program on request. Frames of SAP system programs are skipped.
 - **Only the session's own user.** The debug user is the one SAP itself names for the session
   (`/sap/bc/adt/core/http/systeminformation`), never a name passed in a call. SAP_BASIS 7.50 and older
   lack that resource; there `SAP_USER` is used, behind Basic or cookie authentication only.
@@ -223,9 +284,16 @@ abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{statement: "COMMIT W
 - **Always cleaned up.** Breakpoints and the listener are removed and the program released on every
   path; the release has its own time budget, so an exhausted inspection never leaves a program
   suspended.
-- **Bounds per capture:** 20 breakpoints; the run is followed until about 40 KB of result, 50 stops,
-  100 steps or 120 s of inspection after the first stop — whichever comes first — then goes on without
-  stopping, and a warning says which bound ended the capture.
+- **Bounds per call:** 20 breakpoints and 50 stops; steps as far as `maxResultKB` (default 40 KB) and
+  `maxSeconds` (default 120 s) allow, each capped by the server's ceiling. A one-shot capture then lets
+  the program go on without stopping, an interactive session keeps it waiting; a warning says which
+  bound ended the call. A client that cancels the call stops it the same way.
+- **Interactive sessions are bounded too:** released after `ABAP_DEBUGGER_IDLE_SECONDS` without a
+  call and after `ABAP_DEBUGGER_SESSION_SECONDS` in all, and when the server stops or the client
+  disconnects.
+- **Progress.** Clients that ask for progress notifications get one at most every two seconds while
+  a call waits for the first stop, records stops or steps — some clients keep a long call alive on
+  them.
 
 **Several application servers** (the BTP ABAP Environment and larger on-premise systems): SAP attaches
 only from the server the program stopped on. The capture opens sessions before the run until two land

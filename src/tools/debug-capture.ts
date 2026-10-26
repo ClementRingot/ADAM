@@ -675,47 +675,60 @@ export function breakpointsWithHits(armed: ArmedBreakpoints, hits: ReadonlyMap<s
   return breakpoints;
 }
 
-async function runCapture(conn: SapConnection, req: DebugRequest, user: string, context: ToolContext) {
-  const run = new CaptureRun(conn, req, user);
+/**
+ * The result of a capture the run is released from: what it recorded, the release, and the
+ * trigger's own answer. Takes down what the capture set up on SAP first.
+ */
+export async function captureResult(run: CaptureRun, caught: Caught, inspection: Inspection): Promise<ToolResult> {
   const { warnings } = run;
-  const budget = planCallBudget(conn.limits ?? DEFAULT_LIMITS, req, warnings, {
+  const { debuggee, armed, base } = caught;
+  await run.teardown();
+  const triggerOutcome = await run.settleTrigger();
+  if (inspection.release && !inspection.release.released) {
+    warnings.push(
+      `The debuggee could not be released (${inspection.release.detail ?? 'unknown'}); it stays suspended until SAP's debugger timeout ends its session.`,
+    );
+  }
+  return textResult(
+    toolJson({
+      hit: true,
+      ...base,
+      breakpoints: inspection.attached ? breakpointsWithHits(armed, inspection.hits) : armed.report,
+      debuggee: describeDebuggee(debuggee),
+      attached: inspection.attached,
+      ...(inspection.stops.length > 0 ? { stops: inspection.stops } : {}),
+      ...(inspection.release ? { release: inspection.release } : {}),
+      ...(inspection.error ? { error: inspection.error } : {}),
+      trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
+      // One warning per kind: every stop of a big frame would repeat the same one.
+      ...(warnings.length > 0 ? { warnings: [...new Set(warnings)] } : {}),
+    }),
+  );
+}
+
+/** Budget options from a tool call's context. */
+export function budgetContext(context: ToolContext) {
+  return {
     ...(context.signal ? { signal: context.signal } : {}),
     ...(context.progress ? { progress: context.progress } : {}),
-  });
+  };
+}
+
+async function runCapture(conn: SapConnection, req: DebugRequest, user: string, context: ToolContext) {
+  const run = new CaptureRun(conn, req, user);
+  const budget = planCallBudget(conn.limits ?? DEFAULT_LIMITS, req, run.warnings, budgetContext(context));
   try {
     const caught = await run.catchDebuggee(
       context,
       req.timeoutSeconds * 1000 + budget.seconds * 1000 + RELEASE_BUDGET_MS,
     );
     if ('result' in caught) return caught.result;
-    const { debuggee, armed, base } = caught;
     // The inspection budget starts at the stop.
     budget.deadline = Date.now() + budget.seconds * 1000;
-    const inspection = await inspect(run, debuggee, budget, (session, first, record) =>
-      collectStops(session, req, armed.armed, first, record, budget, warnings),
+    const inspection = await inspect(run, caught.debuggee, budget, (session, first, record) =>
+      collectStops(session, req, caught.armed.armed, first, record, budget, run.warnings),
     );
-    await run.teardown();
-    const triggerOutcome = await run.settleTrigger();
-    if (inspection.release && !inspection.release.released) {
-      warnings.push(
-        `The debuggee could not be released (${inspection.release.detail ?? 'unknown'}); it stays suspended until SAP's debugger timeout ends its session.`,
-      );
-    }
-    return textResult(
-      toolJson({
-        hit: true,
-        ...base,
-        breakpoints: inspection.attached ? breakpointsWithHits(armed, inspection.hits) : armed.report,
-        debuggee: describeDebuggee(debuggee),
-        attached: inspection.attached,
-        ...(inspection.stops.length > 0 ? { stops: inspection.stops } : {}),
-        ...(inspection.release ? { release: inspection.release } : {}),
-        ...(inspection.error ? { error: inspection.error } : {}),
-        trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
-        // One warning per kind: every stop of a big frame would repeat the same one.
-        ...(warnings.length > 0 ? { warnings: [...new Set(warnings)] } : {}),
-      }),
-    );
+    return await captureResult(run, caught, inspection);
   } finally {
     await run.teardown();
   }

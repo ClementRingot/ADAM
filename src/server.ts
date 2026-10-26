@@ -5,12 +5,10 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { parseDebuggerException } from './adt/debugger.js';
-import { AdtApiError, AdtNetworkError } from './adt/errors.js';
 import type { SapConnection, ToolContext } from './tools/connection.js';
 import { throttledProgress } from './tools/debug-limits.js';
 import { listTools, TOOLS } from './tools/definitions.js';
-import { errorResult, formatIssues, type ToolResult } from './tools/result.js';
+import { describeError, errorResult, formatIssues, type ToolResult } from './tools/result.js';
 import { VERSION } from './version.js';
 
 export interface ServerState {
@@ -24,25 +22,8 @@ export const SERVER_INSTRUCTIONS = [
   'A capture follows one run of the program and releases it before returning: nothing can be inspected afterwards, so ask for all variables, steps and stops up front, and run another capture to look again.',
   'Triggers: unittest runs the harmless ABAP Unit tests (of triggerName or the breakpoint object); http GETs an OData path; none waits while the user runs the code themselves as the same SAP user (a Fiori app, a report).',
   'Not sure where the code runs? Stop on what it does instead of a line: the message it issues, the exception it raises, a statement kind such as COMMIT WORK.',
+  'Two modes: one-shot (default) records the whole run in one call — stops, variables, and as many steps as maxSeconds/maxResultKB allow (past 20 steps a compact trace). Interactive (interactive: true) holds the program at its first stop: then abap_debug_session step / continue / inspect / end, one move per call, until you end it — end it when done, the program holds a work process meanwhile.',
 ].join('\n');
-
-function describeError(err: unknown): string {
-  if (err instanceof AdtApiError) {
-    const exception = parseDebuggerException(err.responseBody);
-    const sap = exception?.conflictText ?? exception?.message ?? err.sapMessage;
-    const hint =
-      err.statusCode === 401
-        ? ' Check the credentials: SAP_USER/SAP_PASSWORD, the cookies, or the BTP login.'
-        : err.statusCode === 403
-          ? ' The SAP user lacks an authorization for this; debugging needs S_DEVELOP with OBJTYPE DEBUG, ACTVT 03.'
-          : '';
-    return `SAP refused the request (HTTP ${err.statusCode} at ${err.path.split('?', 1)[0]}): ${sap}${hint}`;
-  }
-  if (err instanceof AdtNetworkError) {
-    return `${err.message.replace(/\.?$/, '.')} Check SAP_URL and the network path to the SAP system (SAP_PROXY behind a corporate proxy).`;
-  }
-  return err instanceof Error ? err.message : String(err);
-}
 
 /** One tool call: validate, then run on the connection, never letting an exception escape. */
 export async function callTool(

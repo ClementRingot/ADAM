@@ -691,7 +691,13 @@ export function buildChildVariablesXml(parents: readonly string[]): string {
 
 // ─── Stateful session ──────────────────────────────────────────────
 
-export type DebugStepMethod = 'stepInto' | 'stepOver' | 'stepReturn' | 'stepContinue' | 'terminateDebuggee';
+export type DebugStepMethod =
+  | 'stepInto'
+  | 'stepOver'
+  | 'stepReturn'
+  | 'stepContinue'
+  | 'stepRunToLine'
+  | 'terminateDebuggee';
 
 export type DebugStepResult =
   | {
@@ -722,8 +728,13 @@ export class DebuggerSession {
   constructor(
     private readonly http: AdtHttpClient,
     readonly identity: DebugIdentity,
-    private readonly options: AdtRequestOptions = {},
+    private options: AdtRequestOptions = {},
   ) {}
+
+  /** Later requests end by `deadline` — the next call of an interactive session brings its own. */
+  retime(deadline: number): void {
+    this.options = { ...this.options, deadline };
+  }
 
   async attach(debuggeeId: string): Promise<DebugAttachInfo> {
     const query = new URLSearchParams({
@@ -801,11 +812,16 @@ export class DebuggerSession {
     return parseChildVariablesResponse(resp.body);
   }
 
-  /** One debugger step. A debuggee that finished (or is gone) reports `ended`, never throws. */
-  async step(method: DebugStepMethod): Promise<DebugStepResult> {
+  /**
+   * One debugger step. A debuggee that finished (or is gone) reports `ended`, never throws.
+   * `stepRunToLine` takes the target line as `uri` (`…/source/main#start=12`), as abap-adt-api,
+   * vscode_abap_remote_fs and vibing-steampunk send it.
+   */
+  async step(method: DebugStepMethod, uri?: string): Promise<DebugStepResult> {
+    const query = new URLSearchParams({ method, ...(uri ? { uri } : {}) }).toString();
     try {
       const resp = await this.http.post(
-        `${DEBUGGER_PATH}?method=${method}`,
+        `${DEBUGGER_PATH}?${query}`,
         undefined,
         undefined,
         { Accept: '*/*' },

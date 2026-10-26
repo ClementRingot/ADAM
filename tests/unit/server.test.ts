@@ -14,8 +14,8 @@ const failingConnection = (error: unknown) => ({
 describe('tools/list', () => {
   const tools = listTools();
 
-  it('offers the capture and its two helpers, with schemas generated from the validation', () => {
-    expect(tools.map((tool) => tool.name)).toEqual(['abap_debug', 'abap_source', 'abap_search']);
+  it('offers the capture, its interactive session and two helpers, with schemas generated from the validation', () => {
+    expect(tools.map((tool) => tool.name)).toEqual(['abap_debug', 'abap_debug_session', 'abap_source', 'abap_search']);
     for (const tool of tools) {
       expect(tool.inputSchema).toMatchObject({ type: 'object', additionalProperties: false });
       expect(tool.inputSchema).not.toHaveProperty('$schema');
@@ -30,7 +30,32 @@ describe('tools/list', () => {
       idempotentHint: false,
       openWorldHint: true,
     });
-    expect(tools[1]?.annotations.readOnlyHint).toBe(true);
+    expect(tools[1]?.annotations.readOnlyHint).toBe(false);
+    expect(tools[2]?.annotations.readOnlyHint).toBe(true);
+  });
+
+  it('describes one move per session call, each action with its own fields', () => {
+    const session = tools[1]?.inputSchema as unknown as { properties: Record<string, any>; required: string[] };
+    expect(session.required).toEqual(['action']);
+    expect(session.properties.action).toMatchObject({ enum: ['step', 'continue', 'inspect', 'end'] });
+    expect(Object.keys(session.properties)).toEqual([
+      'action',
+      'session',
+      'stepMode',
+      'count',
+      'until',
+      'toLine',
+      'timeoutSeconds',
+      'variables',
+      'stack',
+      'terminate',
+      'maxSeconds',
+      'maxResultKB',
+    ]);
+    const debug = tools[0]?.inputSchema as unknown as { properties: Record<string, any> };
+    expect(debug.properties.interactive).toMatchObject({ type: 'boolean' });
+    expect(debug.properties.steps).toMatchObject({ maximum: 10000 });
+    expect(debug.properties.until).toMatchObject({ type: 'object', additionalProperties: false });
   });
 
   it('keeps the breakpoint item schema strict and bounded', () => {
@@ -72,7 +97,7 @@ describe('tools/call', () => {
     const connection = failingConnection(new Error('must not be called'));
     const unknown = await callTool({ connection, problems: [] }, 'abap_run', {});
     expect(unknown).toMatchObject({ isError: true });
-    expect(unknown.content[0]?.text).toContain('Tools: abap_debug, abap_source, abap_search');
+    expect(unknown.content[0]?.text).toContain('Tools: abap_debug, abap_debug_session, abap_source, abap_search');
     const invalid = await callTool({ connection, problems: [] }, 'abap_search', { query: '' });
     expect(invalid.content[0]?.text).toBe(
       'Invalid abap_search input:\nquery: Too small: expected string to have >=1 characters',

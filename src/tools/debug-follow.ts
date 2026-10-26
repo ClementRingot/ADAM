@@ -180,7 +180,8 @@ export class RunFollower {
     readonly armed: readonly ArmedBreakpoint[],
     first: FirstStop,
     private readonly record: { stops: Array<Record<string, unknown>>; hits: Map<string, number> },
-    private readonly warnings: string[],
+    /** Where warnings go: the call's own list (an interactive session gives each call a new one). */
+    public warnings: string[],
     private readonly afterHalt = 'the rest of the run went on without stopping',
   ) {
     this.remaining = new Set(armed.map((bp) => bp.id));
@@ -463,6 +464,30 @@ export class RunFollower {
     this.reachedStack = reached.stack;
     this.unresolvable = reached.unresolvable;
     this.steppingPossible = steppingPossible;
+  }
+
+  /**
+   * Run on to a line (`stepRunToLine`, `uri` = its source and line). The run stops there, or at an
+   * armed breakpoint on the way — then `true`, and recordStop records that stop; else the new
+   * position is read here.
+   */
+  async runToLine(uri: string): Promise<'ended' | 'atBreakpoint' | 'atLine'> {
+    const next = await this.session.step('stepRunToLine', uri);
+    if (next.status === 'ended') {
+      this.ended = true;
+      this.steppingPossible = false;
+      return 'ended';
+    }
+    this.steppingPossible = next.steppingPossible;
+    this.unresolvable = next.unresolvableConditions ?? [];
+    const live = this.armed.filter((bp) => this.remaining.has(bp.id));
+    if (armedAt(live, next.reachedBreakpoints, undefined)) {
+      this.reachedBreakpoints = next.reachedBreakpoints;
+      return 'atBreakpoint';
+    }
+    this.reachedBreakpoints = [];
+    this.stack = await this.session.stack();
+    return 'atLine';
   }
 
   /** Let the run go on to its next stop (`stepContinue`), or to its end. */
