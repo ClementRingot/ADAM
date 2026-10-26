@@ -50,7 +50,7 @@ claude mcp add adam \
 ```
 
 **Claude Desktop, Cursor, VS Code and other clients** — `claude_desktop_config.json`,
-`.cursor/mcp.json` or `.vscode/mcp.json` (where the top-level key is `servers`):
+`.cursor/mcp.json` or `.vscode/mcp.json` (in VS Code the top-level key is `servers`):
 
 ```json
 {
