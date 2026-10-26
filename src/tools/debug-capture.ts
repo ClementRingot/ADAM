@@ -73,10 +73,11 @@ const MAX_COMPONENTS = 30;
 const MAX_TABLE_ROWS = 5;
 const MAX_VALUE_CHARS = 500;
 const MAX_STACK_FRAMES = 15;
-/** Stops recorded in one run (all breakpoints, all hits) and steps across them: what one result can
- *  carry, and how long a suspended run is held. Hitting either ends the capture, not the program. */
-const MAX_STOPS = 10;
-const MAX_TOTAL_STEPS = 40;
+/** Hard caps on the stops recorded in one run (all breakpoints, all hits) and the steps across them —
+ *  a safety net: the result-size budget below usually ends a capture first. Reaching a cap or the
+ *  budget ends the capture, not the program. */
+const MAX_STOPS = 50;
+const MAX_TOTAL_STEPS = 100;
 /** Attach + reads + steps + continues once the debuggee is caught. */
 const INSPECTION_BUDGET_MS = 120_000;
 /** Own budget for the release, so an exhausted inspection can never leave a debuggee suspended. */
@@ -97,6 +98,36 @@ const timings = {
 /** Override the capture's fixed delays and margins in unit tests. */
 export function setDebugTimingsForTests(overrides: Partial<typeof timings>): void {
   Object.assign(timings, overrides);
+}
+
+/** Characters of compact JSON the stops and their steps may fill (≈ 10-12k tokens): what the model can
+ *  read in one result. Cost, not a count, decides: two named values per stop allow many more stops than
+ *  sixty frame variables. */
+const DEFAULT_RESULT_BUDGET_CHARS = 40_000;
+let resultBudgetChars = DEFAULT_RESULT_BUDGET_CHARS;
+
+/** Override the result-size budget in unit tests (no argument: back to the default). */
+export function setResultBudgetForTests(chars = DEFAULT_RESULT_BUDGET_CHARS): void {
+  resultBudgetChars = chars;
+}
+
+/** How much of the result the recorded stops and steps take. */
+class ResultBudget {
+  private used = 0;
+
+  constructor(private readonly limit: number) {}
+
+  add(entry: unknown): void {
+    this.used += JSON.stringify(entry).length;
+  }
+
+  get exhausted(): boolean {
+    return this.used >= this.limit;
+  }
+
+  warning(stops: number): string {
+    return `The result reached its size budget (about ${Math.round(this.limit / 1000)} KB) after ${stops} stop(s); the rest of the run went on without stopping. Name fewer variables, or narrow the stops with a condition.`;
+  }
 }
 
 /** Captures in flight in this process, by SAP user: SAP keys the listener by user, so one at a time each. */
@@ -909,9 +940,42 @@ function stepValue(variable: CapturedVariable): string | Record<string, unknown>
 }
 
 /**
- * The watched variables after a step. A structure or table equal to the previous step's (same frame)
- * reads `unchanged`. A name SAP refuses is left out of the frame's later reads (`refused`), so one
- * bad expression cannot fail every step's batch.
+ * Variables in their compact form — text, a structure's components, a table's lines and first rows —
+ * as after a step or at a breakpoint's later stops. A structure or table equal to the one `previous`
+ * remembers (the previous step in the same frame, or the breakpoint's previous stop) reads
+ * `unchanged`; `previous` is updated. A name SAP refused goes to `refused` when given (steps leave it
+ * out of the frame's later reads), else to `errors`.
+ */
+function compactValues(
+  variables: readonly CapturedVariable[],
+  previous: Map<string, string>,
+  refused?: Map<string, string>,
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  const notVisible: string[] = [];
+  const errors = refused ?? new Map<string, string>();
+  for (const variable of variables) {
+    if (variable.error === NOT_VISIBLE) notVisible.push(variable.name);
+    else if (variable.error) errors.set(variable.name, variable.error);
+    else {
+      // Frame variables of different scopes may share a name.
+      const key = variable.name in values && variable.scope ? `${variable.name} (${variable.scope})` : variable.name;
+      const value = stepValue(variable);
+      const rendered = typeof value === 'string' ? undefined : JSON.stringify(value);
+      values[key] = rendered !== undefined && previous.get(key) === rendered ? 'unchanged' : value;
+      if (rendered !== undefined) previous.set(key, rendered);
+    }
+  }
+  return {
+    ...(Object.keys(values).length > 0 ? { values } : {}),
+    ...(notVisible.length > 0 ? { notVisible } : {}),
+    ...(errors.size > 0 ? { errors: Object.fromEntries(errors) } : {}),
+  };
+}
+
+/**
+ * The watched variables after a step. A name SAP refuses is left out of the frame's later reads
+ * (`refused`), so one bad expression cannot fail every step's batch.
  */
 async function readStepValues(
   session: DebuggerSession,
@@ -923,23 +987,7 @@ async function readStepValues(
     session,
     names.filter((name) => !refused.has(name)),
   );
-  const values: Record<string, unknown> = {};
-  const notVisible: string[] = [];
-  for (const variable of read) {
-    if (variable.error === NOT_VISIBLE) notVisible.push(variable.name);
-    else if (variable.error) refused.set(variable.name, variable.error);
-    else {
-      const value = stepValue(variable);
-      const rendered = typeof value === 'string' ? undefined : JSON.stringify(value);
-      values[variable.name] = rendered !== undefined && previous.get(variable.name) === rendered ? 'unchanged' : value;
-      if (rendered !== undefined) previous.set(variable.name, rendered);
-    }
-  }
-  return {
-    ...(Object.keys(values).length > 0 ? { values } : {}),
-    ...(notVisible.length > 0 ? { notVisible } : {}),
-    ...(refused.size > 0 ? { errors: Object.fromEntries(refused) } : {}),
-  };
+  return compactValues(read, previous, refused);
 }
 
 interface Inspection {
@@ -958,8 +1006,8 @@ interface StepRun {
   steppingPossible: boolean;
   /** A step ran into an armed breakpoint: the run stands at it (`stack`), and the next stop records it. */
   reached?: { id: string; stack: DebugStackFrame[]; unresolvable: ReachedBreakpoint[] };
-  /** The inspection budget ran low: the capture stops following the run. */
-  outOfTime?: true;
+  /** The inspection budget or the result-size budget ran out: the capture stops following the run. */
+  outOfBudget?: true;
 }
 
 /** The armed breakpoint a step stopped at (`move`: how the step changed frame), if any. */
@@ -978,9 +1026,9 @@ async function runSteps(
   session: DebuggerSession,
   req: DebugRequest,
   count: number,
-  from: { stack: DebugStackFrame[]; refused: Map<string, string> },
+  from: { stack: DebugStackFrame[]; refused: Map<string, string>; stop: number },
   reach: StepReach,
-  deadline: number,
+  budget: { deadline: number; result: ResultBudget },
   warnings: string[],
 ): Promise<StepRun> {
   const steps: Array<Record<string, unknown>> = [];
@@ -988,11 +1036,15 @@ async function runSteps(
   const refused = new Map(from.refused);
   let previous = new Map<string, string>();
   for (let index = 1; index <= count; index++) {
-    if (deadline - Date.now() < timings.continueMarginMs) {
+    if (budget.deadline - Date.now() < timings.continueMarginMs) {
       warnings.push(
         `The ${INSPECTION_BUDGET_MS / 1000}s inspection budget ran low after ${index - 1} step(s) of a stop; the rest of the run went on without stopping.`,
       );
-      return { steps, ended: false, steppingPossible: true, outOfTime: true };
+      return { steps, ended: false, steppingPossible: true, outOfBudget: true };
+    }
+    if (budget.result.exhausted) {
+      warnings.push(budget.result.warning(from.stop));
+      return { steps, ended: false, steppingPossible: true, outOfBudget: true };
     }
     const outcome = await session.step(STEP_METHODS[req.stepMode]);
     if (outcome.status === 'ended') {
@@ -1010,6 +1062,7 @@ async function runSteps(
     const bp = reach(outcome.reachedBreakpoints, stack[0], move);
     if (bp) {
       entry.breakpoint = bp.label;
+      budget.result.add(entry);
       return {
         steps,
         ended: false,
@@ -1030,6 +1083,7 @@ async function runSteps(
         entry.valuesError = debuggerErrorText(err);
       }
     }
+    budget.result.add(entry);
     if (!outcome.steppingPossible) {
       warnings.push(`SAP reports stepping is no longer possible after step ${index}.`);
       return { steps, ended: false, steppingPossible: false };
@@ -1061,7 +1115,9 @@ async function collectStops(
   warnings: string[],
 ): Promise<void> {
   const remaining = new Set(armed.map((bp) => bp.id));
-  const stackShown = new Set<string>();
+  /** Per breakpoint, its values at its previous stop: a later stop says `unchanged` against them. */
+  const lastValues = new Map<string, Map<string, string>>();
+  const result = new ResultBudget(resultBudgetChars);
   let { reachedBreakpoints, steppingPossible, unresolvable } = first;
   /** The stack a step already read where it ran into a breakpoint: the next stop's. */
   let reachedStack: DebugStackFrame[] | undefined;
@@ -1087,15 +1143,16 @@ async function collectStops(
     const at = breakpointAt(armed, reachedBreakpoints, stack[0]);
     const hits = at ? (inspection.hits.get(at.id) ?? 0) + 1 : 0;
     if (at) inspection.hits.set(at.id, hits);
+    // A breakpoint's later stops (a loop) are compact: the position and call stack of its first stop
+    // would only repeat, so they carry its values alone.
+    const repeated = at ? lastValues.get(at.id) : undefined;
     const stop: Record<string, unknown> = {
       stop: inspection.stops.length + 1,
       ...(at ? { at: at.label } : {}),
       ...(at && at.maxHits > 1 ? { hit: hits } : {}),
-      ...(stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),
-      // The call stack once per breakpoint: a loop's later stops would only repeat it.
-      ...(!at || !stackShown.has(at.id) ? describeStack(stack) : {}),
+      ...(!repeated && stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),
+      ...(!repeated ? describeStack(stack) : {}),
     };
-    if (at) stackShown.add(at.id);
     const unevaluated = at?.condition ? unresolvable.find((bp) => bp.id === at.id) : undefined;
     if (at && unevaluated) {
       const where =
@@ -1126,7 +1183,17 @@ async function collectStops(
       req.variables.length > 0
         ? await readNamedVariables(session, req.variables)
         : await readFrameVariables(session, warnings);
-    stop.variables = variables;
+    if (repeated) {
+      Object.assign(stop, compactValues(variables, repeated));
+    } else {
+      stop.variables = variables;
+      if (at) {
+        const seen = new Map<string, string>();
+        compactValues(variables, seen);
+        lastValues.set(at.id, seen);
+      }
+    }
+    result.add(stop);
     let run: StepRun | undefined;
     if (req.steps > 0) {
       if (!steppingPossible) {
@@ -1143,9 +1210,9 @@ async function collectStops(
           session,
           req,
           Math.min(req.steps, stepsLeft),
-          { stack, refused },
+          { stack, refused, stop: inspection.stops.length },
           reach,
-          deadline,
+          { deadline, result },
           warnings,
         );
         stepsLeft -= run.steps.length;
@@ -1154,13 +1221,17 @@ async function collectStops(
           inspection.release = { released: true, via: 'continue' };
           return;
         }
-        if (run.outOfTime || (!run.reached && !run.steppingPossible)) return;
+        if (run.outOfBudget || (!run.reached && !run.steppingPossible)) return;
       }
     }
     if (!following) return;
     if (!run?.reached && remaining.size === 0) return;
     if (inspection.stops.length >= MAX_STOPS) {
       warnings.push(`A capture records at most ${MAX_STOPS} stops; the rest of the run went on without stopping.`);
+      return;
+    }
+    if (result.exhausted) {
+      warnings.push(result.warning(inspection.stops.length));
       return;
     }
     if (deadline - Date.now() < timings.continueMarginMs) {

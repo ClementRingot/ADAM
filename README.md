@@ -124,13 +124,13 @@ A server that is not configured still starts; every tool call then lists what is
 |---|---|
 | `type`, `name` | Object of `line`, and the default object of every breakpoint and of the unit-test trigger: `CLAS`, `PROG` or `FUNC` |
 | `line` | Shorthand for one breakpoint at this line of `type` + `name` |
-| `breakpoints` | Up to 20 breakpoints, each `{ line \| method, include?, condition?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `condition`: an ABAP condition SAP evaluates there, so the run stops only where it holds (`lv_index = 500`, `ls_item-matnr = 'X' AND sy-tabix > 10`) — one pass of a long loop; when SAP cannot evaluate it, it stops anyway and the stop says so. `hits` (1-10, default 1): how often this breakpoint may stop the run |
+| `breakpoints` | Up to 20 breakpoints, each `{ line \| method, include?, condition?, hits?, type?, name? }`. `line`: 1-based, as `abap_source` numbers the active source. `method` (`CLAS`): `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. `include` (`CLAS`): `implementations` or `testclasses`, detected for `lhc_`/`lcl_`/`ltc_` methods. `condition`: an ABAP condition SAP evaluates there, so the run stops only where it holds (`lv_index = 500`, `ls_item-matnr = 'X' AND sy-tabix > 10`) — one pass of a long loop; when SAP cannot evaluate it, it stops anyway and the stop says so. `hits` (1-50, default 1): how often this breakpoint may stop the run |
 | `exceptionClass` | Also (or only) stop where this exception class is raised, e.g. `CX_SY_ZERODIVIDE` |
 | `trigger` | `unittest` (default): the harmless ABAP Unit tests of `triggerName`, else of `type` + `name`, else of the first breakpoint's object (a function module's tests are its group's). `http`: a `GET` of `url`. `none`: wait `timeoutSeconds` while you run the code yourself as the same SAP user |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint object |
 | `url` | `trigger: "http"`: a host-relative OData path, `/sap/opu/odata4/…` or `/sap/opu/odata/sap/<SRV>/…` |
 | `variables` | Up to 20 expressions read at every stop and after every step: `LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `LT_ITEMS[3]`, `ME->MV_STATE`, `SY-SUBRC`. Default: every variable of the stopped frame (up to 60) |
-| `steps` | Steps after each stop (0-20, at most 40 per capture) |
+| `steps` | Steps after each stop (0-20, at most 100 per capture) |
 | `stepMode` | `over` (default), `into` (follow calls) or `out` (return to the caller) |
 | `timeoutSeconds` | How long to wait for the first stop (1-240, default 60) |
 
@@ -139,6 +139,12 @@ there — or refused with SAP's reason); `debuggee` (program, line, application 
 with `at`, `stoppedAt`, the call `stack` on a breakpoint's first stop, `variables`, `steps` with their
 values); `release`; `trigger` (the unit-test summary or HTTP status); `warnings`. Without a stop it
 carries the `reason` (timeout, trigger finished first, conflict) and a `hint`.
+
+A breakpoint's later stops — a loop — are compact: `{ stop, at, hit, values }`, without the position
+and call stack its first stop already showed, and with `unchanged` for a structure or table equal to
+the breakpoint's previous stop. A capture is bounded by what its result costs, not by counting: it
+follows the run until the stops and steps fill about 40 KB of JSON, so two named values allow many more
+iterations than sixty frame variables.
 
 Values are shown as SAP renders them: structures one level deep, tables with their line count and
 first 5 rows, values up to 500 characters. A string keeps its leading and trailing blanks (they
@@ -198,8 +204,9 @@ abap_debug {exceptionClass: "CX_SY_ITAB_LINE_NOT_FOUND", trigger: "unittest", tr
 - **Always cleaned up.** Breakpoints and the listener are removed and the program released on every
   path; the release has its own time budget, so an exhausted inspection never leaves a program
   suspended.
-- **Caps per capture:** 20 breakpoints, 10 stops, 40 steps, 120 s of inspection after the first stop;
-  past a cap the run goes on without stopping and a warning says so.
+- **Bounds per capture:** 20 breakpoints; the run is followed until about 40 KB of result, 50 stops,
+  100 steps or 120 s of inspection after the first stop — whichever comes first — then goes on without
+  stopping, and a warning says which bound ended the capture.
 
 **Several application servers** (the BTP ABAP Environment and larger on-premise systems): SAP attaches
 only from the server the program stopped on. The capture opens sessions before the run until two land

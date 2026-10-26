@@ -4,21 +4,12 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 
 | ID | Idea | Priority | Effort | Status |
 |---|---|---|---|---|
-| [FEAT-95](#feat-95) | Compact repeated stops with a result-size budget | P2 | M | Ready |
+| [MSG-1](#msg-1) | Message breakpoints: where is this message raised? | P2 | S | Needs live check |
+| [WATCH-1](#watch-1) | Watchpoints: stop where a variable changes | P3 | M | Needs live check |
+| [LOG-1](#log-1) | Dynamic logpoints: observe a line across many runs | P3 | M | Needs research |
 | [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
 | [NET-1](#net-1) | Corporate HTTP proxy (`HTTPS_PROXY`) | P3 | S | Ready |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
-
-<a id="feat-95"></a>
-## FEAT-95 — Compact repeated stops with a result-size budget
-
-**Idea.** From a breakpoint's second stop on, return only the values (or only the values that
-changed) as a compact entry, and end the capture on a result-size budget next to the 120 s
-inspection budget, instead of the fixed caps of 10 stops and 40 steps.
-
-**Why it remains.** The fixed counters are a poor proxy for cost: ten stops with two named variables
-are small, ten stops with sixty frame variables are large. A size budget allows many more `hits` when
-the output stays small, while keeping the result readable for the model.
 
 <a id="live-1"></a>
 ## LIVE-1 — Live verification of this standalone build
@@ -49,3 +40,43 @@ a corporate proxy, with `SAP_INSECURE` applied to the proxied TLS connection too
 
 **Resume with.** Verify the breakpoint URI SAP expects for an include used by one main program, and
 how it answers for an include several programs use (Eclipse asks for the main-program context).
+
+<a id="msg-1"></a>
+## MSG-1 — Message breakpoints
+
+**Idea.** Stop where a given message is issued — `{ "message": { "id": "ZSD", "number": "042", "type":
+"E" } }` — next to `exceptionClass`: "which code raises this error?" is one of the most common debugging
+questions, and the message text alone rarely finds the statement.
+
+**Evidence.** abap-adt-api 9.2.0 sends `<breakpoint kind="message" … msgId msgNo msgTy/>` through the
+same breakpoint sync (`formatBreakpoint`), so it fits the existing arming and cleanup unchanged.
+
+**Resume with.** Verify live which message types SAP accepts and how the stop looks on the stack, then
+add the item kind beside `exceptionClass`.
+
+<a id="watch-1"></a>
+## WATCH-1 — Watchpoints
+
+**Idea.** Stop where a variable changes (optionally with a condition): "where does `LV_STATUS` become
+'E'?" without knowing the line.
+
+**Evidence.** abap-adt-api 9.2.0: `POST /sap/bc/adt/debugger/watchpoints?variableName=…&condition=…` on
+the attached session; old and current values via child variables of `@WATCHPOINTS.<uri>`.
+
+**Resume with.** A watchpoint lives in the attached session, so it can only be set at a stop: define the
+shape (set at the first stop, continue to each change), and check its cost on long runs.
+
+<a id="log-1"></a>
+## LOG-1 — Dynamic logpoints
+
+**Idea.** For "which values does this line see across many runs and users", SAP's dynamic logpoints
+record fields at a line without stopping anything — no work process held, no stop cap.
+
+**Why not instead of the compact stops.** Logpoints are system objects with an activation period,
+visible to others and needing their own authorization and cleanup, and their log aggregates values
+by key rather than keeping the order of one run. The debugger capture stays the tool for following
+one run; logpoints would be a separate tool.
+
+**Resume with.** abap-adt-api's `logpoints` module (definitions, activation per user/server, logs by
+key) and the authorization they need.
+

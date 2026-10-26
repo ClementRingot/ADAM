@@ -43,9 +43,11 @@ const DebugBreakpointSchema = z
       .number()
       .int()
       .min(1)
-      .max(10)
+      .max(50)
       .optional()
-      .describe('How many times this breakpoint may stop the run, e.g. in a loop (1-10, default 1).'),
+      .describe(
+        'How many times this breakpoint may stop the run, e.g. in a loop (1-50, default 1). Its stops after the first carry only the values.',
+      ),
   })
   .strict();
 
@@ -105,7 +107,7 @@ export const DEBUG_INPUT_SHAPE = {
     .max(20)
     .optional()
     .describe(
-      'Steps after each stop (0-20, default 0; at most 40 per capture); each records the new position and the variables.',
+      'Steps after each stop (0-20, default 0; at most 100 per capture); each records the new position and the variables.',
     ),
   stepMode: z
     .enum(['over', 'into', 'out'])

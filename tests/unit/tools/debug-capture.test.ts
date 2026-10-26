@@ -9,7 +9,11 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AdtHttpClient, type AdtHttpConfig } from '../../../src/adt/http.js';
 import { callTool } from '../../../src/server.js';
-import { type SapConnection, setDebugTimingsForTests } from '../../../src/tools/debug-capture.js';
+import {
+  type SapConnection,
+  setDebugTimingsForTests,
+  setResultBudgetForTests,
+} from '../../../src/tools/debug-capture.js';
 import { mockResponse } from '../../helpers/mock-fetch.js';
 
 const mockFetch = vi.hoisted(() => vi.fn());
@@ -898,19 +902,19 @@ describe('abap_debug — several stops in one run', () => {
     expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([3, 1]);
   });
 
-  it('records at most 10 stops, then lets the run go on', async () => {
-    const loop = Array.from({ length: 12 }, () => at9);
+  it('records at most 50 stops, then lets the run go on', async () => {
+    const loop = Array.from({ length: 60 }, () => at9);
     installFakeSap({ hit: true, execution: [...loop, at11] });
     const { json } = await debug({
       type: 'CLAS',
       name: 'ZCL_ORDER',
-      breakpoints: [{ line: 9, hits: 10 }, { line: 11 }],
+      breakpoints: [{ line: 9, hits: 50 }, { line: 11 }],
       variables: ['LV_TOTAL'],
     });
 
-    expect(json?.stops).toHaveLength(10);
-    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 10 stops'));
-    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([10, 0]);
+    expect(json?.stops).toHaveLength(50);
+    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 50 stops'));
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([50, 0]);
     expect(json?.release).toMatchObject({ released: true, via: 'continue' });
   });
 
@@ -1083,19 +1087,19 @@ describe('abap_debug — several stops in one run', () => {
     }
   });
 
-  it('records at most 40 steps across all stops', async () => {
-    installFakeSap({ hit: true, execution: [at9, at9, at9] });
+  it('records at most 100 steps across all stops', async () => {
+    installFakeSap({ hit: true, execution: Array.from({ length: 6 }, () => at9) });
     const { json } = await debug({
       type: 'CLAS',
       name: 'ZCL_ORDER',
-      breakpoints: [{ line: 9, hits: 3 }],
+      breakpoints: [{ line: 9, hits: 6 }],
       steps: 20,
       variables: ['LV_TOTAL'],
     });
     expect(
       json?.stops.map((stop: Record<string, unknown>) => (stop.steps as unknown[] | undefined)?.length ?? 0),
-    ).toEqual([20, 20, 0]);
-    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 40 steps'));
+    ).toEqual([20, 20, 20, 20, 20, 0]);
+    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 100 steps'));
   });
 
   it('arms up to 20 breakpoints in one run', async () => {
@@ -1160,7 +1164,11 @@ describe('abap_debug — several stops in one run', () => {
       breakpoints: [{ line: 9, condition: 'LV_PASS > 5', hits: 5 }],
       variables: ['LV_PASS'],
     });
-    expect(json?.stops.map((stop: Record<string, any>) => stop.variables[0].value)).toEqual(['6', '7', '8']);
+    expect(json?.stops.map((stop: Record<string, any>) => stop.variables?.[0].value ?? stop.values.LV_PASS)).toEqual([
+      '6',
+      '7',
+      '8',
+    ]);
     expect(json?.breakpoints[0]).toMatchObject({ hits: 3 });
   });
 
@@ -1235,6 +1243,67 @@ describe('abap_debug — several stops in one run', () => {
     expect(calls.filter((c) => c.query.get('method') === 'stepContinue')).toHaveLength(2);
   });
 
+  it("keeps a breakpoint's later stops to its values, marking unchanged structures and tables", async () => {
+    installFakeSap({ hit: true, execution: [at9, at9, at9] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, hits: 3 }],
+      variables: ['LV_TOTAL', 'LS_HEAD', 'LT_ITEMS', 'LV_NOPE'],
+    });
+    expect(json?.stops[0]).toMatchObject({
+      stop: 1,
+      hit: 1,
+      stoppedAt: expect.objectContaining({ line: 9 }),
+      stack: expect.any(Array),
+      variables: expect.arrayContaining([expect.objectContaining({ name: 'LS_HEAD', kind: 'structure' })]),
+    });
+    const later = {
+      at: line9,
+      values: { LV_TOTAL: '39', LS_HEAD: 'unchanged', LT_ITEMS: 'unchanged' },
+      notVisible: ['LV_NOPE'],
+    };
+    expect(json?.stops.slice(1)).toEqual([
+      { stop: 2, hit: 2, ...later },
+      { stop: 3, hit: 3, ...later },
+    ]);
+  });
+
+  it("keeps a breakpoint's later stops compact for frame variables too", async () => {
+    installFakeSap({ hit: true, execution: [at9, at9] });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, hits: 2 }] });
+    expect(json?.stops[1]).toEqual({
+      stop: 2,
+      at: line9,
+      hit: 2,
+      values: { LV_TOTAL: '42', LS_HEAD: 'unchanged', LT_ITEMS: 'table[2]' },
+    });
+  });
+
+  it('ends a capture on its result-size budget rather than a fixed number of stops', async () => {
+    setResultBudgetForTests(2000);
+    try {
+      installFakeSap({ hit: true, execution: Array.from({ length: 30 }, () => at9) });
+      const stops = await debug({
+        type: 'CLAS',
+        name: 'ZCL_ORDER',
+        breakpoints: [{ line: 9, hits: 30 }],
+        variables: ['LV_TOTAL'],
+      });
+      expect(stops.json?.stops.length).toBeGreaterThan(5);
+      expect(stops.json?.stops.length).toBeLessThan(30);
+      expect(stops.json?.warnings).toContainEqual(expect.stringContaining('size budget (about 2 KB)'));
+      expect(stops.json?.release).toMatchObject({ released: true, via: 'continue' });
+
+      installFakeSap({ hit: true });
+      const steps = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, variables: ['LV_TOTAL'], steps: 20 });
+      expect(steps.json?.stops[0].steps.length).toBeLessThan(20);
+      expect(steps.json?.warnings).toContainEqual(expect.stringContaining('size budget'));
+    } finally {
+      setResultBudgetForTests();
+    }
+  });
+
   it('validates each breakpoint before anything reaches SAP', async () => {
     installFakeSap();
     const both = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, method: 'get_total' }] });
@@ -1247,7 +1316,7 @@ describe('abap_debug — several stops in one run', () => {
       breakpoints: Array.from({ length: 21 }, (_, index) => ({ line: index + 1 })),
     });
     expect(tooMany.result.isError).toBe(true);
-    const tooManyHits = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, hits: 11 }] });
+    const tooManyHits = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, hits: 51 }] });
     expect(tooManyHits.result.isError).toBe(true);
     // The method is a breakpoints item now, not a top-level argument.
     const topLevelMethod = await debug({ type: 'CLAS', name: 'ZCL_ORDER', method: 'get_total' });
