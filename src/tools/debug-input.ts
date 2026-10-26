@@ -1,7 +1,6 @@
 /**
  * abap_debug input: one Zod schema — the JSON schema the model sees is generated from it
- * (src/tools/definitions.ts) — plus the cross-field rules. Ported from ARC-1
- * (src/handlers/debug-input.ts), with the descriptions ARC-1's schema budget had to cut.
+ * (src/tools/definitions.ts) — plus the cross-field rules.
  */
 
 import { z } from 'zod';

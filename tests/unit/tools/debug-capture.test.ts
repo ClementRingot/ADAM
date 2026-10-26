@@ -1,10 +1,9 @@
 /**
  * abap_debug — one-shot capture orchestration, end to end through the MCP tool call over a real
- * AdtHttpClient and a fake SAP (mocked undici fetch). Ported from ARC-1's
- * tests/unit/handlers/debug.test.ts.
+ * AdtHttpClient and a fake SAP (mocked undici fetch).
  *
  * The SAP answers are REFERENCE-DERIVED (abap-adt-api / vibing-steampunk shapes, see
- * docs/research/2026-10-22-abap-debugger-one-shot-capture.md), not live captures.
+ * docs/adt-debugger-protocol.md), not live captures.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { callTool } from '../../../src/server.js';

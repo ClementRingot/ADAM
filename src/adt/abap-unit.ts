@@ -1,7 +1,6 @@
 /**
  * ABAP Unit as a debugger trigger: run an object's HARMLESS tests (`/sap/bc/adt/abapunit/testruns`)
- * and summarize the outcome. Ported from ARC-1 (src/adt/devtools.ts `runUnitTests`, src/adt/aunit.ts
- * `parseAunitRunResult`), keeping only the summary a capture reports.
+ * and summarize the outcome — only the summary a capture reports.
  */
 
 import type { AdtHttpClient, AdtRequestOptions } from './http.js';

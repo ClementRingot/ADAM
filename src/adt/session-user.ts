@@ -5,7 +5,7 @@
  * resource Eclipse ADT reads right after logon; SAP Fiori tools read it the same way. It answers
  * for the session that asks — so the debugger listens for the user who really runs the requests,
  * never a configured or caller-supplied name. Absent on SAP_BASIS 7.50 and older.
- * See docs/research/2026-10-22-abap-debugger-one-shot-capture.md §7.3.
+ * See docs/adt-debugger-protocol.md ("Who is debugged").
  */
 
 import { AdtApiError } from './errors.js';

@@ -4,35 +4,26 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 
 | ID | Idea | Priority | Effort | Status |
 |---|---|---|---|---|
-| [LIVE-1](#live-1) | Live verification of this standalone build | P1 | S | Needs a system |
+| [LIVE-1](#live-1) | Live verification of this server | P1 | S | Needs a system |
 | [LIVE-2](#live-2) | First deployment on a real SAP BTP subaccount | P1 | S | Needs a subaccount |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
 | [WATCH-1](#watch-1) | Watchpoints: stop where a variable changes | P3 | M | Needs live check |
 | [LOG-1](#log-1) | Dynamic logpoints: observe a line across many runs | P3 | M | Needs research |
 
 <a id="live-1"></a>
-## LIVE-1 — Live verification of this standalone build
+## LIVE-1 — Live verification of this server
 
-**Idea.** Run the capture scenarios of the research dossier (§9) with this server — not ARC-1 — on
+**Idea.** Run the [live checks](adt-debugger-protocol.md#9-live-checks-still-owed) with this server on
 the BTP ABAP Environment and on-premise 7.50, 7.58 and 8.16.
 
-**Why it remains.** The capture logic was live-tested inside ARC-1 on the BTP ABAP Environment; this
-server ports it over a new, minimal HTTP client, tested so far against simulated SAP answers only.
+**Why it remains.** The capture engine was observed live on the BTP ABAP Environment only
+([what was seen](adt-debugger-protocol.md#8-observed-live)), before this server's own HTTP client, its
+conditional, message and statement breakpoints, its long step runs and its interactive sessions; those are tested
+against simulated SAP answers so far.
 
-**Resume with.** Basic auth on an on-premise system (one class with unit tests, one loop, one RAP
-behavior pool with `trigger: "none"`), then the BTP browser login; record the answers as fixtures.
-Conditional breakpoints follow the reference clients (abap-adt-api, vscode_abap_remote_fs) and need
-their own checks: how SAP answers an invalid condition (refused at the final sync, or a stop flagged
-`unresolvableCondition`), and that a step onto the line of a condition that does not hold carries no
-`reachedBreakpoints`. Message and statement breakpoints are reference-derived too (abap-adt-api
-`formatBreakpoint`, `debuggerStatements`): check which message types SAP accepts, the statement kinds it
-lists, and that it names the event breakpoint it stopped at in `reachedBreakpoints`.
-Long step runs: measure the time a step costs (step + stack + variables) on-premise and on BTP, to
-tune the default `maxSeconds`. Interactive sessions: how long SAP keeps an attached debuggee and its
-stateful session between calls (a held program with no request for minutes), how the trigger's own
-request (unit test, OData GET, a Fiori app's call) fares while it waits that long, and what
-`stepRunToLine` (reference-derived: abap-adt-api, vscode_abap_remote_fs, vibing-steampunk) and
-`terminateDebuggee` answer — and that the latter rolls back the program's uncommitted work.
+**Resume with.** Basic authentication on an on-premise system — one class with unit tests, one loop,
+one RAP behavior pool with `trigger: "none"` — then the BTP browser login, then an interactive session
+held for a few minutes; record SAP's answers as test fixtures.
 
 <a id="live-2"></a>
 ## LIVE-2 — First deployment on SAP BTP
@@ -44,8 +35,8 @@ an `OAuth2UserTokenExchange` destination to the BTP ABAP Environment, an interac
 HTTP across several calls, and a restage while a session is open (released on SIGTERM).
 
 **Why it remains.** XSUAA, the Destination service and the Connectivity proxy are simulated in the unit
-tests; the stack itself (`@arc-mcp/xsuaa-auth`) runs in ARC-1's production deployments. Check also how
-long the Cloud Foundry router lets a long one-shot capture's request run.
+tests, and the MTA was only built and staged locally. Check also how long the Cloud Foundry router lets
+a long one-shot capture's request run.
 
 <a id="inc-1"></a>
 ## INC-1 — Breakpoints in includes

@@ -1,10 +1,10 @@
 # Deploy on SAP BTP Cloud Foundry
 
-The server runs on SAP BTP the way [ARC-1](https://github.com/arc-mcp/arc-1) does: an MTA with XSUAA
-for the MCP clients' sign-in, the Destination service for the SAP system, and the Connectivity service
-for an on-premise system behind the Cloud Connector. Each MCP user signs in once in the browser and then
-debugs **as their own SAP user** (principal propagation): SAP's authorization checks apply to them, and
-the debugger catches only their runs.
+On SAP BTP the server runs as a Cloud Foundry app, deployed as an MTA: XSUAA signs the MCP clients
+in, the Destination service names the SAP system, and the Connectivity service reaches an on-premise
+system behind the Cloud Connector. Each MCP user signs in once in the browser and then debugs **as
+their own SAP user** (principal propagation): SAP's authorization checks apply to them, and the
+debugger catches only their runs.
 
 ```text
 MCP client (Claude, VS Code, Cursor…)
@@ -18,9 +18,8 @@ Connectivity proxy → Cloud Connector → SAP ICM (certificate mapped to the us
 SAP: the ADT debugger, as the user's own SAP user
 ```
 
-The authentication stack and the destination lookups come from
-[`@arc-mcp/xsuaa-auth`](https://www.npmjs.com/package/@arc-mcp/xsuaa-auth), extracted from ARC-1's
-production deployment.
+The sign-in (XSUAA OAuth with dynamic client registration, API keys) and the destination lookups come
+from the [`@arc-mcp/xsuaa-auth`](https://www.npmjs.com/package/@arc-mcp/xsuaa-auth) library.
 
 ## Before you start
 
@@ -32,12 +31,52 @@ production deployment.
 | Each debugging user: ADT access (`S_ADT_RES`) and debug authorization (`S_DEVELOP` with `OBJTYPE = DEBUG`, `ACTVT = 03`) | Security | The user can debug in Eclipse ADT |
 | On your machine: the `cf` CLI with the MultiApps plugin (`cf install-plugin multiapps`), MBT (`npm install -g mbt`), Node.js 22.12+ | You | `cf deploy --help` and `mbt --version` answer |
 
-The principal-propagation setup — Cloud Connector, STRUST, CERTRULE, the ICM parameters — is the same
-as ARC-1's; follow its step-by-step guide:
-[principal-propagation-setup](https://github.com/arc-mcp/arc-1/blob/main/docs_page/principal-propagation-setup.md).
-For the BTP ABAP Environment, see its
-[BTP ABAP Environment guide](https://github.com/arc-mcp/arc-1/blob/main/docs_page/btp-abap-environment.md)
-(no Cloud Connector; an `OAuth2UserTokenExchange` destination in the same subaccount).
+### Principal propagation to an on-premise system
+
+The standard SAP setup, summarized; SAP's step-by-step guide is
+[Configure Identity Propagation for HTTPS][sap-pp-https].
+
+In the **Cloud Connector** (*Configuration → On Premise*, then *Cloud To On-Premise*):
+
+1. A **system certificate**: the Cloud Connector's identity towards the ABAP system (mutual TLS).
+2. A **CA certificate**, which signs the short-lived X.509 certificate issued for each user
+   ([Configure a CA Certificate][sap-ca]).
+3. **Trust** in the subaccount's identity provider ([Set Up Trust][sap-trust]).
+4. A **subject pattern** for the short-lived certificates, e.g. `CN=${name}`
+   ([Configure Subject Patterns][sap-subject]).
+5. A **system mapping**: back-end type *ABAP System*, protocol HTTPS, the internal host and port, a
+   virtual host and port, principal propagation allowed with principal type *X.509 Certificate*; and
+   the resource `/sap/bc/adt` with *Path and all sub-paths*, plus the OData paths you trigger with
+   `trigger: "http"` ([Configure Access Control (HTTP)][sap-access]).
+
+In the **ABAP system**:
+
+1. `STRUST`, *SSL Server Standard*: import the issuer of the Cloud Connector's system certificate (the
+   certificate itself if it is self-signed) and add it to the certificate list.
+2. `RZ10`: let the ICM trust the Cloud Connector's system certificate, then restart the ICM in `SMICM`
+   (kernel 7.42 and lower: `icm/HTTPS/trust_client_with_subject` and `icm/HTTPS/trust_client_with_issuer`):
+
+   ```text
+   icm/trusted_reverse_proxy_<x> = SUBJECT="<system certificate's subject>", ISSUER="<its issuer>"
+   ```
+3. `login/certificate_mapping_rulebased = 1`, and in `CERTRULE` a rule that maps the short-lived
+   certificates to SAP users — import a sample certificate the Cloud Connector generates from the
+   subject pattern ([Rule-Based Mapping of Certificates][sap-certrule]).
+4. `SICF`: the ADT services (`/sap/bc/adt`) accept *Logon Through SSL Certificate*.
+
+### The BTP ABAP Environment
+
+No Cloud Connector: an `OAuth2UserTokenExchange` destination in the same subaccount, with the client
+ID, client secret and token URL (`<uaa url>/oauth/token`) of a service key of the ABAP instance
+([OAuth User Token Exchange Authentication][sap-token-exchange]).
+
+[sap-pp-https]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/configure-identity-propagation-for-https-a8bb87a.md
+[sap-ca]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/configure-a-ca-certificate-d0c4d56.md
+[sap-trust]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/set-up-trust-a4ee70f.md
+[sap-subject]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/configure-subject-patterns-58803a2.md
+[sap-access]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/configure-access-control-http-e7d4927.md
+[sap-certrule]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/rule-based-mapping-of-certificates-4f8540f.md
+[sap-token-exchange]: https://github.com/SAP-docs/btp-connectivity/blob/main/docs/1-connectivity-documentation/oauth-user-token-exchange-authentication-e3c333f.md
 
 ## 1. Create the destination
 
@@ -156,8 +195,8 @@ clients, and `SAP_URL` + `SAP_USER`/`SAP_PASSWORD` — one SAP identity for ever
 
 The SAP Cloud SDK chain (`@sap-cloud-sdk/connectivity` → `jks-js` → `node-forge`) carries the
 unpatched advisory [GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv) (RSA
-signature verification in node-forge), for which no fixed release exists yet; ARC-1 carries the same
-dependency and documents it as a known risk. Check the advisory before deploying.
+signature verification in node-forge), for which no fixed release exists yet. Check the advisory
+before deploying.
 
 ## Status
 

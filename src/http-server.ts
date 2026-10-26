@@ -2,7 +2,7 @@
  * The MCP server over Streamable HTTP — how it runs on SAP BTP Cloud Foundry, or on any host. Each
  * request is served by a fresh MCP server bound to the calling user (stateless transport), behind
  * XSUAA OAuth (with dynamic client registration for MCP clients) and/or API keys, both from
- * @arc-mcp/xsuaa-auth as in ARC-1. The tools need the `debug` scope.
+ * @arc-mcp/xsuaa-auth. The tools need the `debug` scope.
  *
  * Interactive sessions live in this process, keyed by user: a deployment runs ONE instance.
  */

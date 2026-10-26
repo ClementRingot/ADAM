@@ -3,7 +3,7 @@
  *
  * The body shape is REFERENCE-DERIVED: the `SystemInfo` type SAP Fiori tools declares for
  * `/sap/bc/adt/core/http/systeminformation` (`@sap-ux/axios-extension`) and the fields
- * vibing-steampunk reads from it — not a live capture (docs/research/2026-10-22-abap-debugger-one-shot-capture.md §7.3).
+ * vibing-steampunk reads from it — not a live capture (docs/adt-debugger-protocol.md, "Who is debugged").
  */
 import { describe, expect, it, vi } from 'vitest';
 import { AdtApiError } from '../../../src/adt/errors.js';

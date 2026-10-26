@@ -1,6 +1,6 @@
 /**
  * The HTTP trigger only ever GETs an OData path on the connected system — never an absolute URL, a
- * traversal, or another SAP service. Ported from ARC-1 (src/adt/diagnostics.ts `assertODataPerfUrl`).
+ * traversal, or another SAP service.
  */
 
 const BASE = 'https://odata-path.invalid';

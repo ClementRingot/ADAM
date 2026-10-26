@@ -4,7 +4,7 @@ version: 0.1.0
 description: ABAP debugger MCP server — one-shot and interactive debugging of ABAP code for AI assistants
 
 # ──────────────────────────────────────────────────────────────────────
-# SAP BTP Cloud Foundry deployment, the way ARC-1 deploys:
+# SAP BTP Cloud Foundry deployment:
 #   - XSUAA authenticates MCP clients (OAuth, with dynamic client registration)
 #   - the Destination service names the SAP system and how each user logs on
 #     (PrincipalPropagation: every user debugs as their own SAP user)

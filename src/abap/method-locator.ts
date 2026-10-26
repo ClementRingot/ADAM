@@ -1,8 +1,7 @@
 /**
  * Where a method's implementation sits in a class source (its METHOD … ENDMETHOD lines), so a
  * `method` breakpoint lands on the method's first statement. abaplint parses the source; a line
- * scan is the fallback for code abaplint cannot structure. Ported from ARC-1
- * (src/context/method-surgery.ts `listMethods` + `extractMethod`), reduced to what a debugger needs.
+ * scan is the fallback for code abaplint cannot structure.
  */
 
 import { Config, MemoryFile, type Nodes, Registry, Structures, Version } from '@abaplint/core';
@@ -116,7 +115,7 @@ export function implementationsByLineScan(source: string): MethodImplementation[
 }
 
 /**
- * The method `methodName` names in one listing. Lookup order, as ARC-1's `extractMethod`:
+ * The method `methodName` names in one listing. Lookup order:
  * 1. a bare name several local classes implement is ambiguous — the caller must qualify it;
  * 2. exact match (`get_total`, or a global interface method `zif_order~process`);
  * 3. local-class qualified (`lhc_travel~validate_dates` → method validate_dates of lhc_travel);

@@ -6,7 +6,7 @@
  * same SAP user and catch each other's runs: it is refused unless the administrator allows it.
  *
  * Destination lookups, per-user token exchange and the Connectivity proxy descriptor come from
- * @arc-mcp/xsuaa-auth/btp (extracted from ARC-1); this module applies them to the ADT client.
+ * @arc-mcp/xsuaa-auth/btp; this module applies them to the ADT client.
  */
 
 import type { AuthInfo } from '@arc-mcp/xsuaa-auth';

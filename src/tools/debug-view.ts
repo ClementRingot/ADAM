@@ -157,9 +157,9 @@ export async function readNamedVariables(
 }
 
 /**
- * The stopped frame's variables. Releases differ in what `@ROOT` holds (research dossier §3.4): real
- * variable rows directly, or scope nodes (pseudo ids like `@…`, or children without a variable row
- * of their own) whose children are the variables. Both are read; scopes in one batched request.
+ * The stopped frame's variables. Releases differ in what `@ROOT` holds (docs/adt-debugger-protocol.md):
+ * real variable rows directly, or scope nodes (pseudo ids like `@…`, or children without a variable
+ * row of their own) whose children are the variables. Both are read; scopes in one batched request.
  */
 export async function readFrameVariables(session: DebuggerSession, warnings: string[]): Promise<CapturedVariable[]> {
   const root = await session.childVariables(['@ROOT']);

@@ -1,9 +1,9 @@
 /**
- * ABAP debugger over ADT REST (`/sap/bc/adt/debugger/*`) — the building blocks of the one-shot
- * capture behind the `abap_debug` tool. Ported from ARC-1 (src/adt/debugger.ts).
+ * ABAP debugger over ADT REST (`/sap/bc/adt/debugger/*`) — the building blocks of the `abap_debug`
+ * captures and interactive sessions.
  *
  * Contract (corroborated by abap-adt-api, vscode_abap_remote_fs and vibing-steampunk — see
- * docs/research/2026-10-22-abap-debugger-one-shot-capture.md):
+ * docs/adt-debugger-protocol.md):
  * - breakpoints and the listener are keyed by `debuggingMode=user` + `requestUser` + `terminalId` +
  *   `ideId`; `requestUser` MUST be the real SAP logon user (an empty one matches nothing);
  * - the listener is a long poll that answers with the stopped debuggee, or an empty body at timeout;
@@ -12,8 +12,8 @@
  *   `openSessionOnServer()` (or `openSessionsAhead()`) returns.
  *
  * Deliberately absent: variable writes (`setVariableValue`), `stepJumpToLine` and system debugging —
- * the capture observes a run, it never changes what the program does. `stepRunToLine` is not needed:
- * a second breakpoint plus `stepContinue` reaches the same line.
+ * the debugger observes a run, it never changes what the program does. `terminateDebuggee` aborts
+ * it only when an interactive session is ended with `terminate`, or as the release's last resort.
  */
 
 import { randomUUID } from 'node:crypto';

@@ -1,13 +1,14 @@
 /**
- * abap_debug — one-shot ABAP debugger capture. Ported from ARC-1 (src/handlers/debug.ts).
+ * abap_debug — the ABAP debugger capture.
  *
- * A stopped debuggee holds a work process plus the request that ran it, so the whole debugger loop
- * completes inside ONE tool call: arm breakpoints → long-poll the listener on the stateless client →
- * run the trigger → attach on one stateful session, opened on the debuggee's application server
- * (SAP attaches from no other) → follow that ONE run from stop to stop (read, step, `stepContinue`)
- * → release → always remove the capture's breakpoints and the listener. The model gets snapshots
- * of one run, never a remote control.
- * See docs/research/2026-10-22-abap-debugger-one-shot-capture.md.
+ * A stopped debuggee holds a work process plus the request that ran it, so a one-shot capture
+ * completes the whole debugger loop inside ONE tool call: arm breakpoints → long-poll the listener
+ * on the stateless client → run the trigger → attach on one stateful session, opened on the
+ * debuggee's application server (SAP attaches from no other) → follow that ONE run from stop to stop
+ * (read, step, `stepContinue`) → release → always remove the capture's breakpoints and the listener.
+ * With `interactive: true`, src/tools/debug-session.ts runs the same capture up to its first stop
+ * and keeps the program waiting there between calls.
+ * See docs/adt-debugger-protocol.md.
  */
 
 import { setTimeout as sleep } from 'node:timers/promises';

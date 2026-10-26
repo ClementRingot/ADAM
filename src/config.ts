@@ -1,6 +1,6 @@
 /**
  * Configuration from the environment — the `env` block of the MCP client's server entry, or a
- * `--env-file`. The variable names are ARC-1's, so an ARC-1 `.env` works here unchanged.
+ * `--env-file`.
  */
 
 import { resolveCookies } from './adt/cookies.js';

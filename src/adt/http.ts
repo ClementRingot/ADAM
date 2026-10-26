@@ -3,10 +3,9 @@
  * stateful sessions (`sap-contextid`) with SAP's close-session request, request deadlines, and
  * Basic, cookie or Bearer (BTP ABAP Environment) authentication.
  *
- * Ported from ARC-1's AdtHttpClient (src/adt/http.ts) without its transient replays (503, 429,
- * broken DB connection) and content negotiation: a debugger POST — a step, a continue — must never
- * be sent twice. The only resends are of requests SAP refused before running anything: an expired
- * session (401) and a stale CSRF token (403 "Required").
+ * No transient replays (503, 429, a broken DB connection) and no content negotiation: a debugger
+ * POST — a step, a continue — must never be sent twice. The only resends are of requests SAP refused
+ * before running anything: an expired session (401) and a stale CSRF token (403 "Required").
  *
  * On SAP BTP the identity comes per user from the Destination Service (`authHeaders`), and an
  * on-premise system is reached through the Connectivity proxy (`connectivityProxy`).

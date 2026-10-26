@@ -1,6 +1,6 @@
 /**
  * Authentication cookies: a Netscape cookie file (curl, browser extensions) or an inline
- * `name=value; name2=value2` string. Ported from ARC-1 (src/adt/cookies.ts).
+ * `name=value; name2=value2` string.
  */
 
 import { readFileSync } from 'node:fs';

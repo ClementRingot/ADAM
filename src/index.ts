@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * abap-debugger-mcp — the stdio entry point an MCP client starts.
+ * abap-debugger-mcp — the entry point: stdio, started by the MCP client, or Streamable HTTP (--http).
  */
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -11,7 +11,7 @@ import { createMcpServer } from './server.js';
 import { endDebugSessions } from './tools/debug-session.js';
 import { VERSION } from './version.js';
 
-const USAGE = `abap-debugger-mcp ${VERSION} — MCP server (stdio) that captures one run of ABAP code in SAP's debugger.
+const USAGE = `abap-debugger-mcp ${VERSION} — MCP server that lets an AI assistant debug ABAP code in SAP's debugger.
 
 Usage: abap-debugger-mcp [--env-file <path>] [--http]
 

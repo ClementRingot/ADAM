@@ -4,8 +4,8 @@
  * call then makes one move — step, continue, inspect, end — and answers where the program stands,
  * with the code around it and the watched variables.
  *
- * ARC-1 cannot do this (a stateless HTTP server, possibly several instances); this server is one
- * long-lived stdio process for one user, so it holds the attached debugger session between calls.
+ * The attached debugger session lives in this process between calls — the stdio process of one
+ * user, or the single instance of an HTTP deployment — so it lasts no longer than the process.
  * The program holds a work process and its caller's request meanwhile, so a session is released
  * after `idleSeconds` without a call, after `sessionSeconds` in all, and when the server stops.
  * One session per MCP user (`ToolContext.owner`; the local user over stdio), and one debugger per

@@ -1,8 +1,8 @@
 /**
  * A fake SAP for the debugger tests: answers the mocked undici fetch like an ADT system with one
  * class (ZCL_ORDER), its unit tests and a program whose run the options shape. The SAP answers are
- * REFERENCE-DERIVED (abap-adt-api / vibing-steampunk shapes, see
- * docs/research/2026-10-22-abap-debugger-one-shot-capture.md), not live captures.
+ * REFERENCE-DERIVED (abap-adt-api / vibing-steampunk shapes, see docs/adt-debugger-protocol.md),
+ * not live captures.
  */
 import type { Mock } from 'vitest';
 import { AdtHttpClient, type AdtHttpConfig } from '../../src/adt/http.js';

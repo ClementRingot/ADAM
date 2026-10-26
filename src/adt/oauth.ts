@@ -1,8 +1,8 @@
 /**
  * OAuth 2.0 authorization-code login (PKCE) for the SAP BTP ABAP Environment, from its service
  * key — the browser login Eclipse ADT uses. The access token then authenticates every ADT request
- * (`Authorization: Bearer`). Ported from ARC-1 (src/adt/oauth.ts); concurrent callers now share one
- * login or refresh instead of opening a browser each.
+ * (`Authorization: Bearer`). Concurrent callers share one login or refresh instead of opening a
+ * browser each.
  */
 
 import { execFile } from 'node:child_process';

@@ -21,7 +21,7 @@ describe('loadConfig', () => {
     ]);
   });
 
-  it('reads Basic authentication with ARC-1-compatible names and defaults', () => {
+  it('reads Basic authentication with its defaults', () => {
     const { config, problems } = loadConfig({
       SAP_URL: 'https://sap.example:44300',
       SAP_USER: 'developer',
