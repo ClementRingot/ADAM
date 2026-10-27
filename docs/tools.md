@@ -236,7 +236,18 @@ At most 1,500 lines per call. The sources of classes, programs and function modu
 
 **From a Fiori app to the code.** The app's OData service is a service binding: find it with
 `abap_search` (`types: ["SRVB"]`), then `SRVB` → `SRVD` → the CDS view of an entity → the `BDEF` of
-the root view → the behavior pool and its handler methods. A classic Gateway service (a SEGW project,
+the root view → the behavior pool and its handler methods.
+
+The app's requests (the browser's network tab, or the data source in its `manifest.json`) name the
+binding outright:
+
+| URL | Binding | Service definition | Entity set |
+|---|---|---|---|
+| `/sap/opu/odata4/sap/zui_travel_o4/srvd/sap/zui_travel/0001/Travel` | `ZUI_TRAVEL_O4` | `ZUI_TRAVEL` | `Travel` |
+| `/sap/opu/odata4/dmo/api_travel_u_v4/srvd_a2x/dmo/travel_u/0001/Travel` | `/DMO/API_TRAVEL_U_V4` | `/DMO/TRAVEL_U` | `Travel` |
+| `/sap/opu/odata/sap/ZUI_TRAVEL_O2/Travel` | `ZUI_TRAVEL_O2` (or a SEGW service) | — | `Travel` |
+
+A namespace other than `sap` in the URL (`dmo`) is the objects' namespace (`/DMO/`). A classic Gateway service (a SEGW project,
 `IWPR`) runs its data-provider class instead: `abap_search` for `*_DPC_EXT` with the project's name.
 
 ## `abap_search` — find objects
