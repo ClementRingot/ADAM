@@ -269,6 +269,23 @@ describe('abap_debug — a hit', () => {
     ).toEqual(['appserver-rpsxx', 'appserver-t4w2x', 'appserver-t4w2x']);
   });
 
+  it('opens its sessions before arming anything: armed breakpoints catch every request of the user', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+      debuggeeServer: 'appserver-t4w2x',
+    });
+    await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+    const firstArm = calls.findIndex((c) => c.method === 'POST' && c.path === '/sap/bc/adt/debugger/breakpoints');
+    const trigger = calls.findIndex((c) => c.path === '/sap/bc/adt/abapunit/testruns');
+    // Every session opened ahead of the run (before its trigger) was opened before the first breakpoint.
+    const ahead = calls
+      .map((c, index) => ({ c, index }))
+      .filter(({ c, index }) => index < trigger && c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful);
+    expect(ahead.length).toBeGreaterThan(0);
+    expect(ahead.every(({ index }) => index < firstArm)).toBe(true);
+  });
+
   it("attaches to the user's own run from the session already waiting on its server", async () => {
     const { calls } = installFakeSap({
       hit: true,
@@ -1050,8 +1067,8 @@ describe('abap_debug — event breakpoints', () => {
     expect(named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]?.body).toContain('msgTy=""');
   });
 
-  it('stops at each statement of a kind, every stop with its own position', async () => {
-    installFakeSap({
+  it('stops at each statement of a kind, set in the run once its line breakpoint stopped it', async () => {
+    const { calls } = installFakeSap({
       hit: true,
       execution: [
         at9,
@@ -1059,36 +1076,49 @@ describe('abap_debug — event breakpoints', () => {
         { path: REPORT, line: 30, event: 'statement:COMMIT WORK' },
       ],
     });
-    const { json } = await debug({ ...order, breakpoints: [{ statement: 'commit   work', hits: 2 }] });
-    expect(json?.breakpoints).toEqual([{ kind: 'statement', statement: 'COMMIT WORK', status: 'set', hits: 2 }]);
+    const { json } = await debug({ ...order, line: 9, breakpoints: [{ statement: 'commit   work', hits: 2 }] });
+    expect(json?.breakpoints).toEqual([
+      expect.objectContaining({ kind: 'line', status: 'set', line: 9, hits: 1 }),
+      { kind: 'statement', statement: 'COMMIT WORK', status: 'set', scope: 'run', hits: 2 },
+    ]);
     // Not compact like a loop's line breakpoint: each stop is somewhere else.
     expect(json?.stops.map((stop: Record<string, any>) => [stop.at, stop.hit, stop.stoppedAt?.line])).toEqual([
+      ['CLAS ZCL_ORDER the main source line 9', undefined, 9],
       ['statement COMMIT WORK', 1, 10],
       ['statement COMMIT WORK', 2, 30],
     ]);
-    expect(json?.stops[1]).toHaveProperty('variables');
+    expect(json?.stops[2]).toHaveProperty('variables');
+    // Never armed for the whole user: only the run's own set, on the attached session, names it.
+    const syncs = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints');
+    const external = syncs.filter((call) => call.body.includes('scope="external"'));
+    const run = syncs.find((call) => call.body.includes('scope="debugger"') && call.body.includes('<breakpoint'));
+    expect(external.some((call) => call.body.includes('kind="statement"'))).toBe(false);
+    expect(run?.body).toContain('kind="statement" clientId="dbg-0-statement" skipCount="0" statement="COMMIT WORK"');
+    expect(run?.body).toContain('kind="line"');
   });
 
-  it('refuses a statement kind SAP does not know, listing the ones it does', async () => {
+  it('refuses a statement breakpoint without a line or method breakpoint to enter the run', async () => {
     const { calls } = installFakeSap({ hit: true, execution: [at9] });
-    const { result, json } = await debug({ ...order, breakpoints: [{ statement: 'COMMIT' }] });
+    const { result, text } = await debug({ ...order, breakpoints: [{ statement: 'CLEAR' }] });
     expect(result.isError).toBe(true);
-    expect(json?.breakpoints).toEqual([
-      {
-        kind: 'statement',
-        statement: 'COMMIT',
-        status: 'refused',
-        error: 'Statement COMMIT is not supported',
-        known: ['CALL FUNCTION', 'COMMIT WORK', 'MESSAGE'],
-      },
-    ]);
+    expect(text).toContain('set in the debugged run only');
+    expect(text).toContain("this server's own included");
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')).toHaveLength(0);
+  });
+
+  it('refuses a statement kind SAP does not know before arming anything, listing the ones it does', async () => {
+    const { calls } = installFakeSap({ hit: true, execution: [at9] });
+    const { result, text } = await debug({ ...order, line: 9, breakpoints: [{ statement: 'COMMIT' }] });
+    expect(result.isError).toBe(true);
+    expect(text).toBe('SAP knows no statement kind COMMIT. Its statement kinds: CALL FUNCTION, COMMIT WORK, MESSAGE.');
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')).toHaveLength(0);
     expect(named(calls, 'POST', '/sap/bc/adt/debugger/listeners')).toHaveLength(0);
   });
 
-  it('arms several exception classes beside the top-level one', async () => {
+  it('sets exception breakpoints beside a line breakpoint in the run only, from its first stop', async () => {
     const { calls } = installFakeSap({
       hit: true,
-      execution: [{ path: MAIN, line: 10, event: 'exception:CX_SY_ITAB_LINE_NOT_FOUND' }],
+      execution: [at9, { path: MAIN, line: 10, event: 'exception:CX_SY_ITAB_LINE_NOT_FOUND' }],
     });
     const { json } = await debug({
       ...order,
@@ -1097,14 +1127,42 @@ describe('abap_debug — event breakpoints', () => {
       exceptionClass: 'CX_SY_ZERODIVIDE',
     });
     expect(json?.breakpoints).toEqual([
-      expect.objectContaining({ kind: 'line', status: 'set', line: 9, hits: 0 }),
-      { kind: 'exception', exceptionClass: 'CX_SY_ITAB_LINE_NOT_FOUND', status: 'set', hits: 1 },
-      { kind: 'exception', exceptionClass: 'CX_SY_ZERODIVIDE', status: 'set', hits: 0 },
+      expect.objectContaining({ kind: 'line', status: 'set', line: 9, hits: 1 }),
+      { kind: 'exception', exceptionClass: 'CX_SY_ITAB_LINE_NOT_FOUND', status: 'set', scope: 'run', hits: 1 },
+      { kind: 'exception', exceptionClass: 'CX_SY_ZERODIVIDE', status: 'set', scope: 'run', hits: 0 },
     ]);
-    expect(json?.stops).toEqual([expect.objectContaining({ at: 'exception CX_SY_ITAB_LINE_NOT_FOUND' })]);
-    const probe = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]?.body ?? '';
-    expect(probe).toContain('clientId="dbg-0-exception" skipCount="0" exceptionClass="CX_SY_ITAB_LINE_NOT_FOUND"');
-    expect(probe).toContain('clientId="dbg-1-exception" skipCount="0" exceptionClass="CX_SY_ZERODIVIDE"');
+    expect(json?.stops.map((stop: Record<string, any>) => stop.at)).toEqual([
+      'CLAS ZCL_ORDER the main source line 9',
+      'exception CX_SY_ITAB_LINE_NOT_FOUND',
+    ]);
+    const syncs = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints');
+    const run = syncs.find((call) => call.body.includes('scope="debugger"') && call.body.includes('<breakpoint'));
+    expect(syncs.some((call) => call.body.includes('scope="external"') && call.body.includes('kind="exception"'))).toBe(
+      false,
+    );
+    expect(run?.body).toContain('clientId="dbg-0-exception" skipCount="0" exceptionClass="CX_SY_ITAB_LINE_NOT_FOUND"');
+    expect(run?.body).toContain('clientId="dbg-1-exception" skipCount="0" exceptionClass="CX_SY_ZERODIVIDE"');
+  });
+
+  it('learns the id of a run breakpoint SAP did not confirm from the stop that names it', async () => {
+    installFakeSap({
+      hit: true,
+      runSyncSilent: true,
+      execution: [at9, { path: MAIN, line: 10, event: 'exception:CX_SY_ZERODIVIDE' }],
+    });
+    const { json } = await debug({ ...order, line: 9, exceptionClass: 'CX_SY_ZERODIVIDE' });
+    expect(json?.breakpoints).toEqual([
+      expect.objectContaining({ kind: 'line', status: 'set', hits: 1 }),
+      { kind: 'exception', exceptionClass: 'CX_SY_ZERODIVIDE', status: 'set', scope: 'run', hits: 1 },
+    ]);
+    expect(json?.stops[1]).toMatchObject({ at: 'exception CX_SY_ZERODIVIDE' });
+  });
+
+  it('reports run breakpoints as never set when the run never stopped', async () => {
+    installFakeSap({ hit: false });
+    const { json } = await debug({ ...order, line: 9, exceptionClass: 'CX_SY_ZERODIVIDE', timeoutSeconds: 1 });
+    expect(json?.hit).toBe(false);
+    expect(json?.breakpoints[1]).toMatchObject({ kind: 'exception', status: 'not set', scope: 'run' });
   });
 
   it('validates event breakpoints before anything reaches SAP', async () => {

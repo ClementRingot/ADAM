@@ -403,6 +403,39 @@ export async function listenForDebuggee(
   return debuggee ? { status: 'caught', debuggee } : { status: 'timeout' };
 }
 
+/** One long poll lasts at most this long; the registration survives between polls. */
+const LISTEN_CHUNK_SECONDS = 120;
+/** Between two polls SAP answered at once (it should not): a pause instead of a busy loop. */
+const LISTEN_REPOLL_PAUSE_MS = 1000;
+
+/**
+ * Listen for `totalSeconds` in all: one long poll after another, each at most LISTEN_CHUNK_SECONDS,
+ * so a long wait never rides on a single request (proxies and the Cloud Connector cut long ones).
+ * The registration survives a poll's empty answer, and a debuggee that stops between two polls
+ * waits for the next one. Ends on a stop, a conflict, an error, the total time, or `signal`.
+ */
+export async function listenUntil(
+  http: AdtHttpClient,
+  identity: DebugIdentity,
+  totalSeconds: number,
+  options: AdtRequestOptions = {},
+): Promise<DebugListenResult> {
+  const end = Date.now() + totalSeconds * 1000;
+  for (;;) {
+    const left = Math.ceil((end - Date.now()) / 1000);
+    if (left <= 0 || options.signal?.aborted) return { status: 'timeout' };
+    const started = Date.now();
+    const chunk = Math.min(left, LISTEN_CHUNK_SECONDS);
+    const result = await listenForDebuggee(http, identity, chunk, options);
+    if (result.status !== 'timeout') return result;
+    if (Date.now() - started < (chunk * 1000) / 2) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(LISTEN_REPOLL_PAUSE_MS, Math.max(0, end - Date.now()))),
+      );
+    }
+  }
+}
+
 /**
  * Remove the user's listener registration. In user mode SAP keys it by user ALONE (IDE_ID = user,
  * TERMINAL_ID = '%_USER'), so a DELETE quoting our ids would match nothing and the registration would
@@ -852,6 +885,14 @@ export class DebuggerSession {
    */
   async removeBreakpoint(id: string): Promise<void> {
     await deleteBreakpoint(this.http, this.identity, id, 'debugger', this.options);
+  }
+
+  /**
+   * Replace the breakpoints of this attached run (`scope=debugger`) with `specs`. What is set here
+   * stops this run only — never another request of the same SAP user, this server's own included.
+   */
+  async syncRunBreakpoints(specs: readonly DebugBreakpointSpec[]): Promise<DebugBreakpointState[]> {
+    return syncBreakpoints(this.http, this.identity, specs, 'debugger', this.options);
   }
 
   /**

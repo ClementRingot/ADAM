@@ -25,7 +25,8 @@ import {
   debuggerErrorText,
   endSession,
   findListenerConflict,
-  listenForDebuggee,
+  listDebugStatements,
+  listenUntil,
   openSessionOnServer,
   openSessionsAhead,
   type PinnedSession,
@@ -41,6 +42,7 @@ import type { SapConnection, ToolContext } from './connection.js';
 import {
   type ArmedBreakpoints,
   armBreakpoints,
+  armInRun,
   type BreakpointLocation,
   DebugInputError,
   disarm,
@@ -50,6 +52,7 @@ import {
   resolveFunctionGroup,
   resolveLineTarget,
   type StopTarget,
+  unsetRunEvents,
 } from './debug-arm.js';
 import { collectStops, type FirstStop, type Inspection, type StepMode, type StepUntil } from './debug-follow.js';
 import type { DebugInput } from './debug-input.js';
@@ -356,6 +359,7 @@ export async function inspect(
     inspection.attached = true;
     if (attach.postMortem) warnings.push('SAP attached a post-mortem (short dump) session — inspection only.');
     await run.clearExternal();
+    if (run.armed && !attach.postMortem) await armInRun(session, run.armed, run.armedIds, warnings);
     await follow(
       session,
       {
@@ -401,6 +405,34 @@ export async function inspect(
 }
 
 // ─── Capture ───────────────────────────────────────────────────────
+
+/**
+ * Statement breakpoints, checked before anything is armed: they need a line or method breakpoint to
+ * enter the run (they are set in that run only — armed for the whole user, a statement as common as
+ * CLEAR stops every request of the user, this server's own included), and a kind SAP knows.
+ */
+async function checkStatements(conn: SapConnection, events: readonly EventLocation[], entered: boolean) {
+  const statements = events.flatMap((event) => (event.kind === 'statement' ? [event.statement] : []));
+  if (statements.length === 0) return;
+  if (!entered) {
+    throw new DebugInputError(
+      `A statement breakpoint (${statements.join(', ')}) is set in the debugged run only: armed for the whole SAP user it would stop every request that runs the statement — this server's own included. Add a line or method breakpoint that stops the run first; the statement breakpoint then applies from that stop on.`,
+    );
+  }
+  let known: string[];
+  try {
+    known = (await listDebugStatements(conn.http)).map((statement) => statement.name.toUpperCase()).filter(Boolean);
+  } catch {
+    return; // SAP's own refusal at the first stop will say it
+  }
+  if (known.length === 0) return;
+  const unknown = statements.filter((statement) => !known.includes(statement));
+  if (unknown.length > 0) {
+    throw new DebugInputError(
+      `SAP knows no statement kind ${unknown.join(', ')}. Its statement kinds: ${[...new Set(known)].join(', ')}.`,
+    );
+  }
+}
 
 type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 
@@ -465,6 +497,9 @@ export class CaptureRun {
   readonly armedIds: string[] = [];
   /** The session opened ahead on the debuggee's server, which the attach uses. */
   attachedFrom: AdtHttpClient | undefined;
+  /** What the capture armed: the attach sets its run-only event breakpoints from it. */
+  armed: ArmedBreakpoints | undefined;
+  readonly startedAt = Date.now();
   private ahead: SessionsAhead = { byServer: new Map() };
   private listenerStarted = false;
   private externalCleared = false;
@@ -495,6 +530,9 @@ export class CaptureRun {
     await this.clearExternal();
     for (const session of this.ahead.byServer.values()) {
       if (session !== this.attachedFrom) await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    }
+    if (this.ahead.trigger && !this.running) {
+      await endSession(this.ahead.trigger, { deadline: Date.now() + RELEASE_BUDGET_MS });
     }
     if (!this.listenerStarted) return;
     try {
@@ -540,6 +578,7 @@ export class CaptureRun {
         'Give a breakpoint: breakpoints (a line, a CLAS method, a message, a statement or an exception class each), line (with type + name), and/or exceptionClass.',
       );
     }
+    await checkStatements(conn, req.events, targets.length > 0);
     const plan = await planTrigger(conn, req, cache);
 
     const conflict = await findListenerConflict(conn.http, identity);
@@ -551,7 +590,11 @@ export class CaptureRun {
       };
     }
 
+    // Sessions open BEFORE anything is armed: once breakpoints are armed, this server's own requests
+    // run as the debugged user too and must stay as few as possible.
+    this.ahead = await openAhead(conn, plan, warnings);
     const armed = await armBreakpoints(conn, identity, targets, req.events, this.armedIds);
+    this.armed = armed;
     if (armed.ids.length === 0) {
       return {
         result: errorResult(
@@ -564,9 +607,8 @@ export class CaptureRun {
       };
     }
 
-    this.ahead = await openAhead(conn, plan, warnings);
     this.listenerStarted = true;
-    const listen: Promise<ListenSettled> = listenForDebuggee(conn.http, identity, req.timeoutSeconds, {
+    const listen: Promise<ListenSettled> = listenUntil(conn.http, identity, req.timeoutSeconds, {
       signal: this.listenAbort.signal,
     }).catch((error: unknown) => ({ status: 'error' as const, error }));
 
@@ -619,6 +661,7 @@ export class CaptureRun {
     };
 
     if (outcome.status !== 'caught') {
+      unsetRunEvents(armed);
       await this.teardown();
       const triggerOutcome = await this.settleTrigger();
       const triggerFailure =
@@ -671,7 +714,7 @@ export function breakpointsWithHits(armed: ArmedBreakpoints, hits: ReadonlyMap<s
   const breakpoints = armed.report.map((entry) => ({ ...entry }));
   for (const bp of armed.armed) {
     const entry = breakpoints[bp.reportIndex];
-    if (entry) entry.hits = hits.get(bp.id) ?? 0;
+    if (entry) entry.hits = hits.get(bp.clientId) ?? 0;
   }
   return breakpoints;
 }
@@ -683,6 +726,7 @@ export function breakpointsWithHits(armed: ArmedBreakpoints, hits: ReadonlyMap<s
 export async function captureResult(run: CaptureRun, caught: Caught, inspection: Inspection): Promise<ToolResult> {
   const { warnings } = run;
   const { debuggee, armed, base } = caught;
+  if (!inspection.attached) unsetRunEvents(armed);
   await run.teardown();
   const triggerOutcome = await run.settleTrigger();
   if (inspection.release && !inspection.release.released) {
@@ -701,6 +745,7 @@ export async function captureResult(run: CaptureRun, caught: Caught, inspection:
       ...(inspection.release ? { release: inspection.release } : {}),
       ...(inspection.error ? { error: inspection.error } : {}),
       trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
+      seconds: Math.round((Date.now() - run.startedAt) / 1000),
       // One warning per kind: every stop of a big frame would repeat the same one.
       ...(warnings.length > 0 ? { warnings: [...new Set(warnings)] } : {}),
     }),

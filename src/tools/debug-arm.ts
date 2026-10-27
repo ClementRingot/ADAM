@@ -8,6 +8,7 @@ import { detectLocalHandlerInclude } from '../abap/object-types.js';
 import {
   type DebugBreakpointSpec,
   type DebugBreakpointState,
+  type DebuggerSession,
   type DebugIdentity,
   debuggerErrorText,
   deleteBreakpoint,
@@ -173,10 +174,18 @@ export async function resolveLineTarget(
 export interface ArmedBreakpoint {
   /** Server id, shared by the external breakpoint and its debug-session copy. */
   id: string;
+  /** Ids it had before SAP renumbered it (setting the run's own breakpoints may): SAP may still name them. */
+  aliases?: string[];
+  /** The clientId it was armed with, which SAP echoes: its key through the run, whatever its id. */
+  clientId: string;
+  /** Set in the run, but SAP's answer named no id: the first unknown id SAP names at a stop is its. */
+  unconfirmed?: boolean;
   label: string;
   kind: 'line' | EventLocation['kind'];
   /** Line breakpoints: lower-cased source URI + the line SAP armed — how a stop is recognised on the stack. */
   uri?: string;
+  /** Line breakpoints: the source URI as armed, to set it again in the run. */
+  sourceUri?: string;
   line?: number;
   /** SAP stops here only where this holds — so a step merely passing the line is no stop of it. */
   condition?: string;
@@ -186,12 +195,27 @@ export interface ArmedBreakpoint {
   reportIndex: number;
 }
 
+/** An event breakpoint set in the debugged run only, once it first stops. */
+export interface RunEvent {
+  event: EventLocation;
+  /** Its position among the request's event breakpoints (its clientId). */
+  index: number;
+  /** Its entry in the breakpoints report. */
+  reportIndex: number;
+}
+
 export interface ArmedBreakpoints {
   /** Server ids of every breakpoint the capture left armed — the cleanup list. */
   ids: string[];
   armed: ArmedBreakpoint[];
   report: Array<Record<string, unknown>>;
+  /** Event breakpoints armed in the run at its first stop (`armInRun`), not for the whole user. */
+  inRun: RunEvent[];
 }
+
+/** Does SAP's `id` name this breakpoint — under its id or one it had before? */
+export const isBreakpoint = (bp: ArmedBreakpoint, id: string): boolean =>
+  bp.id === id || (bp.aliases?.includes(id) ?? false);
 
 /** `target`: the location's position in the request — two locations may probe the same line numbers. */
 const lineClientId = (target: number, line: number): string => `dbg-${target}-line-${line}`;
@@ -285,6 +309,12 @@ function acceptedLine(
  * the event breakpoints, sent as they are in both. Conditions ride on the second sync only, as
  * vscode_abap_remote_fs sends them: the probe finds the line, then the condition goes onto the line
  * SAP armed. The report lists the line breakpoints first, then the event ones.
+ *
+ * External breakpoints stop every request of the SAP user — this server's own ADT requests too, and
+ * a frequent statement (CLEAR) or an exception SAP code raises and catches stops them (seen live).
+ * So with a line or method breakpoint to enter the run, the event breakpoints wait for its first stop
+ * and are set in that run only (`armInRun`); without one, exception and message breakpoints are the
+ * only way in and go external.
  */
 export async function armBreakpoints(
   conn: SapConnection,
@@ -293,7 +323,8 @@ export async function armBreakpoints(
   events: readonly EventLocation[],
   armedIds: string[],
 ): Promise<ArmedBreakpoints> {
-  const eventSpecs = events.map(eventSpec);
+  const inRun = targets.length > 0;
+  const eventSpecs = inRun ? [] : events.map(eventSpec);
   const lineSpec = (index: number, line: number, withCondition = false): DebugBreakpointSpec => {
     const condition = withCondition ? targets[index]?.condition : undefined;
     return {
@@ -360,9 +391,11 @@ export async function armBreakpoints(
       const line = state.line ?? hit.line;
       armed.push({
         id: state.id,
+        clientId: state.clientId || lineClientId(index, hit.requested),
         label: target.label,
         kind: 'line',
         uri: target.uri.toLowerCase(),
+        sourceUri: target.uri,
         line,
         ...condition,
         maxHits: target.hits,
@@ -402,11 +435,19 @@ export async function armBreakpoints(
     }
   });
   const unknownStatements: Array<Record<string, unknown>> = [];
+  const runEvents: RunEvent[] = [];
   events.forEach((event, index) => {
+    if (inRun) {
+      // Set at the run's first stop: until then the report says so.
+      runEvents.push({ event, index, reportIndex: report.length });
+      report.push({ ...eventReport(event), status: 'pending', scope: 'run' });
+      return;
+    }
     const state = eventState(states, event, index);
     if (state?.id) {
       armed.push({
         id: state.id,
+        clientId: eventClientId(index, event),
         label: eventLabel(event),
         kind: event.kind,
         maxHits: event.hits,
@@ -428,21 +469,122 @@ export async function armBreakpoints(
       // the refusal stands on its own
     }
   }
-  return { ids: [...armedIds], armed, report };
+  return { ids: [...armedIds], armed, report, inRun: runEvents };
 }
 
+/** A pending run event that never got set: the run did not stop. */
+export function unsetRunEvents(armed: ArmedBreakpoints): void {
+  for (const { reportIndex } of armed.inRun) {
+    const entry = armed.report[reportIndex];
+    if (entry?.status === 'pending') {
+      entry.status = 'not set';
+      entry.note = 'it is set in the debugged run at its first stop, and the run never stopped';
+    }
+  }
+}
+
+/**
+ * At the run's first stop: set its event breakpoints in this run only (`scope=debugger`). The run's
+ * breakpoint set is replaced as a whole, so its line breakpoints go along — SAP may renumber them,
+ * and the ids it names later are matched through `aliases`. `cleanup` collects the new ids for the
+ * release. A refusal leaves the run's line breakpoints as they were.
+ */
+export async function armInRun(
+  session: DebuggerSession,
+  armed: ArmedBreakpoints,
+  cleanup: string[],
+  warnings: string[],
+): Promise<void> {
+  if (armed.inRun.length === 0) return;
+  const lines = armed.armed.filter((bp) => bp.kind === 'line' && bp.sourceUri && bp.line !== undefined);
+  const specs: DebugBreakpointSpec[] = [
+    ...lines.map(
+      (bp): DebugBreakpointSpec => ({
+        kind: 'line',
+        clientId: bp.clientId,
+        uri: bp.sourceUri as string,
+        line: bp.line as number,
+        ...(bp.condition ? { condition: bp.condition } : {}),
+      }),
+    ),
+    ...armed.inRun.map(({ event, index }) => eventSpec(event, index)),
+  ];
+  let states: DebugBreakpointState[];
+  try {
+    states = await session.syncRunBreakpoints(specs);
+  } catch (err) {
+    for (const { reportIndex } of armed.inRun) {
+      const entry = armed.report[reportIndex];
+      if (entry) Object.assign(entry, { status: 'refused', error: debuggerErrorText(err) });
+    }
+    warnings.push(`Could not set the event breakpoints in the debugged run: ${debuggerErrorText(err)}.`);
+    return;
+  }
+  if (states.length === 0) {
+    // SAP took the set without echoing it: the line breakpoints keep their ids, the event ones learn
+    // theirs from the first stop that names them.
+    for (const { event, index, reportIndex } of armed.inRun) {
+      armed.armed.push({
+        id: eventClientId(index, event),
+        clientId: eventClientId(index, event),
+        unconfirmed: true,
+        label: eventLabel(event),
+        kind: event.kind,
+        maxHits: event.hits,
+        reportIndex,
+      });
+      const entry = armed.report[reportIndex];
+      if (entry) entry.status = 'set';
+    }
+    return;
+  }
+  for (const bp of lines) {
+    const state = states.find((candidate) => candidate.clientId === bp.clientId);
+    if (state?.id && state.id !== bp.id) {
+      bp.aliases = [...(bp.aliases ?? []), bp.id];
+      bp.id = state.id;
+      cleanup.push(state.id);
+    } else if (!state?.id) {
+      warnings.push(`SAP did not keep ${bp.label} in the run when its event breakpoints were set there.`);
+    }
+  }
+  for (const { event, index, reportIndex } of armed.inRun) {
+    const state = eventState(states, event, index);
+    const entry = armed.report[reportIndex] ?? {};
+    if (state?.id) {
+      armed.armed.push({
+        id: state.id,
+        clientId: eventClientId(index, event),
+        label: eventLabel(event),
+        kind: event.kind,
+        maxHits: event.hits,
+        reportIndex,
+      });
+      cleanup.push(state.id);
+      entry.status = 'set';
+    } else {
+      Object.assign(entry, { status: 'refused', error: state?.error ?? 'not accepted by SAP' });
+    }
+  }
+}
+
+/** Removing the external breakpoints: while they are armed, a request of this server can itself stop
+ *  at one (an exception SAP code raises) and wait for an attach — so the removal has a short budget. */
+const DISARM_BUDGET_MS = 15_000;
+
 export async function disarm(conn: SapConnection, identity: DebugIdentity, ids: readonly string[], warnings: string[]) {
+  const options = { deadline: Date.now() + DISARM_BUDGET_MS };
   let failed = false;
   for (const id of ids) {
     try {
-      await deleteBreakpoint(conn.http, identity, id);
+      await deleteBreakpoint(conn.http, identity, id, 'external', options);
     } catch {
       failed = true;
     }
   }
   if (!failed) return;
   try {
-    await syncBreakpoints(conn.http, identity, []);
+    await syncBreakpoints(conn.http, identity, [], 'external', { deadline: Date.now() + DISARM_BUDGET_MS });
   } catch (err) {
     warnings.push(
       `Could not remove the capture's external breakpoints: ${debuggerErrorText(err)} (they expire with the SAP user's debugging session).`,

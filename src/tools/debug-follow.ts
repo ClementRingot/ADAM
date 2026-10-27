@@ -13,7 +13,7 @@ import {
   debuggerErrorText,
   type ReachedBreakpoint,
 } from '../adt/debugger.js';
-import type { ArmedBreakpoint } from './debug-arm.js';
+import { type ArmedBreakpoint, isBreakpoint } from './debug-arm.js';
 import {
   type CallBudget,
   DETAILED_STEPS,
@@ -79,8 +79,18 @@ function armedAt(
   top: DebugStackFrame | undefined,
 ): ArmedBreakpoint | undefined {
   for (const id of reached) {
-    const named = armed.find((bp) => bp.id === id);
+    const named = armed.find((bp) => isBreakpoint(bp, id));
     if (named) return named;
+  }
+  // An id no breakpoint has: the one SAP did not confirm when it was set in the run, if just one is.
+  const unknown = reached.find((id) => id && !armed.some((bp) => isBreakpoint(bp, id)));
+  const unconfirmed = armed.filter((bp) => bp.unconfirmed);
+  if (unknown && unconfirmed.length === 1) {
+    const [bp] = unconfirmed as [ArmedBreakpoint];
+    bp.aliases = [...(bp.aliases ?? []), bp.id];
+    bp.id = unknown;
+    bp.unconfirmed = false;
+    return bp;
   }
   const position = top?.uri ? sourcePosition(top.uri) : undefined;
   return position
@@ -103,7 +113,7 @@ function breakpointAt(
 export interface Inspection {
   attached: boolean;
   stops: Array<Record<string, unknown>>;
-  /** Stops per armed breakpoint id. */
+  /** Stops per armed breakpoint, by clientId (SAP may renumber a breakpoint through the run). */
   hits: Map<string, number>;
   release?: DebugReleaseResult;
   error?: string;
@@ -156,6 +166,7 @@ interface UntilCheck {
 
 /** The state of one attached run, from stop to stop and step to step. */
 export class RunFollower {
+  /** ClientIds of the armed breakpoints that may still stop the run. */
   private readonly remaining: Set<string>;
   /** Per breakpoint, its values at its previous stop: a later stop says `unchanged` against them. */
   private readonly lastValues = new Map<string, Map<string, string>>();
@@ -184,7 +195,7 @@ export class RunFollower {
     public warnings: string[],
     private readonly afterHalt = 'the rest of the run went on without stopping',
   ) {
-    this.remaining = new Set(armed.map((bp) => bp.id));
+    this.remaining = new Set(armed.map((bp) => bp.clientId));
     this.reachedBreakpoints = first.reachedBreakpoints;
     this.steppingPossible = first.steppingPossible;
     this.unresolvable = first.unresolvable;
@@ -199,7 +210,7 @@ export class RunFollower {
   // Only SAP's word counts back in a caller (the top frame stands on the call it returned from, already
   // passed) and for a conditional breakpoint (SAP stops there only where the condition holds).
   private reach(reached: readonly string[], top: DebugStackFrame | undefined, move: FrameMove | undefined) {
-    const live = this.armed.filter((bp) => this.remaining.has(bp.id));
+    const live = this.armed.filter((bp) => this.remaining.has(bp.clientId));
     return (
       armedAt(live, reached, undefined) ??
       (move === 'returned'
@@ -222,12 +233,12 @@ export class RunFollower {
     this.reachedStack = undefined;
     this.stack = stack;
     const at = breakpointAt(this.armed, this.reachedBreakpoints, stack[0]);
-    const hits = at ? (this.record.hits.get(at.id) ?? 0) + 1 : 0;
-    if (at) this.record.hits.set(at.id, hits);
+    const hits = at ? (this.record.hits.get(at.clientId) ?? 0) + 1 : 0;
+    if (at) this.record.hits.set(at.clientId, hits);
     // A breakpoint's later stops (a loop) are compact: the position and call stack of its first stop
     // would only repeat, so they carry its values alone.
     // An event breakpoint stops wherever the run raises it: each of its stops shows where.
-    const repeated = at?.kind === 'line' ? this.lastValues.get(at.id) : undefined;
+    const repeated = at?.kind === 'line' ? this.lastValues.get(at.clientId) : undefined;
     const stop: Record<string, unknown> = {
       stop: this.record.stops.length + 1,
       ...(at ? { at: at.label } : {}),
@@ -235,7 +246,7 @@ export class RunFollower {
       ...(!repeated && stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),
       ...(!repeated ? describeStack(stack) : {}),
     };
-    const unevaluated = at?.condition ? this.unresolvable.find((bp) => bp.id === at.id) : undefined;
+    const unevaluated = at?.condition ? this.unresolvable.find((bp) => isBreakpoint(at, bp.id)) : undefined;
     if (at && unevaluated) {
       const where =
         unevaluated.conditionErrorOffset !== undefined
@@ -252,7 +263,7 @@ export class RunFollower {
       this.following &&
       at &&
       hits >= at.maxHits &&
-      this.remaining.delete(at.id) &&
+      this.remaining.delete(at.clientId) &&
       (this.remaining.size > 0 || more)
     ) {
       try {
@@ -275,7 +286,7 @@ export class RunFollower {
       if (at?.kind === 'line') {
         const seen = new Map<string, string>();
         compactValues(read, seen);
-        this.lastValues.set(at.id, seen);
+        this.lastValues.set(at.clientId, seen);
       }
     }
     result.add(stop);
@@ -480,7 +491,7 @@ export class RunFollower {
     }
     this.steppingPossible = next.steppingPossible;
     this.unresolvable = next.unresolvableConditions ?? [];
-    const live = this.armed.filter((bp) => this.remaining.has(bp.id));
+    const live = this.armed.filter((bp) => this.remaining.has(bp.clientId));
     if (armedAt(live, next.reachedBreakpoints, undefined)) {
       this.reachedBreakpoints = next.reachedBreakpoints;
       return 'atBreakpoint';

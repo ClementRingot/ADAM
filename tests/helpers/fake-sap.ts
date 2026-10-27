@@ -140,6 +140,8 @@ export interface FakeSapOptions {
   conflict?: boolean;
   /** SAP refuses breakpoints (the user lacks debug authorization). */
   breakpointsForbidden?: boolean;
+  /** The attached run's own breakpoint sync answers with an empty document instead of echoing them. */
+  runSyncSilent?: boolean;
   /** systeminformation names this session user; unset = the resource is absent (404, SAP_BASIS <= 7.50). */
   sessionUser?: string;
   /** Multi-server system: each new stateful session lands on the next of these (named in sap-contextid);
@@ -402,7 +404,13 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       if (body.includes('scope="debugger"')) {
         sessionBreakpoints = armed;
         sessionConditions = conditions;
-        return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
+        if (options.runSyncSilent || items.length === 0) {
+          return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
+        }
+        return mockResponse(
+          200,
+          `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
+        );
       }
       external.clear();
       for (const [key, id] of armed) external.set(key, id);
