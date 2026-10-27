@@ -68,15 +68,22 @@ with and without a condition, once with a variable not yet visible; record SAP's
 ## TRACE-1 — From an OData URL or a Fiori app to the handlers, in one call
 
 **Idea.** `abap_search` and `abap_source` lead from a service binding to its service definition, the
-CDS views it exposes, the behavior definition and the behavior pool, one call each. One call could walk
-it all from what the user has at hand: the app's OData URL, its BSP application's
-`/sap/bc/ui5_ui5/…/manifest.json`, or a classic Gateway (SEGW) service and its `*_DPC_EXT` class.
+CDS views it exposes, the behavior definition and the behavior pool, one call each, and give a
+published binding's service URL. One call could walk it all from what the user has at hand: the app's
+OData URL, its BSP application's `/sap/bc/ui5_ui5/…/manifest.json`, or a classic Gateway (SEGW)
+service and its `*_DPC_EXT` class.
 
-**Why it remains.** The walk is four or five cheap calls today. A tracer needs the mapping from a URL
-to its binding — OData V2 service names, V4 service groups — checked on a real system.
+**Evidence.** On the BTP ABAP Environment trial, `$metadata` answered 200 at the URLs built from the
+binding's metadata: `/sap/opu/odata4/dmo/ui_travel_d_d_o4/srvd/dmo/ui_travel_d_d/0001/` (V4 UI),
+`/sap/opu/odata4/dmo/api_travel_u_v4/srvd_a2x/dmo/travel_u/0001/` (V4 Web API),
+`/sap/opu/odata/dmo/UI_TRAVEL_D_D_O2/` (V2). So a URL leads back to its binding: the V4 service group
+is the binding's name, the V2 service its service name.
 
-**Resume with.** The published URLs of the trial system's bindings next to their SRVB metadata, and a
-SEGW service's registration (`IWSG`), to see what links them.
+**Why it remains.** The walk is four or five cheap calls today. Still unchecked: a V2 service version
+past 0001 (`;v=…`), and the SEGW registration (`IWSG`) that links a classic service to its project.
+
+**Resume with.** Parse a URL into binding and entity set, search the binding, and chain the reads;
+check a versioned V2 service and a SEGW service on a system that has them.
 
 <a id="log-1"></a>
 ## LOG-1 — Dynamic logpoints

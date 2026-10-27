@@ -222,7 +222,9 @@ At most 1,500 lines per call. The sources of classes, programs and function modu
 `breakpoints` item for a line; the others lead to them:
 
 - **`SRVB`** has no source: the binding's kind (OData V2 or V4, UI or Web API), whether it is
-  published, and the service definition behind each service version;
+  published, the service definition behind each service version and, once published, the root URL it
+  is served at — `/sap/opu/odata4/…/srvd/…/0001/` (V4), `/sap/opu/odata/<ns>/<SERVICE>/` (V2) — the
+  start of the `url` for `trigger: "http"`;
 - **`SRVD`** lists the entities it exposes — CDS views (`DDLS`);
 - **`DDLS`**: a projection names the view it projects, whose `BDEF` holds the behavior; a root entity's
   `BDEF` has its name;

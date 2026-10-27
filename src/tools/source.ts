@@ -105,7 +105,42 @@ function numbered(lines: string[], numbers: number[], width: number, marks?: Set
 
 const call = (tool: string, args: Record<string, string>) => `${tool} ${JSON.stringify(args)}`;
 
-/** A service binding as text: each service version and the service definition behind it. */
+/** `/DMO/UI_TRAVEL` → `dmo` and `UI_TRAVEL`; a name without a namespace is SAP's customer one, `sap`. */
+function splitNamespace(name: string): { namespace: string; bare: string } {
+  const match = /^\/([^/]+)\/(.+)$/.exec(name);
+  return match?.[1] && match[2]
+    ? { namespace: match[1].toLowerCase(), bare: match[2] }
+    : { namespace: 'sap', bare: name };
+}
+
+type BindingService = ServiceBinding['services'][number];
+
+/**
+ * The root URL SAP serves a published service version at — checked on the BTP ABAP Environment:
+ * V4 `/sap/opu/odata4/<ns>/<binding>/srvd/<ns>/<service definition>/<version>/` (`srvd_a2x` for a
+ * Web API), V2 `/sap/opu/odata/<ns>/<SERVICE>/`. Undefined where it is not known (a V2 version past 0001).
+ */
+function serviceUrl(
+  binding: ServiceBinding,
+  service: BindingService,
+  version: BindingService['versions'][number],
+): string | undefined {
+  if (!binding.published || binding.bindingType !== 'ODATA') return undefined;
+  if (binding.odataVersion === 'V4' && binding.name && version.serviceDefinition && version.version) {
+    const group = splitNamespace(binding.name);
+    const definition = splitNamespace(version.serviceDefinition);
+    const kind = binding.category === 'Web API' ? 'srvd_a2x' : 'srvd';
+    return `/sap/opu/odata4/${group.namespace}/${group.bare.toLowerCase()}/${kind}/${definition.namespace}/${definition.bare.toLowerCase()}/${version.version}/`;
+  }
+  const serviceName = service.name || binding.name;
+  if (binding.odataVersion === 'V2' && serviceName && (version.version === '0001' || !version.version)) {
+    const { namespace, bare } = splitNamespace(serviceName);
+    return `/sap/opu/odata/${namespace}/${bare}/`;
+  }
+  return undefined;
+}
+
+/** A service binding as text: each service version, its URL, and the service definition behind it. */
 function describeBinding(binding: ServiceBinding, name: string): string {
   const kind = [binding.bindingType === 'ODATA' ? 'OData' : binding.bindingType, binding.odataVersion, binding.category]
     .filter(Boolean)
@@ -115,13 +150,23 @@ function describeBinding(binding: ServiceBinding, name: string): string {
   ];
   if (binding.description) lines.push(`Description: ${binding.description}`);
   const definitions = new Set<string>();
+  let urls = 0;
   for (const service of binding.services) {
     for (const version of service.versions) {
+      const url = serviceUrl(binding, service, version);
+      if (url) urls += 1;
       lines.push(
-        `Service ${service.name}, version ${version.version || '?'}: service definition ${version.serviceDefinition || '?'}${version.releaseState ? ` (${version.releaseState})` : ''}`,
+        `Service ${service.name}, version ${version.version || '?'}: service definition ${version.serviceDefinition || '?'}${version.releaseState ? ` (${version.releaseState})` : ''}${url ? `, at ${url}` : ''}`,
       );
       if (version.serviceDefinition) definitions.add(version.serviceDefinition);
     }
+  }
+  if (urls > 0) {
+    lines.push(
+      'abap_debug trigger "http": url = that root + an entity set and ?$top=1 — the sets are named as the service definition exposes its entities.',
+    );
+  } else if (!binding.published) {
+    lines.push('Not published: there is no OData endpoint to call, and trigger "http" needs one.');
   }
   for (const definition of definitions) {
     lines.push(`Next: ${call('abap_source', { type: 'SRVD', name: definition })} — the entities it exposes.`);

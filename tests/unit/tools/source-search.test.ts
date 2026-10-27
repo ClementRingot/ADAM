@@ -28,6 +28,17 @@ const CLASS_SOURCE = [
 
 const BINDING_XML = `<?xml version="1.0" encoding="utf-8"?><srvb:serviceBinding xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" xmlns:adtcore="http://www.sap.com/adt/core" srvb:published="true" srvb:bindingCreated="true" adtcore:name="ZUI_TRAVEL_O4" adtcore:type="SRVB/SVB" adtcore:description="Travel UI"><adtcore:packageRef adtcore:name="ZTRAVEL"/><srvb:services srvb:name="ZUI_TRAVEL_O4"><srvb:content srvb:version="0001" srvb:releaseState="NOT_RELEASED"><srvb:serviceDefinition adtcore:uri="/sap/bc/adt/ddic/srvd/sources/zui_travel" adtcore:type="SRVD/SRV" adtcore:name="ZUI_TRAVEL"/></srvb:content></srvb:services><srvb:binding srvb:type="ODATA" srvb:version="V4" srvb:category="0"><srvb:implementation adtcore:name="ZUI_TRAVEL_O4"/></srvb:binding></srvb:serviceBinding>`;
 
+/** A service binding's metadata, shaped as SAP answers it. */
+const binding = (
+  name: string,
+  serviceName: string,
+  definition: string,
+  version: 'V2' | 'V4',
+  category: '0' | '1',
+  published = true,
+) =>
+  `<?xml version="1.0" encoding="utf-8"?><srvb:serviceBinding xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" xmlns:adtcore="http://www.sap.com/adt/core" srvb:published="${published}" adtcore:name="${name}" adtcore:type="SRVB/SVB"><adtcore:packageRef adtcore:name="/DMO/FLIGHT"/><srvb:services srvb:name="${serviceName}"><srvb:content srvb:version="0001"><srvb:serviceDefinition adtcore:name="${definition}"/></srvb:content></srvb:services><srvb:binding srvb:type="ODATA" srvb:version="${version}" srvb:category="${category}"><srvb:implementation adtcore:name="${name}"/></srvb:binding></srvb:serviceBinding>`;
+
 const SEARCH_XML = `<?xml version="1.0" encoding="utf-8"?><adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:objectReference adtcore:uri="/sap/bc/adt/functions/groups/zfg_order/fmodules/z_order_total" adtcore:type="FUGR/FF" adtcore:name="Z_ORDER_TOTAL (Function Module)" adtcore:packageName="ZORDER" adtcore:description="Order total"/><adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/zcl_order" adtcore:type="CLAS/OC" adtcore:name="ZCL_ORDER" adtcore:packageName="ZORDER" adtcore:description="Orders &amp; totals"/></adtcore:objectReferences>`;
 
 function installFakeSap(): Array<{ path: string; query: URLSearchParams }> {
@@ -45,6 +56,19 @@ function installFakeSap(): Array<{ path: string; query: URLSearchParams }> {
     }
     if (parsed.pathname === '/sap/bc/adt/businessservices/bindings/zui_travel_o4')
       return mockResponse(200, BINDING_XML);
+    // The URLs below answered 200 on the BTP ABAP Environment trial.
+    if (parsed.pathname === '/sap/bc/adt/businessservices/bindings/%2Fdmo%2Fapi_travel_u_v4') {
+      return mockResponse(200, binding('/DMO/API_TRAVEL_U_V4', '/DMO/TRAVEL_U', '/DMO/TRAVEL_U', 'V4', '1'));
+    }
+    if (parsed.pathname === '/sap/bc/adt/businessservices/bindings/%2Fdmo%2Fui_travel_d_d_o2') {
+      return mockResponse(
+        200,
+        binding('/DMO/UI_TRAVEL_D_D_O2', '/DMO/UI_TRAVEL_D_D_O2', '/DMO/UI_TRAVEL_D_D', 'V2', '0'),
+      );
+    }
+    if (parsed.pathname === '/sap/bc/adt/businessservices/bindings/zui_draft_o4') {
+      return mockResponse(200, binding('ZUI_DRAFT_O4', 'ZUI_DRAFT', 'ZUI_DRAFT', 'V4', '0', false));
+    }
     if (parsed.pathname === '/sap/bc/adt/ddic/srvd/sources/zui_travel/source/main') {
       return mockResponse(
         200,
@@ -163,7 +187,8 @@ describe('abap_source', () => {
     expect(binding.text.split('\n')).toEqual([
       'SRVB ZUI_TRAVEL_O4 — service binding (OData V4 UI), published, package ZTRAVEL.',
       'Description: Travel UI',
-      'Service ZUI_TRAVEL_O4, version 0001: service definition ZUI_TRAVEL (NOT_RELEASED)',
+      'Service ZUI_TRAVEL_O4, version 0001: service definition ZUI_TRAVEL (NOT_RELEASED), at /sap/opu/odata4/sap/zui_travel_o4/srvd/sap/zui_travel/0001/',
+      'abap_debug trigger "http": url = that root + an entity set and ?$top=1 — the sets are named as the service definition exposes its entities.',
       'Next: abap_source {"type":"SRVD","name":"ZUI_TRAVEL"} — the entities it exposes.',
     ]);
     expect(calls[0]?.path).toBe('/sap/bc/adt/businessservices/bindings/zui_travel_o4');
@@ -179,6 +204,17 @@ describe('abap_source', () => {
       'Behavior pool ZBP_R_TRAVEL: abap_source {"type":"CLAS","name":"ZBP_R_TRAVEL","include":"implementations"} shows its handler classes (lhc_*).',
     );
     expect(behavior.text).toContain('1: managed implementation in class zbp_r_travel unique;');
+  });
+
+  it('gives the root URL of each published service, as SAP serves V2, V4 UI and V4 Web API bindings', async () => {
+    installFakeSap();
+    const url = async (name: string) =>
+      /, at (\S+)$/m.exec((await call('abap_source', { type: 'SRVB', name })).text)?.[1];
+    expect(await url('/DMO/API_TRAVEL_U_V4')).toBe('/sap/opu/odata4/dmo/api_travel_u_v4/srvd_a2x/dmo/travel_u/0001/');
+    expect(await url('/DMO/UI_TRAVEL_D_D_O2')).toBe('/sap/opu/odata/dmo/UI_TRAVEL_D_D_O2/');
+    const draft = (await call('abap_source', { type: 'SRVB', name: 'ZUI_DRAFT_O4' })).text;
+    expect(draft).not.toContain(', at /sap/opu');
+    expect(draft).toContain('Not published: there is no OData endpoint to call');
   });
 
   it('leads from a projection view and its projection BDEF to the base behavior definition', async () => {
