@@ -172,18 +172,43 @@ time starts after each call — and, for a move that outlasted its call, once th
 
 | Parameter | Description |
 |---|---|
-| `type`, `name` | `CLAS`, `PROG` or `FUNC`, and the object's name |
+| `type`, `name` | The object: `CLAS`, `PROG` or `FUNC` — where breakpoints go — or `INTF`, `INCL`, `DDLS` (CDS view), `DCLS`, `DDLX`, `BDEF` (behavior definition), `SRVD` (service definition), `SRVB` (service binding); slash types such as `PROG/I` work too |
 | `include` | `CLAS`: a local-class include instead of the main source — `implementations`, `testclasses` or `definitions` |
 | `method` | `CLAS`: just this method, numbered as in the whole source |
 | `lineStart`, `lineEnd` | A range of lines |
 | `grep` | A case-insensitive regular expression: matching lines with one line of context |
 
-At most 1,500 lines per call.
+At most 1,500 lines per call. The sources of classes, programs and function modules come with the
+`breakpoints` item for a line; the others lead to them:
+
+- **`SRVB`** has no source: the binding's kind (OData V2 or V4, UI or Web API), whether it is
+  published, and the service definition behind each service version;
+- **`SRVD`** lists the entities it exposes — CDS views (`DDLS`);
+- **`BDEF`** names its behavior pool (`implementation in class …`), whose `implementations` include
+  holds the handler classes (`lhc_*`) to debug;
+- **`INCL`**: no breakpoints in includes yet — set them in the class, program or function module that
+  runs the code.
+
+**From a Fiori app to the code.** The app's OData service is a service binding: find it with
+`abap_search` (`types: ["SRVB"]`), then `SRVB` → `SRVD` → the CDS view of an entity → the `BDEF` of
+the root view → the behavior pool and its handler methods.
 
 ## `abap_search` — find objects
 
-The repository quick search: exact name, type, package and description for a name or pattern
-(`query`: `ZCL_ORDER*`, `*TRAVEL*`), optionally of one `objectType`, at most `maxResults` (default 30).
+The repository quick search, over every object type: each result's exact name, type, what it is
+(`kind`: class, program, include, function module, CDS view, behavior definition, service definition,
+service binding, BSP application…), package and description.
+
+| Parameter | Description |
+|---|---|
+| `query` | A name or the start of one (`ZUI_TRAVEL` also finds `ZUI_TRAVEL_O4`), or a pattern with `*` anywhere (`*TRAVEL*`); exact names come first |
+| `types` | Only these types, e.g. `["SRVB", "SRVD"]`, `["CLAS"]`, `["PROG/I"]` (default: every type) |
+| `package` | Only objects of this package, or of the packages a pattern matches (`ZTRAVEL*`) |
+| `includeTechnical` | Also list the objects SAP generates around a published OData service (`IWMO`, `IWSG`, `OA2S`, `SIA6`, `STOB`…), left out by default: on a service's name they would crowd out the binding and the definition |
+| `maxResults` | At most this many results (default 30) |
+
+`more` says when more objects match than shown, `technicalLeftOut` how many generated ones were left
+out.
 
 ## Examples
 

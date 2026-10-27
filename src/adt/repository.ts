@@ -75,6 +75,59 @@ export async function searchObjects(
   return parseSearchResults(resp.body);
 }
 
+/** A service binding: what the OData service publishes, and the service definition behind each version. */
+export interface ServiceBinding {
+  name: string;
+  description: string;
+  published: boolean;
+  /** `ODATA`, with its protocol version (`V2`, `V4`) and category (`UI`, `Web API`). */
+  bindingType: string;
+  odataVersion: string;
+  category: string;
+  services: Array<{
+    name: string;
+    versions: Array<{ version: string; serviceDefinition: string; releaseState: string }>;
+  }>;
+  packageName: string;
+}
+
+export function parseServiceBinding(xml: string): ServiceBinding {
+  const node = asNode(parseXml(xml).serviceBinding) ?? {};
+  const binding = asNode(node.binding) ?? {};
+  const category = attr(binding, 'category');
+  return {
+    name: attr(node, 'name'),
+    description: attr(node, 'description'),
+    published: attr(node, 'published') === 'true',
+    bindingType: attr(binding, 'type'),
+    odataVersion: attr(binding, 'version'),
+    category: category === '0' ? 'UI' : category === '1' ? 'Web API' : category,
+    services: asNodes(node.services).map((service) => ({
+      name: attr(service, 'name'),
+      versions: asNodes(service.content).map((content) => ({
+        version: attr(content, 'version'),
+        serviceDefinition: attr(asNode(content.serviceDefinition) ?? {}, 'name'),
+        releaseState: attr(content, 'releaseState'),
+      })),
+    })),
+    packageName: attr(asNode(node.packageRef) ?? {}, 'name'),
+  };
+}
+
+/** A service binding has no source: its metadata names the service definition behind it. */
+export async function readServiceBinding(
+  http: AdtHttpClient,
+  name: string,
+  options?: AdtRequestOptions,
+): Promise<ServiceBinding> {
+  const resp = await http.get(
+    `/sap/bc/adt/businessservices/bindings/${encodeURIComponent(name.toLowerCase())}`,
+    { Accept: 'application/vnd.sap.adt.businessservices.servicebinding.v2+xml' },
+    options,
+  );
+  return parseServiceBinding(resp.body);
+}
+
 /** The function group of a function module, proven by its ADT URI; undefined when the search finds none. */
 export async function resolveFunctionGroup(
   http: AdtHttpClient,

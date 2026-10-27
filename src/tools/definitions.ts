@@ -62,7 +62,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'abap_source',
     title: 'Read active ABAP source with line numbers',
     description:
-      'The ACTIVE source of a class (main source or a local-class include), a program or a function module, with the line numbers abap_debug breakpoints use. Narrow it with method, lineStart/lineEnd or grep.',
+      "The ACTIVE source with its line numbers: of a class (main source or a local-class include), a program or a function module — numbered as abap_debug breakpoints use them — and of interfaces, includes, CDS views, behavior and service definitions. A service binding (SRVB) shows its service definitions: from a Fiori app's binding, follow SRVD → CDS views → BDEF → behavior pool to the code to debug. Narrow a source with method, lineStart/lineEnd or grep.",
     schema: SourceInputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     run: handleSource as ToolDefinition['run'],
@@ -71,7 +71,7 @@ export const TOOLS: ToolDefinition[] = [
     name: 'abap_search',
     title: 'Find ABAP objects',
     description:
-      'Find objects by name or pattern (quick search): their exact name, type, package and description — e.g. the class behind a service, or the unit-test class to use as triggerName.',
+      'Find repository objects of any type by name, name start or pattern: classes, interfaces, programs and includes, function groups and modules, CDS views, behavior definitions, service definitions and bindings, UI5 apps… — each with its exact name, type, what it is, package and description. E.g. the service binding and definition behind a Fiori app (then the CDS views and behavior pools they lead to), or the unit-test class to use as triggerName.',
     schema: SearchInputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     run: handleSearch as ToolDefinition['run'],

@@ -10,6 +10,12 @@ const SLASH_TYPES: Record<string, string> = {
   'FUGR/F': 'FUGR',
   'PROG/I': 'INCL',
   'INTF/OI': 'INTF',
+  'DDLS/DF': 'DDLS',
+  'DCLS/DL': 'DCLS',
+  'DDLX/EX': 'DDLX',
+  'BDEF/BDO': 'BDEF',
+  'SRVD/SRV': 'SRVD',
+  'SRVB/SVB': 'SRVB',
 };
 
 /** `clas` → `CLAS`, `CLAS/OC` → `CLAS`, `FUGR/FF` → `FUNC`. */
@@ -44,6 +50,26 @@ export function detectLocalHandlerInclude(method: string): ClassInclude | undefi
   if (/^(lhc|lcl)_/.test(owner)) return 'implementations';
   if (/^ltc_/.test(owner)) return 'testclasses';
   return undefined;
+}
+
+/** Sources the debugger only reads: they lead to the code it stops in (no breakpoints there). */
+const READ_ONLY_SOURCE_PATHS: Record<string, string> = {
+  INTF: '/sap/bc/adt/oo/interfaces/',
+  INCL: '/sap/bc/adt/programs/includes/',
+  DDLS: '/sap/bc/adt/ddic/ddl/sources/',
+  DCLS: '/sap/bc/adt/acm/dcl/sources/',
+  DDLX: '/sap/bc/adt/ddic/ddlx/sources/',
+  BDEF: '/sap/bc/adt/bo/behaviordefinitions/',
+  SRVD: '/sap/bc/adt/ddic/srvd/sources/',
+};
+
+export const READ_ONLY_SOURCE_TYPES = Object.keys(READ_ONLY_SOURCE_PATHS);
+
+/** The source URI of an interface, include, CDS object, behavior or service definition. */
+export function readOnlySourceUri(type: string, name: string): string {
+  const base = READ_ONLY_SOURCE_PATHS[type];
+  if (!base) throw new Error(`No source URI for type ${type}.`);
+  return `${base}${encodeURIComponent(name.toLowerCase())}/source/main`;
 }
 
 /** Where the source of an object (or one class include) lives — the URI breakpoints are set on. */

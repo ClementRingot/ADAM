@@ -99,8 +99,8 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
 |---|---|
 | `abap_debug` | Arms breakpoints, runs the code and records every stop of that run: position, call stack, variables, steps. With `interactive: true`, holds the program at its first stop |
 | `abap_debug_session` | Drives a held program one move at a time: `step`, `continue`, `inspect`, `end` — and `wait`s for a capture or move that outlasts its call |
-| `abap_source` | The active source of a class, program or function module, with the line numbers breakpoints use |
-| `abap_search` | Finds objects by name or pattern |
+| `abap_source` | The active source of a class, program or function module, with the line numbers breakpoints use — and of interfaces, includes, CDS views, behavior and service definitions; a service binding's service definitions: the way from a Fiori app to its code |
+| `abap_search` | Finds objects of every type by name, name start or pattern — service bindings and definitions included, with SAP's generated service objects left out |
 
 ```text
 abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{method: "get_total"}]}
