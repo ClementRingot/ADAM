@@ -7,7 +7,7 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 | [LIVE-1](#live-1) | Live verification of this server | P1 | S | Needs a system |
 | [LIVE-2](#live-2) | First deployment on a real SAP BTP subaccount | P1 | S | Needs a subaccount |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
-| [WATCH-1](#watch-1) | Watchpoints: stop where a variable changes | P3 | M | Needs live check |
+| [WATCH-1](#watch-1) | Watchpoints: check them on a real system | P2 | S | Needs live check |
 | [LOG-1](#log-1) | Dynamic logpoints: observe a line across many runs | P3 | M | Needs research |
 
 <a id="live-1"></a>
@@ -47,16 +47,18 @@ a long one-shot capture's request run.
 how it answers for an include several programs use (Eclipse asks for the main-program context).
 
 <a id="watch-1"></a>
-## WATCH-1 — Watchpoints
+## WATCH-1 — Watchpoints on a real system
 
-**Idea.** Stop where a variable changes (optionally with a condition): "where does `LV_STATUS` become
-'E'?" without knowing the line.
+**Idea.** `watch` (one-shot, set at the first stop) and the interactive `watch` action are implemented
+from abap-adt-api 9.2.0's contract (`POST /sap/bc/adt/debugger/watchpoints?variableName=…&condition=…`
+on the attached session) and tested against simulated answers only.
 
-**Evidence.** abap-adt-api 9.2.0: `POST /sap/bc/adt/debugger/watchpoints?variableName=…&condition=…` on
-the attached session; old and current values via child variables of `@WATCHPOINTS.<uri>`.
+**Why it remains.** What SAP names at a watchpoint's stop is unknown — the server falls back to the
+value that changed — as are its refusals and how a watchpoint on a local behaves across frames
+([live check 20](adt-debugger-protocol.md#9-live-checks-still-owed)).
 
-**Resume with.** A watchpoint lives in the attached session, so it can only be set at a stop: define the
-shape (set at the first stop, continue to each change), and check its cost on long runs.
+**Resume with.** A loop that changes a local and an attribute: watch both from the loop's first line,
+with and without a condition, once with a variable not yet visible; record SAP's answers as fixtures.
 
 <a id="log-1"></a>
 ## LOG-1 — Dynamic logpoints

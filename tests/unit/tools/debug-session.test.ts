@@ -416,3 +416,34 @@ describe('abap_debug — interactive, non-exclusive debugging', () => {
     expect(openDebugSessionId()).toBeUndefined();
   });
 });
+
+describe('abap_debug_session — watchpoints', () => {
+  it('sets a watchpoint where the program stands; continue then stops where the variable changes', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      execution: [at(9), at(12)],
+      watchChanges: [{ index: 1, variable: 'LV_TOTAL' }],
+    });
+    await start({ line: 9 });
+    const watch = await move({ action: 'watch', variable: 'lv_total' });
+    expect(watch.json).toMatchObject({
+      session: 'S1',
+      action: 'watch',
+      watchpoint: { variable: 'LV_TOTAL', status: 'set', hits: 0 },
+      position: { line: 9 },
+    });
+    const next = await move({ action: 'continue' });
+    expect(next.json).toMatchObject({
+      stop: { stop: 2, at: 'watchpoint LV_TOTAL', changed: { from: '39', to: '42' } },
+      position: { line: 12 },
+    });
+    const end = await move({ action: 'end' });
+    expect(end.json).toMatchObject({
+      ended: true,
+      watchpoints: [{ variable: 'LV_TOTAL', status: 'set', hits: 1 }],
+      release: { released: true, via: 'continue' },
+    });
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/watchpoints/WP-LV_TOTAL')).toHaveLength(1);
+    expect((await move({ action: 'watch' })).text).toContain('watch needs variable.');
+  });
+});

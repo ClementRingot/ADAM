@@ -44,7 +44,9 @@ describe('tools/list', () => {
   it('describes one move per session call, each action with its own fields', () => {
     const session = tools[1]?.inputSchema as unknown as { properties: Record<string, any>; required: string[] };
     expect(session.required).toEqual(['action']);
-    expect(session.properties.action).toMatchObject({ enum: ['step', 'continue', 'inspect', 'wait', 'end'] });
+    expect(session.properties.action).toMatchObject({
+      enum: ['step', 'continue', 'inspect', 'watch', 'wait', 'end'],
+    });
     expect(Object.keys(session.properties)).toEqual([
       'action',
       'session',
@@ -55,6 +57,9 @@ describe('tools/list', () => {
       'timeoutSeconds',
       'variables',
       'stack',
+      'variable',
+      'condition',
+      'hits',
       'terminate',
       'maxSeconds',
       'maxResultKB',

@@ -49,6 +49,30 @@ export const UntilSchema = z
     message: 'until needs line and/or changed.',
   });
 
+/** A watchpoint: stop where a variable changes. */
+export const WatchSchema = z
+  .object({
+    variable: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe('The variable whose change stops the run: LV_STATUS, LS_HEAD-STATUS, ME->MV_STATE, a program global.'),
+    condition: z
+      .string()
+      .min(1)
+      .max(255)
+      .optional()
+      .describe("Stop only where this ABAP condition holds once it changed, e.g. lv_status = 'E'."),
+    hits: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe('How many of its changes stop the run (1-50, default 1).'),
+  })
+  .strict();
+
 /** One stop of the debugged run; type/name default to the top-level ones. */
 const DebugBreakpointSchema = z
   .object({
@@ -130,6 +154,13 @@ export const DEBUG_INPUT_SHAPE = {
     .regex(EXCEPTION_CLASS, 'exceptionClass must be an ABAP class name')
     .optional()
     .describe('Also (or only) stop where this exception class is raised, e.g. CX_SY_ZERODIVIDE.'),
+  watch: z
+    .array(WatchSchema)
+    .max(5)
+    .optional()
+    .describe(
+      "Watchpoints (max 5), set in the run at its first stop, after that stop's steps: the run then also stops wherever a variable changes — where does LV_STATUS change, or become 'E' with a condition? Each stop says from and to. The variable must be visible at that first stop (a local of its method, an attribute ME->…, a global); SAP refuses it otherwise.",
+    ),
   trigger: z
     .enum(['unittest', 'http', 'none'])
     .optional()

@@ -25,7 +25,9 @@ Claude:  abap_source  {type: "CLAS", name: "ZCL_ORDER", method: "get_total"}
   drives it — step in, over or out, continue, inspect — deciding each move from what it sees.
 - **Breakpoints** on lines and methods of classes, programs and function modules (RAP behavior pools
   included), with ABAP conditions and hit counts; on messages, statement kinds (`COMMIT WORK`, …) and
-  exceptions.
+  exceptions. **Watchpoints**: stop wherever a variable changes — or becomes a given value.
+- **From a Fiori app to its code**: find the service binding, follow it to the service definition,
+  the CDS views, the behavior definition and the handler methods to debug.
 - **Triggers**: the object's ABAP Unit tests, an OData `GET`, or your own run of a Fiori app or report.
 - **Long runs stay readable**: thousands of steps fold into a compact trace (`(9-12)×497`) with the
   values only where they changed, and `until` stops on a line or a changed variable.

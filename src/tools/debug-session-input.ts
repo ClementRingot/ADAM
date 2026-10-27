@@ -10,15 +10,16 @@ const ACTION_FIELDS: Record<string, readonly string[]> = {
   step: ['stepMode', 'count', 'until', 'variables', 'maxSeconds', 'maxResultKB'],
   continue: ['toLine', 'timeoutSeconds', 'variables', 'maxResultKB'],
   inspect: ['variables', 'stack', 'maxResultKB'],
+  watch: ['variable', 'condition', 'hits'],
   wait: [],
   end: ['terminate'],
 };
 
 export const DEBUG_SESSION_INPUT_SHAPE = {
   action: z
-    .enum(['step', 'continue', 'inspect', 'wait', 'end'])
+    .enum(['step', 'continue', 'inspect', 'watch', 'wait', 'end'])
     .describe(
-      'step: run statement by statement (stepMode, count, until). continue: run on to the next breakpoint, or to toLine. inspect: read variables or the call stack where the program stands. wait: the answer of a capture or move that outlasted its call (it said running: true). end: let the program run to its end (or terminate it) and close the session; on a capture still running, stop it.',
+      'step: run statement by statement (stepMode, count, until). continue: run on to the next breakpoint or watchpoint, or to toLine. inspect: read variables or the call stack where the program stands. watch: set a watchpoint — continue then also stops where the variable changes. wait: the answer of a capture or move that outlasted its call (it said running: true). end: let the program run to its end (or terminate it) and close the session; on a capture still running, stop it.',
     ),
   session: z
     .string()
@@ -64,6 +65,25 @@ export const DEBUG_SESSION_INPUT_SHAPE = {
       "step / continue: the variables to watch from now on, read after every step and at every stop (replacing the ones named before). inspect: read these now, structures expanded and tables' first rows (default: every variable of the frame).",
     ),
   stack: z.boolean().optional().describe('inspect: include the call stack.'),
+  variable: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe('watch: the variable whose change stops the run (visible where the program stands), e.g. LV_STATUS.'),
+  condition: z
+    .string()
+    .min(1)
+    .max(255)
+    .optional()
+    .describe("watch: stop only where this ABAP condition holds once it changed, e.g. lv_status = 'E'."),
+  hits: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .describe('watch: how many of its changes stop the run (1-50, default 1).'),
   terminate: z
     .boolean()
     .optional()
@@ -90,6 +110,9 @@ export const DebugSessionInputSchema = z
   .object(DEBUG_SESSION_INPUT_SHAPE)
   .strict()
   .superRefine((input, ctx) => {
+    if (input.action === 'watch' && input.variable === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['variable'], message: 'watch needs variable.' });
+    }
     const allowed = new Set(['action', 'session', ...(ACTION_FIELDS[input.action] ?? [])]);
     for (const [field, value] of Object.entries(input)) {
       if (value !== undefined && !allowed.has(field)) {

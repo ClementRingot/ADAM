@@ -65,6 +65,8 @@ import { describeError, errorResult, type ToolResult, textResult, toolJson } fro
 const CODE_CONTEXT = 2;
 /** How long `continue` waits for the next stop unless the call says otherwise. */
 const DEFAULT_CONTINUE_SECONDS = 60;
+/** Setting a watchpoint: two short requests. */
+const WATCH_BUDGET_MS = 30_000;
 /** What happens to the program when a budget ends a call: nothing — it waits for the next call. */
 const WAITS = 'the program waits where it stands — call step again to go on';
 
@@ -91,6 +93,7 @@ function moveDoing(input: DebugSessionInput): string {
   if (input.action === 'continue') {
     return input.toLine !== undefined ? `running to line ${input.toLine}` : 'running to the next stop';
   }
+  if (input.action === 'watch') return `setting a watchpoint on ${input.variable?.toUpperCase()}`;
   return 'reading where the program stands';
 }
 
@@ -264,12 +267,13 @@ class InteractiveSession implements DebugEntry {
       session: this.id,
       ...base,
       breakpoints: breakpointsWithHits(this.caught.armed, this.inspection.hits),
+      ...(this.inspection.watchpoints ? { watchpoints: this.inspection.watchpoints } : {}),
       debuggee: describeDebuggee(debuggee),
       stop: first.stop,
       ...(reached ? { reached: reached.stop } : {}),
       ...(await this.standing()),
       trigger: { ...base.trigger, status: 'waiting', note: 'held at the stop until the session ends' },
-      next: 'Drive the program with abap_debug_session: step (stepMode, count, until), continue (to the next breakpoint, or toLine), inspect (variables, stack), end (terminate: true to abort it). A move that outlasts the call goes on in the background: wait picks up its answer. End the session when you are done: the program holds a work process until then.',
+      next: 'Drive the program with abap_debug_session: step (stepMode, count, until), continue (to the next breakpoint or watchpoint, or toLine), inspect (variables, stack), watch (a variable: continue then stops where it changes), end (terminate: true to abort it). A move that outlasts the call goes on in the background: wait picks up its answer. End the session when you are done: the program holds a work process until then.',
       ...this.footer(),
       ...(this.run.warnings.length > 0 ? { warnings: [...new Set(this.run.warnings)] } : {}),
     };
@@ -341,7 +345,7 @@ class InteractiveSession implements DebugEntry {
     return `Debug session ${this.id} has ended; start a new one with abap_debug and interactive: true. ${toolJson(this.summary)}`;
   }
 
-  /** One move, in the background: step, continue or inspect. */
+  /** One move, in the background: step, continue, inspect or watch. */
   private async perform(input: DebugSessionInput, context: ToolContext): Promise<ToolResult> {
     if (this.closed) return errorResult(this.endedText());
     clearTimeout(this.idleTimer);
@@ -353,7 +357,9 @@ class InteractiveSession implements DebugEntry {
           ? await this.step(input, context, warnings)
           : input.action === 'continue'
             ? await this.continue(input, context, warnings)
-            : await this.inspectHere(input, context, warnings);
+            : input.action === 'watch'
+              ? await this.watchHere(input, context)
+              : await this.inspectHere(input, context, warnings);
       return textResult(
         toolJson({
           session: this.id,
@@ -452,6 +458,17 @@ class InteractiveSession implements DebugEntry {
     return { ...compactValues(read, new Map()), ...(await this.standing()) };
   }
 
+  /** A watchpoint where the program stands: `continue` then also stops where its variable changes. */
+  private async watchHere(input: DebugSessionInput, context: ToolContext) {
+    const variable = input.variable?.trim().toUpperCase() ?? '';
+    const condition = input.condition?.trim();
+    this.session.retime(Date.now() + WATCH_BUDGET_MS, context.signal);
+    const [watchpoint] = await this.follower.watch([
+      { variable, ...(condition ? { condition } : {}), hits: input.hits ?? 1 },
+    ]);
+    return { watchpoint, ...(await this.standing()) };
+  }
+
   private async inspectHere(input: DebugSessionInput, context: ToolContext, warnings: string[]) {
     const budget = planCallBudget(
       this.limits,
@@ -491,15 +508,16 @@ class InteractiveSession implements DebugEntry {
         const releaser = new DebuggerSession(this.sessionHttp, this.run.identity, {
           deadline: Date.now() + RELEASE_BUDGET_MS,
         });
+        const watchpoints = this.inspection.watchpointIds ?? [];
         if (terminate) {
           try {
             await releaser.step('terminateDebuggee');
             outcome = { released: true, via: 'terminate' };
           } catch {
-            outcome = await releaser.release(this.run.armedIds);
+            outcome = await releaser.release(this.run.armedIds, watchpoints);
           }
         } else {
-          outcome = await releaser.release(this.run.armedIds);
+          outcome = await releaser.release(this.run.armedIds, watchpoints);
         }
       }
       // A program that could not be released keeps its debugger session; any other ends here.
@@ -515,6 +533,7 @@ class InteractiveSession implements DebugEntry {
               warning: `The program could not be released (${outcome.detail ?? 'unknown'}); it stays suspended until SAP's debugger timeout ends its session.`,
             }),
         breakpoints: breakpointsWithHits(this.caught.armed, this.inspection.hits),
+        ...(this.inspection.watchpoints ? { watchpoints: this.inspection.watchpoints } : {}),
         stops: this.inspection.stops.length,
         steps: this.stepsTaken,
         seconds: Math.round((Date.now() - this.startedAt) / 1000),
@@ -592,6 +611,8 @@ async function holdFirstStop(
             reached = await follower.recordStop(req.variables, true, budget.result);
           }
         }
+        // As in a one-shot capture: the watchpoints go into the run where it stands after its first stop.
+        if (req.watch.length > 0 && follower.following) await follower.watch(req.watch);
         // A start ended meanwhile (action "end") releases the program instead of holding it.
         parked = !context.signal?.aborted;
       },

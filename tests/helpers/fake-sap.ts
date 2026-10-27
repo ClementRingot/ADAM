@@ -178,6 +178,12 @@ export interface FakeSapOptions {
   postMortem?: boolean;
   /** No work process is free for exclusive debugging: SAP attaches non-exclusively. */
   nonExclusive?: boolean;
+  /** Where a variable changes: at execution step `index` (a watchpoint on it stops the run there). */
+  watchChanges?: Array<{ index: number; variable: string }>;
+  /** A stop at a watchpoint names no breakpoint (reachedBreakpoints stays empty). */
+  silentWatchpoints?: boolean;
+  /** SAP refuses a watchpoint on these variables (not visible where the run stands). */
+  watchRefused?: string[];
   /** stepRunToLine: the program ends before the target line. */
   runToLineEnds?: boolean;
   /** The program finishes at the step after this many (a step then answers "debuggee ended"). */
@@ -228,6 +234,8 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
   /** Their conditions by position, kept with the breakpoints as SAP keeps them. */
   let externalConditions = new Map<string, string>();
   let sessionConditions = new Map<string, string>();
+  /** The attached run's watchpoints, by id → variable. */
+  const watchpoints = new Map<string, string>();
   /** How many times the run has reached the position of execution step `index`, up to and including it. */
   const passOf = (index: number): number => {
     const at = options.execution?.[index];
@@ -454,6 +462,29 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
         `<dbg:statements xmlns:dbg="http://www.sap.com/adt/debugger">${rows.join('')}</dbg:statements>`,
       );
     }
+    if (path === '/sap/bc/adt/debugger/watchpoints' && method === 'POST') {
+      const variableName = q.get('variableName') ?? '';
+      if (options.watchRefused?.includes(variableName)) {
+        return mockResponse(
+          400,
+          ENDED.replace('debuggeeEnded', 'watchpointError').replace(
+            'Debuggee ended',
+            `Variable ${variableName} is unknown here`,
+          ),
+        );
+      }
+      const id = `WP-${variableName}`;
+      watchpoints.set(id, variableName);
+      const condition = q.get('condition') ?? '';
+      return mockResponse(
+        200,
+        `<dbg:watchpoints xmlns:dbg="http://www.sap.com/adt/debugger"><watchpoint id="${id}" variableName="${variableName}" kind="change" active="true" expired="false" procedure="GET_TOTAL"><condition>${condition}</condition></watchpoint></dbg:watchpoints>`,
+      );
+    }
+    if (path.startsWith('/sap/bc/adt/debugger/watchpoints/') && method === 'DELETE') {
+      const id = decodeURIComponent(call.path.split('/').at(-1) ?? '');
+      return watchpoints.delete(id) ? mockResponse(200, '') : mockResponse(404, 'no such watchpoint');
+    }
     if (path.startsWith('/sap/bc/adt/debugger/breakpoints/') && method === 'DELETE') {
       const id = decodeURIComponent(call.path.split('/').at(-1) ?? '');
       const scope = q.get('scope') === 'debugger' ? sessionBreakpoints : external;
@@ -525,6 +556,20 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
         case 'stepContinue':
           for (cursor++; options.execution && cursor < options.execution.length; cursor++) {
             const next = options.execution[cursor] as Position;
+            const step = cursor;
+            const change = options.watchChanges?.find(
+              (candidate) => candidate.index === step && watchpoints.has(`WP-${candidate.variable}`),
+            );
+            if (change) {
+              position = { ...next };
+              const named = options.silentWatchpoints
+                ? ''
+                : `<reachedBreakpoints><breakpoint id="WP-${change.variable}" kind="watchpoint"/></reachedBreakpoints>`;
+              return mockResponse(
+                200,
+                `<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${named}</dbg:step>`,
+              );
+            }
             if (stopsAt(cursor, sessionBreakpoints, sessionConditions)) {
               if (options.continueAfterMs) await delay(options.continueAfterMs, init?.signal);
               position = { ...next };

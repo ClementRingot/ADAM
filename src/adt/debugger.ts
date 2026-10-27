@@ -25,6 +25,7 @@ import { asNode, asNodes, attr, escapeXml, parseXml, text, type XmlNode } from '
 
 const DEBUGGER_PATH = '/sap/bc/adt/debugger';
 const BREAKPOINTS_PATH = '/sap/bc/adt/debugger/breakpoints';
+const WATCHPOINTS_PATH = '/sap/bc/adt/debugger/watchpoints';
 const LISTENERS_PATH = '/sap/bc/adt/debugger/listeners';
 const STACK_QUERY = 'method=getStack&emode=_&semanticURIs=true';
 /** Extra HTTP budget on top of the server-side listener timeout before the client gives up. */
@@ -619,6 +620,35 @@ export function parseAttachResponse(xml: string): DebugAttachInfo {
   };
 }
 
+/** A watchpoint of the attached run (abap-adt-api's `DebugWatchpoint`). */
+export interface DebugWatchpoint {
+  id: string;
+  variableName: string;
+  kind: string;
+  active: boolean;
+  expired: boolean;
+  procedure: string;
+  condition: string;
+  oldValue: string;
+  currentValue: string;
+}
+
+/** `<watchpoints><watchpoint id variableName kind active expired procedure><condition/>…`: attributes, and texts. */
+export function parseWatchpoints(xml: string): DebugWatchpoint[] {
+  if (!xml.trim()) return [];
+  return asNodes(asNode(parseDocument(xml).watchpoints)?.watchpoint).map((node) => ({
+    id: attr(node, 'id'),
+    variableName: attr(node, 'variableName'),
+    kind: attr(node, 'kind'),
+    active: flag(attr(node, 'active')),
+    expired: flag(attr(node, 'expired')),
+    procedure: attr(node, 'procedure'),
+    condition: text(node.condition),
+    oldValue: text(node.oldValue),
+    currentValue: text(node.currentValue),
+  }));
+}
+
 export interface DebugStackFrame {
   position?: number;
   stackType: string;
@@ -906,11 +936,43 @@ export class DebuggerSession {
   }
 
   /**
-   * Let the debuggee run on: drop the session copies of the capture's breakpoints, then `stepContinue`
-   * until SAP reports the debuggee ended. `method=detach` is unknown on 7.58, so continue is the
-   * release; `terminateDebuggee` (aborts the caller's request) is the last resort only.
+   * Watch `variableName` in this run: it stops wherever the variable changes — and `condition`, if
+   * given, holds. The variable must be visible where the run stands. abap-adt-api's contract
+   * (`debuggerCreateWatchpoint`); no request lists a run's watchpoints.
    */
-  async release(breakpointIds: readonly string[], maxContinues = 3): Promise<DebugReleaseResult> {
+  async createWatchpoint(variableName: string, condition = ''): Promise<DebugWatchpoint[]> {
+    const query = new URLSearchParams({ variableName, condition, active: 'true' }).toString();
+    const resp = await this.http.post(
+      `${WATCHPOINTS_PATH}?${query}`,
+      undefined,
+      undefined,
+      { Accept: 'application/xml' },
+      this.options,
+    );
+    return parseWatchpoints(resp.body);
+  }
+
+  async deleteWatchpoint(id: string): Promise<void> {
+    await this.http.delete(`${WATCHPOINTS_PATH}/${encodeURIComponent(id)}`, { Accept: '*/*' }, this.options);
+  }
+
+  /**
+   * Let the debuggee run on: drop its watchpoints and the session copies of the capture's breakpoints,
+   * then `stepContinue` until SAP reports the debuggee ended. `method=detach` is unknown on 7.58, so
+   * continue is the release; `terminateDebuggee` (aborts the caller's request) is the last resort only.
+   */
+  async release(
+    breakpointIds: readonly string[],
+    watchpointIds: readonly string[] = [],
+    maxContinues = 3,
+  ): Promise<DebugReleaseResult> {
+    for (const id of watchpointIds) {
+      try {
+        await this.deleteWatchpoint(id);
+      } catch {
+        // best-effort: one already gone (its hits spent) answers an error; a live one costs a continue
+      }
+    }
     try {
       await syncBreakpoints(this.http, this.identity, [], 'debugger', this.options);
     } catch {

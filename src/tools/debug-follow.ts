@@ -48,6 +48,14 @@ export interface StepUntil {
   changed?: string;
 }
 
+/** A watchpoint to set in the run: it stops the run where the variable changes (and the condition holds). */
+export interface WatchItem {
+  variable: string;
+  condition?: string;
+  /** How many of its changes stop the run. */
+  hits: number;
+}
+
 /** What following a run takes from the request. */
 export interface FollowPlan {
   variables: readonly string[];
@@ -55,6 +63,20 @@ export interface FollowPlan {
   steps: number;
   stepMode: StepMode;
   until?: StepUntil;
+  /** Set at the first stop, after its steps. */
+  watch?: readonly WatchItem[];
+}
+
+/** A watchpoint set in the run, until it made its hits. */
+interface WatchState {
+  id: string;
+  variable: string;
+  maxHits: number;
+  hits: number;
+  /** Its variable's value at the last stop (JSON): tells the watchpoint's stops apart, and shows the change. */
+  last?: string;
+  /** Its entry in the result's `watchpoints`. */
+  report: Record<string, unknown>;
 }
 
 /** One run of steps from where the run stands. */
@@ -115,6 +137,10 @@ export interface Inspection {
   stops: Array<Record<string, unknown>>;
   /** Stops per armed breakpoint, by clientId (SAP may renumber a breakpoint through the run). */
   hits: Map<string, number>;
+  /** The watchpoints set in the run, as the result reports them. */
+  watchpoints?: Array<Record<string, unknown>>;
+  /** Server ids of every watchpoint set — the release deletes them first. */
+  watchpointIds?: string[];
   release?: DebugReleaseResult;
   error?: string;
 }
@@ -181,6 +207,8 @@ export class RunFollower {
   following: boolean;
   /** The program finished. */
   ended = false;
+  /** The watchpoints set in the run. */
+  private readonly watches: WatchState[] = [];
 
   /**
    * `afterHalt`: what happens to the run when a budget ends a call — the one-shot capture lets it go
@@ -190,7 +218,7 @@ export class RunFollower {
     readonly session: DebuggerSession,
     readonly armed: readonly ArmedBreakpoint[],
     first: FirstStop,
-    private readonly record: { stops: Array<Record<string, unknown>>; hits: Map<string, number> },
+    private readonly record: Pick<Inspection, 'stops' | 'hits' | 'watchpoints' | 'watchpointIds'>,
     /** Where warnings go: the call's own list (an interactive session gives each call a new one). */
     public warnings: string[],
     private readonly afterHalt = 'the rest of the run went on without stopping',
@@ -202,9 +230,118 @@ export class RunFollower {
     this.following = !first.single;
   }
 
-  /** Armed breakpoints that may still stop the run. */
+  /** Armed breakpoints and watchpoints that may still stop the run. */
   get breakpointsLeft(): number {
-    return this.remaining.size;
+    return this.remaining.size + this.liveWatches.length;
+  }
+
+  /** Watchpoints short of their hits. */
+  private get liveWatches(): WatchState[] {
+    return this.watches.filter((watch) => watch.hits < watch.maxHits);
+  }
+
+  /**
+   * Set watchpoints where the run stands: each then stops the run wherever its variable changes (and
+   * its condition holds), up to its hits. SAP refuses a variable not visible here; the report says so.
+   */
+  async watch(items: readonly WatchItem[]): Promise<Array<Record<string, unknown>>> {
+    const report = (this.record.watchpoints ??= []);
+    const ids = (this.record.watchpointIds ??= []);
+    const added: Array<Record<string, unknown>> = [];
+    for (const item of items) {
+      const entry: Record<string, unknown> = {
+        variable: item.variable,
+        ...(item.condition ? { condition: item.condition } : {}),
+      };
+      report.push(entry);
+      added.push(entry);
+      try {
+        const [created] = await this.session.createWatchpoint(item.variable, item.condition);
+        if (!created?.id) {
+          Object.assign(entry, { status: 'refused', reason: 'SAP answered without a watchpoint' });
+          continue;
+        }
+        ids.push(created.id);
+        const [value] = await readNamedVariables(this.session, [item.variable]);
+        Object.assign(entry, { status: 'set', hits: 0 });
+        this.watches.push({
+          id: created.id,
+          variable: item.variable,
+          maxHits: item.hits,
+          hits: 0,
+          ...(value && !value.error ? { last: JSON.stringify(stepValue(value)) } : {}),
+          report: entry,
+        });
+      } catch (err) {
+        Object.assign(entry, { status: 'refused', reason: debuggerErrorText(err) });
+      }
+    }
+    return added;
+  }
+
+  /**
+   * The watchpoint a stop belongs to, with its variable's change: the one SAP names; else — when SAP
+   * names nothing else and the run stands on no armed line — the one whose variable changed since the
+   * last stop. Every live watchpoint's value is read anew, for the next stop to compare against.
+   */
+  private async watchHit(top: DebugStackFrame | undefined) {
+    const live = this.liveWatches;
+    if (live.length === 0) return undefined;
+    let read: CapturedVariable[] = [];
+    try {
+      read = await readNamedVariables(
+        this.session,
+        live.map((watch) => watch.variable),
+      );
+    } catch {
+      // the watchpoint SAP names still counts
+    }
+    const now = new Map(
+      read.filter((value) => !value.error).map((value) => [value.name, JSON.stringify(stepValue(value))]),
+    );
+    const watchIds = new Set(this.watches.map((watch) => watch.id));
+    const named = live.find((watch) => this.reachedBreakpoints.includes(watch.id));
+    const elsewhere =
+      this.reachedBreakpoints.some((id) => id && !watchIds.has(id)) ||
+      armedAt(
+        this.armed.filter((bp) => bp.kind === 'line' && this.remaining.has(bp.clientId)),
+        [],
+        top,
+      ) !== undefined;
+    const changed = (watch: WatchState) => now.has(watch.variable) && now.get(watch.variable) !== watch.last;
+    const hit = named ?? (elsewhere ? undefined : live.find(changed));
+    const from = hit?.last;
+    for (const watch of live) {
+      const value = now.get(watch.variable);
+      if (value !== undefined) watch.last = value;
+    }
+    if (!hit) return undefined;
+    hit.hits += 1;
+    hit.report.hits = hit.hits;
+    const to = now.get(hit.variable);
+    return {
+      watch: hit,
+      changed: {
+        ...(from !== undefined ? { from: JSON.parse(from) as unknown } : {}),
+        ...(to !== undefined ? { to: JSON.parse(to) as unknown } : {}),
+      },
+    };
+  }
+
+  /** A watchpoint that made its hits stops the run no more. */
+  private async retireWatch(watch: WatchState): Promise<void> {
+    try {
+      await this.session.deleteWatchpoint(watch.id);
+      // Gone: the release need not delete it again.
+      const ids = this.record.watchpointIds;
+      const index = ids?.indexOf(watch.id) ?? -1;
+      if (ids && index >= 0) ids.splice(index, 1);
+    } catch (err) {
+      this.warnings.push(
+        `Could not keep the watchpoint on ${watch.variable} from stopping the run again (${debuggerErrorText(err)}); no further stops were recorded.`,
+      );
+      this.following = false;
+    }
   }
 
   // Only SAP's word counts back in a caller (the top frame stands on the call it returned from, already
@@ -232,15 +369,24 @@ export class RunFollower {
     const stack = this.reachedStack ?? (await this.session.stack());
     this.reachedStack = undefined;
     this.stack = stack;
-    const at = breakpointAt(this.armed, this.reachedBreakpoints, stack[0]);
+    const watched = await this.watchHit(stack[0]);
+    const reached = this.reachedBreakpoints.filter((id) => !this.watches.some((watch) => watch.id === id));
+    const at = watched ? undefined : breakpointAt(this.armed, reached, stack[0]);
     const hits = at ? (this.record.hits.get(at.clientId) ?? 0) + 1 : 0;
     if (at) this.record.hits.set(at.clientId, hits);
     // A breakpoint's later stops (a loop) are compact: the position and call stack of its first stop
     // would only repeat, so they carry its values alone.
-    // An event breakpoint stops wherever the run raises it: each of its stops shows where.
+    // An event breakpoint or a watchpoint stops wherever the run raises it: each of its stops shows where.
     const repeated = at?.kind === 'line' ? this.lastValues.get(at.clientId) : undefined;
     const stop: Record<string, unknown> = {
       stop: this.record.stops.length + 1,
+      ...(watched
+        ? {
+            at: `watchpoint ${watched.watch.variable}`,
+            ...(watched.watch.maxHits > 1 ? { hit: watched.watch.hits } : {}),
+            changed: watched.changed,
+          }
+        : {}),
       ...(at ? { at: at.label } : {}),
       ...(at && at.maxHits > 1 ? { hit: hits } : {}),
       ...(!repeated && stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),
@@ -258,13 +404,21 @@ export class RunFollower {
       );
     }
     this.record.stops.push(stop);
+    if (
+      this.following &&
+      watched &&
+      watched.watch.hits >= watched.watch.maxHits &&
+      (this.breakpointsLeft > 0 || more)
+    ) {
+      await this.retireWatch(watched.watch);
+    }
     // Retire a breakpoint that made its hits before the steps, so neither they nor the run stop there again.
     if (
       this.following &&
       at &&
       hits >= at.maxHits &&
       this.remaining.delete(at.clientId) &&
-      (this.remaining.size > 0 || more)
+      (this.breakpointsLeft > 0 || more)
     ) {
       try {
         await this.session.removeBreakpoint(at.id);
@@ -492,7 +646,8 @@ export class RunFollower {
     this.steppingPossible = next.steppingPossible;
     this.unresolvable = next.unresolvableConditions ?? [];
     const live = this.armed.filter((bp) => this.remaining.has(bp.clientId));
-    if (armedAt(live, next.reachedBreakpoints, undefined)) {
+    const watched = this.liveWatches.some((watch) => next.reachedBreakpoints.includes(watch.id));
+    if (watched || armedAt(live, next.reachedBreakpoints, undefined)) {
       this.reachedBreakpoints = next.reachedBreakpoints;
       return 'atBreakpoint';
     }
@@ -549,9 +704,11 @@ export async function collectStops(
 ): Promise<void> {
   const follower = new RunFollower(session, armed, first, inspection, warnings);
   let stepsLeft = MAX_TOTAL_STEPS;
+  let watchPending = (req.watch?.length ?? 0) > 0;
   for (;;) {
     const willStep = req.steps > 0 && follower.steppingPossible && stepsLeft > 0;
-    const record = await follower.recordStop(req.variables, willStep, budget.result);
+    // Watchpoints still to set will keep the run going: a spent breakpoint must not stop it again.
+    const record = await follower.recordStop(req.variables, willStep || watchPending, budget.result);
     const { stop } = record;
     budget.progress?.(`stop ${stop.stop}${record.at ? ` at ${record.at.label}` : ''}`);
     let run: StepRun | undefined;
@@ -585,6 +742,11 @@ export async function collectStops(
         }
         if (run.outOfBudget || (!run.reached && !run.steppingPossible)) return;
       }
+    }
+    if (watchPending) {
+      // Watchpoints live in the attached run: set where it stands after its first stop and that stop's steps.
+      watchPending = false;
+      if (follower.following) await follower.watch(req.watch ?? []);
     }
     if (!follower.following) return;
     if (!run?.reached && follower.breakpointsLeft === 0) return;

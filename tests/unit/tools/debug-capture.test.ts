@@ -1529,3 +1529,87 @@ describe('abap_debug — non-exclusive debugging', () => {
     expect(named(calls, 'GET', '/sap/bc/adt/debugger/stack')).toHaveLength(0);
   });
 });
+
+describe('abap_debug — watchpoints', () => {
+  const at = (line: number) => ({ path: MAIN, line });
+
+  it('sets watchpoints at the first stop and stops where the variable changes, each change from and to', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      execution: [at(9), at(12), at(15)],
+      watchChanges: [
+        { index: 1, variable: 'LV_TOTAL' },
+        { index: 2, variable: 'LV_TOTAL' },
+      ],
+    });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      watch: [{ variable: 'lv_total', hits: 2 }],
+      variables: ['LV_TOTAL'],
+    });
+    expect(json?.watchpoints).toEqual([{ variable: 'LV_TOTAL', status: 'set', hits: 2 }]);
+    expect(json?.stops).toMatchObject([
+      { stop: 1, at: 'CLAS ZCL_ORDER the main source line 9' },
+      { stop: 2, at: 'watchpoint LV_TOTAL', hit: 1, changed: { from: '39', to: '42' }, stoppedAt: { line: 12 } },
+      { stop: 3, at: 'watchpoint LV_TOTAL', hit: 2, changed: { from: '42', to: '45' }, stoppedAt: { line: 15 } },
+    ]);
+    // Created on the attached session, and gone before the release lets the run go on.
+    const created = named(calls, 'POST', '/sap/bc/adt/debugger/watchpoints')[0];
+    expect(created?.stateful).toBe(true);
+    expect(Object.fromEntries(created?.query ?? [])).toEqual({
+      variableName: 'LV_TOTAL',
+      condition: '',
+      active: 'true',
+    });
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/watchpoints/WP-LV_TOTAL')).toHaveLength(1);
+    expect(json?.release).toEqual({ released: true, via: 'continue' });
+  });
+
+  it("tells a watchpoint's stop by the variable that changed when SAP does not name it", async () => {
+    installFakeSap({
+      hit: true,
+      execution: [at(9), at(13)],
+      watchChanges: [{ index: 1, variable: 'LV_TOTAL' }],
+      silentWatchpoints: true,
+    });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, watch: [{ variable: 'LV_TOTAL' }] });
+    expect(json?.stops[1]).toMatchObject({ at: 'watchpoint LV_TOTAL', changed: { from: '39', to: '43' } });
+    expect(json?.stops[1]).not.toHaveProperty('hit');
+  });
+
+  it('reports a watchpoint SAP refuses, and follows the run without it', async () => {
+    installFakeSap({ hit: true, watchRefused: ['LV_NOPE'] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      watch: [{ variable: 'LV_NOPE', condition: "lv_nope = 'X'" }],
+    });
+    expect(json?.watchpoints).toEqual([
+      {
+        variable: 'LV_NOPE',
+        condition: "lv_nope = 'X'",
+        status: 'refused',
+        reason: expect.stringContaining('LV_NOPE is unknown here'),
+      },
+    ]);
+    expect(json?.stops).toHaveLength(1);
+    expect(json?.release).toMatchObject({ released: true });
+  });
+
+  it('validates watchpoints before anything reaches SAP', async () => {
+    const { calls } = installFakeSap();
+    const empty = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, watch: [{ variable: '' }] });
+    expect(empty.result.isError).toBe(true);
+    const many = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      watch: Array.from({ length: 6 }, (_, index) => ({ variable: `LV_${index}` })),
+    });
+    expect(many.text).toContain('watch');
+    expect(calls).toHaveLength(0);
+  });
+});

@@ -55,7 +55,14 @@ import {
   unsetRunEvents,
 } from './debug-arm.js';
 import { BackgroundWork, stillRunning } from './debug-background.js';
-import { collectStops, type FirstStop, type Inspection, type StepMode, type StepUntil } from './debug-follow.js';
+import {
+  collectStops,
+  type FirstStop,
+  type Inspection,
+  type StepMode,
+  type StepUntil,
+  type WatchItem,
+} from './debug-follow.js';
 import type { DebugInput } from './debug-input.js';
 import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
@@ -105,11 +112,28 @@ export interface DebugRequest {
   stepMode: StepMode;
   /** The steps end early once this holds. */
   until?: StepUntil;
+  /** Watchpoints, set in the run at its first stop. */
+  watch: WatchItem[];
   timeoutSeconds: number;
   /** The inspection's time budget, within the server's ceiling. */
   maxSeconds?: number;
   /** The result's size budget, within the server's ceiling. */
   maxResultKB?: number;
+}
+
+/** The `watch` items of a call: variables upper-cased, one watchpoint each. */
+function readWatch(raw: unknown): WatchItem[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const { variable, condition, hits } = item as Record<string, unknown>;
+    const name = trimmed(variable)?.toUpperCase();
+    if (!name || seen.has(name)) return [];
+    seen.add(name);
+    const where = trimmed(condition);
+    return [{ variable: name, ...(where ? { condition: where } : {}), hits: typeof hits === 'number' ? hits : 1 }];
+  });
 }
 
 const trimmed = (value: unknown): string | undefined =>
@@ -192,6 +216,7 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
     steps: typeof args.steps === 'number' ? args.steps : until ? MAX_TOTAL_STEPS : 0,
     stepMode: (str('stepMode') as StepMode | undefined) ?? 'over',
     ...(until ? { until } : {}),
+    watch: readWatch(args.watch),
     timeoutSeconds: typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : DEFAULT_TIMEOUT_SECONDS,
     ...(typeof args.maxSeconds === 'number' ? { maxSeconds: args.maxSeconds } : {}),
     ...(typeof args.maxResultKB === 'number' ? { maxResultKB: args.maxResultKB } : {}),
@@ -423,7 +448,7 @@ export async function inspect(
         const releaser = new DebuggerSession(sessionHttp, identity, {
           deadline: Date.now() + RELEASE_BUDGET_MS,
         });
-        inspection.release = await releaser.release(run.armedIds);
+        inspection.release = await releaser.release(run.armedIds, inspection.watchpointIds);
       }
       // A debuggee that could not be released keeps its debugger session; any other ends here.
       if (attachState === 'none' || inspection.release?.released) {
@@ -787,6 +812,7 @@ export async function captureResult(run: CaptureRun, caught: Caught, inspection:
       breakpoints: inspection.attached ? breakpointsWithHits(armed, inspection.hits) : armed.report,
       debuggee: describeDebuggee(debuggee),
       attached: inspection.attached,
+      ...(inspection.watchpoints ? { watchpoints: inspection.watchpoints } : {}),
       ...(inspection.stops.length > 0 ? { stops: inspection.stops } : {}),
       ...(inspection.release ? { release: inspection.release } : {}),
       ...(inspection.error ? { error: inspection.error } : {}),

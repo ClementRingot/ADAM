@@ -45,6 +45,7 @@ The protocol behind each step is described in [the ADT debugger protocol](adt-de
 | `line` | Shorthand for one breakpoint at this line of `type` + `name` |
 | `breakpoints` | Up to 20 breakpoints — see [Breakpoints](#breakpoints) |
 | `exceptionClass` | Shorthand for one exception breakpoint, e.g. `CX_SY_ZERODIVIDE` |
+| `watch` | Up to 5 watchpoints, set at the first stop — see [Watchpoints](#watchpoints) |
 | `trigger` | `unittest` (default), `http` or `none` — see [Triggers](#triggers) |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint's object |
 | `url` | `trigger: "http"`: a host-relative OData path, `/sap/opu/odata4/…` or `/sap/opu/odata/sap/<SRV>/…` |
@@ -76,6 +77,20 @@ Each item of `breakpoints` is one of these:
 - `hits` (1-50, default 1): how many times this breakpoint may stop the run.
 - `type` and `name`: the breakpoint's own object, so one run can stop in several objects.
 
+### Watchpoints
+
+Each item of `watch` — `{ variable, condition?, hits? }` — stops the run wherever the variable
+changes: where does `LV_STATUS` change, or, with `condition: "lv_status = 'E'"`, become `'E'`? A
+watchpoint lives in the attached run, so it is set at the run's **first stop** (after that stop's
+steps), and the variable must be visible there — a local of that method, an attribute (`ME->MV_STATE`),
+a program global; SAP refuses it otherwise, and the result says why. `hits` (1-50, default 1): how
+many changes stop the run.
+
+A watchpoint's stop reads `{ stop, at: "watchpoint LV_STATUS", hit, changed: { from, to }, stoppedAt,
+stack, variables }`: the position is the statement after the change. The result's `watchpoints` lists
+each one, `set` with the `hits` it made or `refused` with SAP's reason. The watchpoints are deleted
+before the program is released.
+
 ### Triggers
 
 | `trigger` | Runs the code by |
@@ -93,6 +108,7 @@ JSON with:
 - `hit` — whether the program stopped;
 - `breakpoints` — each one set, with the `hits` it made (`0`: the run never got there), or refused with
   SAP's reason;
+- `watchpoints` — likewise, when the call set some;
 - `debuggee` — program, line, application server;
 - `stops` — each with `at` (the breakpoint), `stoppedAt` (the position), the call `stack` on a
   breakpoint's first stop, `variables`, and its `steps` or `trace`;
@@ -142,10 +158,11 @@ current line marked `>`) and the watched variables.
 
 | Parameter | Description |
 |---|---|
-| `action` | `step`, `continue`, `inspect`, `wait` or `end` |
+| `action` | `step`, `continue`, `inspect`, `watch`, `wait` or `end` |
 | `session` | The id `abap_debug` returned (default: your current capture or session) |
 | `stepMode`, `count`, `until` | `step`: `over` (default), `into` or `out`; how many steps (default 1; past 20, a compact trace); end early on a line or a change |
 | `toLine` | `continue`: run to this line of the source the program stands in, instead of the next breakpoint |
+| `variable`, `condition`, `hits` | `watch`: a [watchpoint](#watchpoints) where the program stands — `continue` then also stops where the variable changes (and the condition holds), up to `hits` times (default 1) |
 | `timeoutSeconds` | `continue`: how long to wait for the next stop (1-900, default 60) |
 | `variables` | `step` and `continue`: the variables to watch from now on. `inspect`: read these now — any variable, structures expanded, tables' first rows (default: the whole frame) |
 | `stack` | `inspect`: include the call stack |
@@ -294,6 +311,13 @@ Step until `LV_STATUS` changes, and show where:
 abap_debug {type: "CLAS", name: "ZCL_ORDER", line: 42, until: {changed: "LV_STATUS"}}
 ```
 
+Run on from the method's start and stop wherever `LV_STATUS` becomes `'E'`, deep in the calls included:
+
+```text
+abap_debug {type: "CLAS", name: "ZCL_ORDER", breakpoints: [{method: "process"}],
+            watch: [{variable: "LV_STATUS", condition: "lv_status = 'E'"}]}
+```
+
 An interactive session — each answer shows the position, the code around it and the watched values:
 
 ```text
@@ -301,6 +325,8 @@ abap_debug         {type: "CLAS", name: "ZCL_ORDER", line: 42, interactive: true
 abap_debug_session {action: "step", variables: ["LV_TOTAL"]}
 abap_debug_session {action: "step", stepMode: "into"}
 abap_debug_session {action: "inspect", variables: ["LS_HEAD", "ME->MT_ITEMS"], stack: true}
+abap_debug_session {action: "watch", variable: "ME->MV_STATE", hits: 3}
+abap_debug_session {action: "continue"}
 abap_debug_session {action: "continue", toLine: 80}
 abap_debug_session {action: "end"}
 ```

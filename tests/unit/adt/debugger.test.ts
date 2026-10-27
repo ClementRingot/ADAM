@@ -726,7 +726,7 @@ describe('DebuggerSession', () => {
 
     it('terminates as the last resort when the debuggee keeps stopping', async () => {
       const post = vi.fn().mockResolvedValue(ok('<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger"/>'));
-      const result = await new DebuggerSession(mockHttp({ post }), IDENTITY).release([], 2);
+      const result = await new DebuggerSession(mockHttp({ post }), IDENTITY).release([], [], 2);
       expect(result).toEqual({ released: true, via: 'terminate', detail: 'the debuggee kept stopping' });
       expect(post.mock.calls.map((call) => call[0])).toEqual([
         '/sap/bc/adt/debugger/breakpoints',

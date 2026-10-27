@@ -132,6 +132,7 @@ Every call below runs on **one stateful session**, on the server where the progr
 | Child variables | `POST /sap/bc/adt/debugger?method=getChildVariables`, body `<DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID>…`, `dataname=com.sap.adt.debugger.ChildVariables` | `HIERARCHIES` (`PARENT_ID`, `CHILD_ID`, `CHILD_NAME`) and `VARIABLES`. `@ROOT`'s children are the frame's scopes (V shows them as the Variables view's scopes) or, on some releases, the variables directly; a structure's children are its components. Several parents fit in one request. |
 | Step | `POST /sap/bc/adt/debugger?method=stepInto` — likewise `stepOver`, `stepReturn`, `stepContinue`, `stepRunToLine` (with `uri=<source URI>#start=<line>`) and `terminateDebuggee` | `<dbg:step isSteppingPossible …>`, optionally with `<reachedBreakpoints>`. `stepContinue` answering 200 means stopped again at the next breakpoint, still attached; the exception `debuggeeEnded` or `noSessionAttached` means the program ran to its end (S). `stepRunToLine` takes the target line as `uri` (A, V, S; not yet observed live). |
 | Session breakpoints | `POST /sap/bc/adt/debugger/breakpoints` with `scope="debugger"`, or `DELETE …/breakpoints/{id}?scope=debugger&…`, on the attached session | The attached run keeps its own copies of the breakpoints, apart from the external ones (V syncs and deletes `scope=debugger` copies on each attached thread). The server deletes one copy to retire a breakpoint whose `hits` are spent, and clears them all before the release. |
+| Watchpoints | `POST /sap/bc/adt/debugger/watchpoints?variableName=…&condition=…&active=true`, `DELETE …/watchpoints/{id}`, on the attached session (A) | `<watchpoints><watchpoint id variableName kind active expired procedure>` with `condition`, `oldValue`, `currentValue` texts (A). Set where the run stands, for a variable visible there; the run then stops where it changes. No request lists a run's watchpoints. The server tells a watchpoint's stop by the id in `reachedBreakpoints`, else by the watched value that changed, and deletes every watchpoint before the release — a live one would stop the releasing `stepContinue`. Not yet observed live. |
 | Release | `stepContinue` until `debuggeeEnded` | `method=detach` is unknown on 7.58 (400 "Unknown method") (S); V releases the same way. `terminateDebuggee` aborts the program and its caller's request: the server sends it when an interactive session ends with `terminate: true`, and as the last resort when three continues do not end the run. |
 
 **Accept headers.** Naming a concrete media type makes ADT answer **404 "No suitable resource found"**
@@ -313,6 +314,9 @@ long step runs, its interactive sessions and its BTP deployment. Still to check
 19. **A move that outlasts its call**: a `continue` the client's call no longer waits for, then
     `end` — whether SAP lets the release through while the first `stepContinue` still waits on the
     same stateful session.
+20. **Watchpoints**: the create answer's shape, the `kind` SAP names in `reachedBreakpoints` at a
+    watchpoint's stop, how it refuses a variable not visible where the run stands, whether a
+    watchpoint on a local stops in other frames, and the condition's semantics (after the change).
 
 ## What the server deliberately leaves out
 
