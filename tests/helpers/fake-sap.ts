@@ -176,6 +176,8 @@ export interface FakeSapOptions {
   appendAtLine?: number;
   /** The attach lands in a post-mortem (short dump) session: no stepping. */
   postMortem?: boolean;
+  /** No work process is free for exclusive debugging: SAP attaches non-exclusively. */
+  nonExclusive?: boolean;
   /** stepRunToLine: the program ends before the target line. */
   runToLineEnds?: boolean;
   /** The program finishes at the step after this many (a step then answers "debuggee ended"). */
@@ -484,7 +486,7 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
             200,
             options.postMortem
               ? '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="false" isPostMortem="true"/>'
-              : `<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:attach>`,
+              : `<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"${options.nonExclusive ? ' isNonExclusive="true"' : ''}>${reached()}</dbg:attach>`,
           );
         case 'stepOver':
         case 'stepInto':

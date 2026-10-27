@@ -325,6 +325,16 @@ function attachDefinitelyFailed(err: unknown): boolean {
   return (err.statusCode >= 400 && err.statusCode < 500) || debuggerErrorSubType(err) === 'invalidDebuggee';
 }
 
+/**
+ * SAP attaches in non-exclusive mode when every work process it allows for exclusive debugging is
+ * taken (`rdisp/wpdbug_max_no`), for users with debug change authorization only. There the program
+ * rolls out after each debugger interaction, which commits its open database work — no capture
+ * may do that, so the program is released at once.
+ */
+const NON_EXCLUSIVE_ERROR =
+  "SAP attached in non-exclusive mode: every work process SAP allows for exclusive debugging is in use (profile parameter rdisp/wpdbug_max_no), and in this mode each debugger step commits the program's open database changes. The capture let the program run on at once, without inspecting it. Retry when a debugging work process is free — an Eclipse or ADAM debug session that ends frees one.";
+const NON_EXCLUSIVE_NOTE = 'the run was released at its first stop without inspection (non-exclusive debugging)';
+
 /** What `inspect` leaves behind: the inspection, and the attached session when the caller keeps it. */
 export interface Attachment extends Inspection {
   session?: DebuggerSession;
@@ -370,6 +380,12 @@ export async function inspect(
     const attach = await session.attach(debuggee.id);
     attachState = 'attached';
     inspection.attached = true;
+    if (attach.nonExclusive) {
+      // Every further debugger interaction would commit the program's work: release it untouched.
+      if (run.armed) unsetRunEvents(run.armed, NON_EXCLUSIVE_NOTE);
+      inspection.error = NON_EXCLUSIVE_ERROR;
+      return inspection;
+    }
     if (attach.postMortem) warnings.push('SAP attached a post-mortem (short dump) session — inspection only.');
     await run.clearExternal();
     if (run.armed && !attach.postMortem) await armInRun(session, run.armed, run.armedIds, warnings);

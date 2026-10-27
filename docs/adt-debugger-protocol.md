@@ -143,6 +143,15 @@ and `application/vnd.sap.as+xml` on the listener and the variable calls — the 
 `<entry key="com.sap.adt.communicationFramework.subType">` (A `parseDebugError`, V): `conflictDetected`,
 `conflictNotification`, `invalidDebuggee`, `noSessionAttached`, `debuggeeEnded`, `notAuthorized`.
 
+**Exclusive and non-exclusive debugging.** A held program keeps a dialog work process for itself;
+SAP allows `rdisp/wpdbug_max_no` of them at once (by default half of the dialog work processes). With
+all of them taken, SAP attaches a user with debug change authorization in **non-exclusive mode**: the
+program rolls out after each debugger interaction, which commits its open database work, and SELECT
+loops end in a `DBIF_RSQL_INVALID_CURSOR` dump (SAP Help, *Debugging Modes*; not offered in
+productive systems). The attach and step answers carry `isNonExclusive` and `isNonExclusiveToggled`
+(A's `DebugState`). No capture may commit for the program, so on an attach flagged `isNonExclusive`
+the server releases the program at once, reading and stepping nothing, and says why.
+
 **Closing a session.** The server closes every stateful session it opens the way Eclipse ADT does:
 `GET /sap/bc/adt/core/http/sessions` with `sap-adt-purpose: close-session` on that session's context.
 Where that resource is missing (7.50), a stateless request on the context closes it.
@@ -298,6 +307,12 @@ long step runs, its interactive sessions and its BTP deployment. Still to check
 17. **Interactive sessions**: how long SAP keeps a held program and its stateful session between
     calls, how the trigger's request fares meanwhile, what `stepRunToLine` and `terminateDebuggee`
     answer, and that the latter rolls back the program's uncommitted work.
+18. **Non-exclusive attach**: once `rdisp/wpdbug_max_no` held programs exist, what the attach answers
+    for a user with debug change authorization (`isNonExclusive="true"` expected) and for one without
+    (a refusal expected).
+19. **A move that outlasts its call**: a `continue` the client's call no longer waits for, then
+    `end` — whether SAP lets the release through while the first `stepContinue` still waits on the
+    same stateful session.
 
 ## What the server deliberately leaves out
 

@@ -601,6 +601,11 @@ function parseReachedBreakpoints(node: XmlNode): ReachedBreakpoint[] {
 export interface DebugAttachInfo {
   steppingPossible: boolean;
   postMortem: boolean;
+  /**
+   * SAP found no free work process for exclusive debugging and attached non-exclusively: the program
+   * rolls out after each debugger interaction, which commits its open database work.
+   */
+  nonExclusive: boolean;
   reachedBreakpoints: ReachedBreakpoint[];
 }
 
@@ -609,6 +614,7 @@ export function parseAttachResponse(xml: string): DebugAttachInfo {
   return {
     steppingPossible: attr(node, 'isSteppingPossible') === '' ? true : flag(attr(node, 'isSteppingPossible')),
     postMortem: flag(attr(node, 'isPostMortem')),
+    nonExclusive: flag(attr(node, 'isNonExclusive')),
     reachedBreakpoints: parseReachedBreakpoints(node),
   };
 }

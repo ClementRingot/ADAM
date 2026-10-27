@@ -146,7 +146,9 @@ on real systems.
 ## Safety
 
 - **Observes, never changes**: no variable writes, no jumps, no system debugging. The one exception is
-  on request: ending an interactive session with `terminate: true` aborts the program.
+  on request: ending an interactive session with `terminate: true` aborts the program. When SAP can
+  only attach in non-exclusive mode, where every debugger step commits the program's database work,
+  the capture lets the program go at once instead of inspecting it.
 - **Only your own SAP user**: the user SAP itself names for the session, never a name passed in a call.
 - **No takeover**: if Eclipse, VS Code or another capture debugs the same user, the call refuses.
 - **Harmless triggers**: ABAP Unit runs harmless tests only; the HTTP trigger only reads an OData path

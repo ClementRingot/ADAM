@@ -405,3 +405,14 @@ describe('abap_debug_session — work that outlasts its call', () => {
     expect((await move({ action: 'end' }, 'alice')).json).toMatchObject({ ended: true });
   });
 });
+
+describe('abap_debug — interactive, non-exclusive debugging', () => {
+  it('holds nothing when SAP attaches non-exclusively', async () => {
+    installFakeSap({ hit: true, nonExclusive: true });
+    const { json } = await start({ line: 9 });
+    expect(json).not.toHaveProperty('session');
+    expect(json).toMatchObject({ hit: true, attached: true, release: { released: true } });
+    expect(json?.error).toContain('non-exclusive mode');
+    expect(openDebugSessionId()).toBeUndefined();
+  });
+});

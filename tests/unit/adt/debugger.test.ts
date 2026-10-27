@@ -471,10 +471,21 @@ describe('session documents', () => {
       parseAttachResponse(
         '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true" isPostMortem="false"><reachedBreakpoints><breakpoint id="BP1" kind="line"/></reachedBreakpoints></dbg:attach>',
       ),
-    ).toEqual({ steppingPossible: true, postMortem: false, reachedBreakpoints: [{ id: 'BP1', kind: 'line' }] });
+    ).toEqual({
+      steppingPossible: true,
+      postMortem: false,
+      nonExclusive: false,
+      reachedBreakpoints: [{ id: 'BP1', kind: 'line' }],
+    });
     expect(parseAttachResponse('<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger"/>').steppingPossible).toBe(
       true,
     );
+    // No exclusive debugging work process was free: every debugger step would commit.
+    expect(
+      parseAttachResponse(
+        '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true" isNonExclusive="true" isNonExclusiveToggled="false"/>',
+      ).nonExclusive,
+    ).toBe(true);
     // A condition SAP could not evaluate: it stopped anyway and says where the evaluation failed.
     expect(
       parseAttachResponse(

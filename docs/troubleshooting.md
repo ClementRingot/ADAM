@@ -38,6 +38,12 @@ issuing it; search the message number in the source (`abap_source` with `grep`) 
 call (default 120 s), after `ABAP_DEBUGGER_SESSION_SECONDS` in all (default 15 min), and when the
 server stops — on SAP BTP also by a restage or a redeploy. Start a new one.
 
+**"SAP attached in non-exclusive mode".** Every work process the SAP system allows for exclusive
+debugging is taken — by other held programs, Eclipse sessions included (`rdisp/wpdbug_max_no`). In that
+mode each debugger step would commit the program's open database changes, so the capture let the
+program run on untouched. Retry once a debug session has ended; if it keeps happening, the system
+needs a higher `rdisp/wpdbug_max_no` or more dialog work processes.
+
 **A call answered `running: true`.** The capture or the move needs longer than one call may take
 (`ABAP_DEBUGGER_CALL_SECONDS`, default 50 s) and goes on in the background: call `abap_debug_session`
 with `action: "wait"` for its answer, or `action: "end"` to stop it.

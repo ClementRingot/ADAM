@@ -1502,3 +1502,30 @@ describe('abap_debug — captures that outlast their call', () => {
     expect((await session({ action: 'end' }, 'alice')).json).toMatchObject({ hit: false, reason: 'cancelled' });
   });
 });
+
+describe('abap_debug — non-exclusive debugging', () => {
+  it('releases a program SAP attached non-exclusively at once, reading and stepping nothing', async () => {
+    const { calls } = installFakeSap({ hit: true, nonExclusive: true });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9 }, { exceptionClass: 'CX_SY_ZERODIVIDE' }],
+      variables: ['LV_TOTAL'],
+      steps: 3,
+    });
+    expect(json).toMatchObject({ hit: true, attached: true, release: { released: true, via: 'continue' } });
+    expect(json?.error).toContain('non-exclusive mode');
+    expect(json).not.toHaveProperty('stops');
+    expect(json?.breakpoints[1]).toMatchObject({
+      status: 'not set',
+      note: 'the run was released at its first stop without inspection (non-exclusive debugging)',
+    });
+    const methods = named(calls, 'POST', '/sap/bc/adt/debugger').map((c) => c.query.get('method'));
+    expect(methods).toContain('attach');
+    expect(methods).toContain('stepContinue');
+    expect(
+      methods.filter((method) => ['getVariables', 'getChildVariables', 'stepOver'].includes(method ?? '')),
+    ).toEqual([]);
+    expect(named(calls, 'GET', '/sap/bc/adt/debugger/stack')).toHaveLength(0);
+  });
+});

@@ -21,7 +21,10 @@ Lines are always numbered as `abap_source` shows the **active** source.
    nothing (`trigger: "none"`) while you run it yourself — a Fiori app, a report — as the same SAP user.
 4. **Follow.** When the program stops, the capture attaches from the application server the program
    waits on, records the stop (position, call stack, variables, steps), retires a breakpoint once it
-   has made its `hits`, and continues to the next stop of the **same run**.
+   has made its `hits`, and continues to the next stop of the **same run**. If SAP can only attach in
+   non-exclusive mode — every work process for exclusive debugging taken — each debugger step would
+   commit the program's open database changes, so the capture releases the program at once and says
+   why.
 5. **Release.** The program runs on to its end, and the capture's breakpoints and listener are removed —
    on every path, errors and timeouts included.
 

@@ -473,12 +473,15 @@ export async function armBreakpoints(
 }
 
 /** A pending run event that never got set: the run did not stop. */
-export function unsetRunEvents(armed: ArmedBreakpoints): void {
+export function unsetRunEvents(
+  armed: ArmedBreakpoints,
+  note = 'it is set in the debugged run at its first stop, and the run never stopped',
+): void {
   for (const { reportIndex } of armed.inRun) {
     const entry = armed.report[reportIndex];
     if (entry?.status === 'pending') {
       entry.status = 'not set';
-      entry.note = 'it is set in the debugged run at its first stop, and the run never stopped';
+      entry.note = note;
     }
   }
 }
