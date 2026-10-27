@@ -37,3 +37,16 @@ issuing it; search the message number in the source (`abap_source` with `grep`) 
 **An interactive session was released.** It is released after `ABAP_DEBUGGER_IDLE_SECONDS` without a
 call (default 120 s), after `ABAP_DEBUGGER_SESSION_SECONDS` in all (default 15 min), and when the
 server stops — on SAP BTP also by a restage or a redeploy. Start a new one.
+
+**A call answered `running: true`.** The capture or the move needs longer than one call may take
+(`ABAP_DEBUGGER_CALL_SECONDS`, default 50 s) and goes on in the background: call `abap_debug_session`
+with `action: "wait"` for its answer, or `action: "end"` to stop it.
+
+**The client says the tool call timed out** (`… timed out after 60s`). The client gave up before the
+server answered, and cancelled the call — which stops the capture. Set `ABAP_DEBUGGER_CALL_SECONDS` a
+few seconds below the client's timeout.
+
+**"Debug captures running on this server: 4 of 4" (or sessions).** The server caps how many programs
+it holds at once, since each takes an SAP dialog work process; wait for one to end, or raise
+`ABAP_DEBUGGER_MAX_CAPTURES` / `ABAP_DEBUGGER_MAX_SESSIONS` within what the SAP system allows — see
+[sizing](configuration.md#sizing-against-the-sap-system).

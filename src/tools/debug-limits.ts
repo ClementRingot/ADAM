@@ -15,7 +15,7 @@ export const MAX_TOTAL_STEPS = 10_000;
 export const DETAILED_STEPS = 20;
 
 /** Attach + reads + steps + continues once the debuggee is caught, unless the call asks otherwise. */
-export const DEFAULT_CALL_SECONDS = 120;
+export const DEFAULT_INSPECTION_SECONDS = 120;
 
 /** Characters of compact JSON a result may fill unless the call asks otherwise (≈ 10-12k tokens). */
 export const DEFAULT_RESULT_KB = 40;
@@ -36,9 +36,48 @@ export interface DebugLimits {
   idleSeconds: number;
   /** An interactive session is released after this long in all (ABAP_DEBUGGER_SESSION_SECONDS). */
   sessionSeconds: number;
+  /**
+   * The longest one tool call may take (ABAP_DEBUGGER_CALL_SECONDS). Many MCP clients give up on a
+   * call after 60 s, so a capture or a move that takes longer goes on in the background and the call
+   * answers with its session id: abap_debug_session action "wait" picks it up.
+   */
+  callSeconds: number;
+  /** One-shot captures that may run at once on this server (ABAP_DEBUGGER_MAX_CAPTURES). */
+  maxCaptures: number;
+  /** Interactive sessions that may be open at once on this server (ABAP_DEBUGGER_MAX_SESSIONS). */
+  maxSessions: number;
 }
 
-export const DEFAULT_LIMITS: DebugLimits = { maxSeconds: 600, maxResultKB: 200, idleSeconds: 120, sessionSeconds: 900 };
+export const DEFAULT_LIMITS: DebugLimits = {
+  maxSeconds: 600,
+  maxResultKB: 200,
+  idleSeconds: 120,
+  sessionSeconds: 900,
+  callSeconds: 50,
+  maxCaptures: 4,
+  maxSessions: 4,
+};
+
+/** Kept at the end of a call to build and send its answer. */
+export const ANSWER_MARGIN_MS = 1500;
+
+/** When a tool call must answer: its budget (ABAP_DEBUGGER_CALL_SECONDS) from now, less the answer margin. */
+export function callDeadline(limits: DebugLimits): number {
+  return Date.now() + Math.max(500, limits.callSeconds * 1000 - ANSWER_MARGIN_MS);
+}
+
+/** `work`'s value when it settles by `deadline`; otherwise undefined, and it goes on. Rejections propagate. */
+export async function settleBy<T>(work: Promise<T>, deadline: number): Promise<{ value: T } | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
+  });
+  try {
+    return await Promise.race([work.then((value) => ({ value })), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export const timings = {
   /** Head start for the long poll: SAP must register the listener before the trigger reaches the line. */
@@ -126,7 +165,7 @@ export function planCallBudget(
   warnings: string[],
   context: { signal?: AbortSignal; progress?: Progress } = {},
 ): CallBudget {
-  let seconds = asked.maxSeconds ?? Math.min(DEFAULT_CALL_SECONDS, limits.maxSeconds);
+  let seconds = asked.maxSeconds ?? Math.min(DEFAULT_INSPECTION_SECONDS, limits.maxSeconds);
   if (seconds > limits.maxSeconds) {
     warnings.push(
       `maxSeconds ${seconds} is above this server's ceiling: ${limits.maxSeconds} s apply (ABAP_DEBUGGER_MAX_SECONDS).`,

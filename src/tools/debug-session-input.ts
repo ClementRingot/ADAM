@@ -10,16 +10,21 @@ const ACTION_FIELDS: Record<string, readonly string[]> = {
   step: ['stepMode', 'count', 'until', 'variables', 'maxSeconds', 'maxResultKB'],
   continue: ['toLine', 'timeoutSeconds', 'variables', 'maxResultKB'],
   inspect: ['variables', 'stack', 'maxResultKB'],
+  wait: [],
   end: ['terminate'],
 };
 
 export const DEBUG_SESSION_INPUT_SHAPE = {
   action: z
-    .enum(['step', 'continue', 'inspect', 'end'])
+    .enum(['step', 'continue', 'inspect', 'wait', 'end'])
     .describe(
-      'step: run statement by statement (stepMode, count, until). continue: run on to the next breakpoint, or to toLine. inspect: read variables or the call stack where the program stands. end: let the program run to its end (or terminate it) and close the session.',
+      'step: run statement by statement (stepMode, count, until). continue: run on to the next breakpoint, or to toLine. inspect: read variables or the call stack where the program stands. wait: the answer of a capture or move that outlasted its call (it said running: true). end: let the program run to its end (or terminate it) and close the session; on a capture still running, stop it.',
     ),
-  session: z.string().max(20).optional().describe('The session id abap_debug returned (default: the open session).'),
+  session: z
+    .string()
+    .max(20)
+    .optional()
+    .describe('The session id abap_debug returned (default: your current capture or session).'),
   stepMode: z
     .enum(['over', 'into', 'out'])
     .optional()
@@ -47,10 +52,10 @@ export const DEBUG_SESSION_INPUT_SHAPE = {
   timeoutSeconds: z.coerce
     .number()
     .int()
-    .min(1, 'timeoutSeconds must be 1-240.')
-    .max(240, 'timeoutSeconds must be 1-240.')
+    .min(1, 'timeoutSeconds must be 1-900.')
+    .max(900, 'timeoutSeconds must be 1-900.')
     .optional()
-    .describe('continue: how long to wait for the next stop (1-240, default 60).'),
+    .describe('continue: how long to wait for the next stop (1-900, default 60).'),
   variables: z
     .array(z.string().min(1).max(200))
     .max(20)

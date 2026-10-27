@@ -8,6 +8,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { callTool } from '../../../src/server.js';
 import { setDebugTimingsForTests, setResultBudgetForTests } from '../../../src/tools/debug-capture.js';
+import { DEFAULT_LIMITS } from '../../../src/tools/debug-limits.js';
+import { resetDebuggingForTests } from '../../../src/tools/debug-registry.js';
 import {
   type Call,
   createConnection,
@@ -42,7 +44,8 @@ beforeAll(() => {
   setDebugTimingsForTests({ armDelayMs: 0, triggerSettleMs: 200 });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await resetDebuggingForTests();
   mockFetch.mockReset();
 });
 
@@ -354,7 +357,7 @@ describe('abap_debug — a hit', () => {
     const first = debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, conn);
     const second = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, conn);
     expect(second.result.isError).toBe(true);
-    expect(second.text).toContain('already running');
+    expect(second.text).toContain('Your debug capture S1 is still running');
     expect((await first).json?.hit).toBe(true);
   });
 });
@@ -962,7 +965,7 @@ describe('abap_debug — long step runs', () => {
     installFakeSap({ hit: true });
     const conn = {
       ...createConnection(),
-      limits: { maxSeconds: 30, maxResultKB: 10, idleSeconds: 60, sessionSeconds: 300 },
+      limits: { ...DEFAULT_LIMITS, maxSeconds: 30, maxResultKB: 10, idleSeconds: 60, sessionSeconds: 300 },
     };
     const { json } = await debug(
       { type: 'CLAS', name: 'ZCL_ORDER', line: 9, maxSeconds: 3600, maxResultKB: 1000 },
@@ -993,7 +996,8 @@ describe('abap_debug — long step runs', () => {
         { signal: abort.signal, progress },
       );
       const json = JSON.parse(result.content[0]?.text ?? '{}');
-      expect(messages[0]).toBe('stop 1 at CLAS ZCL_ORDER the main source line 9');
+      expect(messages[0]).toBe('waiting for the run to stop at a breakpoint (0 of 60 s)');
+      expect(messages).toContain('stop 1 at CLAS ZCL_ORDER the main source line 9');
       expect(messages).toContain('step 1 of 100, line 10');
       expect(json.stops[0].steps).toHaveLength(5);
       expect(json.warnings).toContainEqual(expect.stringContaining('cancelled after 5 step(s)'));
@@ -1337,8 +1341,8 @@ describe('abap_debug — gates and input', () => {
     const missing = await debug({ type: 'CLAS', name: 'ZCL_ORDER' });
     expect(missing.result.isError).toBe(true);
     expect(missing.text).toContain('needs a breakpoint');
-    const tooLong = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, timeoutSeconds: 600 });
-    expect(tooLong.text).toContain('1-240');
+    const tooLong = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, timeoutSeconds: 1200 });
+    expect(tooLong.text).toContain('1-900');
     const http = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'http' });
     expect(http.text).toContain('needs url');
     const methodOnProg = await debug({ type: 'PROG', name: 'ZREPORT', breakpoints: [{ method: 'x' }] });
@@ -1411,5 +1415,90 @@ describe('abap_debug — gates and input', () => {
     // Cleanup as always.
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/breakpoints/BP-L9')).toHaveLength(1);
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+});
+
+describe('abap_debug — captures that outlast their call', () => {
+  const quick = (limits: Partial<typeof DEFAULT_LIMITS> = {}, logonUser = 'admin') => ({
+    ...createConnection({}, logonUser),
+    limits: { ...DEFAULT_LIMITS, callSeconds: 0.5, ...limits },
+  });
+  async function session(args: Record<string, unknown>, owner?: string) {
+    const result = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug_session',
+      args,
+      owner ? { owner } : {},
+    );
+    const text = result.content[0]?.text ?? '';
+    let json: Record<string, any> | undefined;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { result, text, json };
+  }
+  const capture = (conn: ReturnType<typeof quick>, owner: string, args: Record<string, unknown> = {}) =>
+    callTool(
+      { connection: conn, problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, ...args },
+      { owner },
+    );
+  const textOf = (result: { content: Array<{ text: string }> }) => result.content[0]?.text ?? '';
+
+  it('answers with its session id while the stop is still to come; wait gives the capture', async () => {
+    installFakeSap({ hit: true, stopAfterMs: 900 });
+    const first = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, quick());
+    expect(first.result.isError).toBeFalsy();
+    expect(first.json).toMatchObject({
+      session: 'S1',
+      running: true,
+      doing: 'waiting for the run to stop at a breakpoint (0 of 60 s)',
+    });
+    expect((await session({ action: 'step' })).text).toContain('S1 is a one-shot capture');
+    const done = await session({ action: 'wait', session: 's1' });
+    expect(done.json).toMatchObject({
+      hit: true,
+      stops: [{ stop: 1, at: 'CLAS ZCL_ORDER the main source line 9' }],
+      release: { released: true },
+    });
+    expect((await session({ action: 'wait' })).text).toBe(
+      'Nothing of yours runs: no debug capture, no session. Start one with abap_debug.',
+    );
+  });
+
+  it('stops a capture still waiting for its stop on end, and cleans up', async () => {
+    const { calls } = installFakeSap({ hit: false });
+    const first = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' }, quick());
+    expect(first.json).toMatchObject({ session: 'S1', running: true });
+    expect((await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).text).toBe(
+      'Your debug capture S1 is still running: abap_debug_session action="wait" returns its result, action="end" stops it.',
+    );
+    const end = await session({ action: 'end' });
+    expect(end.json).toMatchObject({ hit: false, reason: 'cancelled' });
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+
+  it('caps the captures running at once, and keeps one capture per SAP user across MCP users', async () => {
+    installFakeSap({ hit: false });
+    const alice = await capture(quick({ maxCaptures: 1 }), 'alice', { trigger: 'none' });
+    expect(JSON.parse(textOf(alice))).toMatchObject({ session: 'S1', running: true });
+    // Another MCP user debugging the same SAP user waits for the first capture.
+    expect(textOf(await capture(quick({ maxCaptures: 1 }), 'carol'))).toBe(
+      'A debug capture (S1) for SAP user ADMIN is already running on this server — wait for it to finish.',
+    );
+    // Another SAP user meets the server's cap.
+    const bob = await capture(quick({ maxCaptures: 1 }, 'bob'), 'bob');
+    expect(bob.isError).toBe(true);
+    expect(textOf(bob)).toBe(
+      'Debug captures running on this server: 1 of 1 (ABAP_DEBUGGER_MAX_CAPTURES). Each can hold an SAP work process while its program is stopped — try again when one has ended.',
+    );
+    // Nobody but Alice reaches her capture.
+    expect((await session({ action: 'end' }, 'bob')).text).toBe(
+      'No interactive debug session is open. Start one with abap_debug and interactive: true.',
+    );
+    expect((await session({ action: 'end' }, 'alice')).json).toMatchObject({ hit: false, reason: 'cancelled' });
   });
 });

@@ -81,11 +81,16 @@ modules:
       SAP_LANGUAGE: EN
       # Every MCP user debugs as their own SAP user; "true" only for a deployment one person uses.
       ABAP_DEBUGGER_ALLOW_SHARED_USER: "false"
-      # Bounds (see README): inspection time and result size ceilings, interactive sessions.
+      # Bounds (see docs/configuration.md): inspection time and result size ceilings, interactive
+      # sessions, the time a call may take, and how many programs the server holds at once — each
+      # takes an SAP dialog work process (rdisp/wpdbug_max_no).
       ABAP_DEBUGGER_MAX_SECONDS: "600"
       ABAP_DEBUGGER_MAX_RESULT_KB: "200"
       ABAP_DEBUGGER_IDLE_SECONDS: "120"
       ABAP_DEBUGGER_SESSION_SECONDS: "900"
+      ABAP_DEBUGGER_CALL_SECONDS: "50"
+      ABAP_DEBUGGER_MAX_CAPTURES: "4"
+      ABAP_DEBUGGER_MAX_SESSIONS: "4"
     provides:
       - name: abap-debugger-api
         properties:

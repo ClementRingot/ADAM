@@ -27,6 +27,7 @@ export const SERVER_INSTRUCTIONS = [
   'Triggers: unittest runs the harmless ABAP Unit tests (of triggerName or the breakpoint object); http GETs an OData path; none waits while the user runs the code themselves as the same SAP user (a Fiori app, a report).',
   'Not sure where the code runs? Stop on what it does instead of a line: the message it issues, the exception it raises, a statement kind such as COMMIT WORK.',
   'Two modes: one-shot (default) records the whole run in one call — stops, variables, and as many steps as maxSeconds/maxResultKB allow (past 20 steps a compact trace). Interactive (interactive: true) holds the program at its first stop: then abap_debug_session step / continue / inspect / end, one move per call, until you end it — end it when done, the program holds a work process meanwhile.',
+  'A call that would outlast its time (default 50 s) answers running: true with a session id, and the work goes on: call abap_debug_session action wait for its answer.',
 ].join('\n');
 
 /** One tool call: validate, then run on the connection, never letting an exception escape. */

@@ -163,8 +163,15 @@ it never logs tokens.
   and kills it ten seconds later, so the server releases the held programs first. A restage or redeploy
   therefore ends open sessions.
 - **Long calls**: a one-shot capture may wait `timeoutSeconds` for its stop and then inspect for
-  `maxSeconds` (ceiling `ABAP_DEBUGGER_MAX_SECONDS`, 600 s by default). The server sends progress
-  notifications to clients that ask for them.
+  `maxSeconds` (ceiling `ABAP_DEBUGGER_MAX_SECONDS`, 600 s by default). Each call answers within
+  `ABAP_DEBUGGER_CALL_SECONDS` (50 s) all the same — Copilot Studio and most clients give up on a call
+  after a minute — and the rest goes on in the background until `abap_debug_session` `wait` picks it
+  up. The server sends progress notifications to clients that ask for them.
+- **Shared SAP resources**: every held program takes a dialog work process on the SAP system, from the
+  pool `rdisp/wpdbug_max_no` caps (half the dialog work processes by default). The server holds at
+  most `ABAP_DEBUGGER_MAX_CAPTURES` captures and `ABAP_DEBUGGER_MAX_SESSIONS` sessions at once (4 each);
+  size both against that pool for the number of developers who use the deployment — see
+  [sizing](configuration.md#sizing-against-the-sap-system).
 
 ## Settings
 
@@ -178,6 +185,8 @@ override a property, never remove one).
 | `ABAP_DEBUGGER_ALLOW_SHARED_USER` | `false` | Accept one SAP identity for every MCP user (Basic destination) |
 | `ABAP_DEBUGGER_MAX_SECONDS`, `ABAP_DEBUGGER_MAX_RESULT_KB` | `600`, `200` | Ceilings of a call's time and result size |
 | `ABAP_DEBUGGER_IDLE_SECONDS`, `ABAP_DEBUGGER_SESSION_SECONDS` | `120`, `900` | Interactive session limits |
+| `ABAP_DEBUGGER_CALL_SECONDS` | `50` | A call answers within this time; longer work goes on in the background |
+| `ABAP_DEBUGGER_MAX_CAPTURES`, `ABAP_DEBUGGER_MAX_SESSIONS` | `4`, `4` | Captures and sessions at once on the server |
 | `ABAP_DEBUGGER_DCR_SIGNING_SECRET` | XSUAA client secret | Signs the MCP clients' registrations (set with `cf set-env`) |
 | `ABAP_DEBUGGER_API_KEYS` | — | Comma-separated API keys (20+ characters), besides XSUAA |
 | `ABAP_DEBUGGER_ALLOWED_ORIGINS` | — | CORS origins of browser MCP clients |

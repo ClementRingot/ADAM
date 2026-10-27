@@ -91,6 +91,9 @@ describe('loadConfig', () => {
       maxResultKB: 200,
       idleSeconds: 120,
       sessionSeconds: 900,
+      callSeconds: 50,
+      maxCaptures: 4,
+      maxSessions: 4,
     });
     const { config } = loadConfig({
       ...base,
@@ -98,11 +101,26 @@ describe('loadConfig', () => {
       ABAP_DEBUGGER_MAX_RESULT_KB: '80',
       ABAP_DEBUGGER_IDLE_SECONDS: '300',
       ABAP_DEBUGGER_SESSION_SECONDS: '1800',
+      ABAP_DEBUGGER_CALL_SECONDS: '25',
+      ABAP_DEBUGGER_MAX_CAPTURES: '10',
+      ABAP_DEBUGGER_MAX_SESSIONS: '2',
     });
-    expect(config?.limits).toEqual({ maxSeconds: 1200, maxResultKB: 80, idleSeconds: 300, sessionSeconds: 1800 });
+    expect(config?.limits).toEqual({
+      maxSeconds: 1200,
+      maxResultKB: 80,
+      idleSeconds: 300,
+      sessionSeconds: 1800,
+      callSeconds: 25,
+      maxCaptures: 10,
+      maxSessions: 2,
+    });
     expect(createConnection(config as NonNullable<typeof config>).limits).toEqual(config?.limits);
     expect(loadConfig({ ...base, ABAP_DEBUGGER_IDLE_SECONDS: '5' }).problems).toEqual([
       'ABAP_DEBUGGER_IDLE_SECONDS must be a whole number from 10 to 3600 (got "5").',
+    ]);
+    expect(loadConfig({ ...base, ABAP_DEBUGGER_CALL_SECONDS: '5', ABAP_DEBUGGER_MAX_SESSIONS: '0' }).problems).toEqual([
+      'ABAP_DEBUGGER_CALL_SECONDS must be a whole number from 10 to 3600 (got "5").',
+      'ABAP_DEBUGGER_MAX_SESSIONS must be a whole number from 1 to 100 (got "0").',
     ]);
   });
 

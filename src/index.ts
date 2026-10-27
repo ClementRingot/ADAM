@@ -8,7 +8,7 @@ import { createConnection, loadConfig, loadHttpConfig } from './config.js';
 import { createHttpApp, httpSap, listen } from './http-server.js';
 import { logger } from './logger.js';
 import { createMcpServer } from './server.js';
-import { endDebugSessions } from './tools/debug-session.js';
+import { stopAllDebugging } from './tools/debug-registry.js';
 import { VERSION } from './version.js';
 
 const USAGE = `abap-debugger-mcp ${VERSION} — MCP server that lets an AI assistant debug ABAP code in SAP's debugger.
@@ -35,6 +35,9 @@ Configuration (environment variables, e.g. the "env" block of the MCP client's s
   ABAP_DEBUGGER_MAX_RESULT_KB  ceiling of a call's result size (default 200)
   ABAP_DEBUGGER_IDLE_SECONDS   interactive session: released after this long without a call (default 120)
   ABAP_DEBUGGER_SESSION_SECONDS  interactive session: released after this long in all (default 900)
+  ABAP_DEBUGGER_CALL_SECONDS   a tool call answers within this time; longer work goes on in the background (default 50)
+  ABAP_DEBUGGER_MAX_CAPTURES   one-shot captures running at once on this server (default 4)
+  ABAP_DEBUGGER_MAX_SESSIONS   interactive sessions open at once on this server (default 4)
   ABAP_DEBUGGER_LOG_LEVEL  debug | info | warn | error (stderr; default info)
 
 Over HTTP:
@@ -86,12 +89,12 @@ async function main(argv: string[]): Promise<void> {
   await server.connect(new StdioServerTransport());
   logger.info(`abap-debugger-mcp ${VERSION} ready (stdio)`);
 
-  // An interactive session holds a program on SAP: release it before the process goes away.
+  // A capture or an interactive session holds a program on SAP: release it before the process goes away.
   let stopping = false;
   const stop = (reason: string) => {
     if (stopping) return;
     stopping = true;
-    void endDebugSessions(reason).finally(() => process.exit(0));
+    void stopAllDebugging(reason).finally(() => process.exit(0));
   };
   process.on('SIGINT', () => stop('the server was interrupted'));
   process.on('SIGTERM', () => stop('the server was stopped'));
@@ -116,7 +119,7 @@ async function serveHttp(): Promise<void> {
   const stop = (reason: string) => {
     if (stopping) return;
     stopping = true;
-    void endDebugSessions(reason, 8000).finally(() => {
+    void stopAllDebugging(reason, 8000).finally(() => {
       server.close();
       process.exit(0);
     });

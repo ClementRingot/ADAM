@@ -7,7 +7,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { callTool } from '../../../src/server.js';
 import type { SapConnection } from '../../../src/tools/connection.js';
 import { setDebugTimingsForTests } from '../../../src/tools/debug-capture.js';
-import { endDebugSessions, forgetDebugSessionsForTests, openDebugSessionId } from '../../../src/tools/debug-session.js';
+import { DEFAULT_LIMITS } from '../../../src/tools/debug-limits.js';
+import { resetDebuggingForTests, stopAllDebugging } from '../../../src/tools/debug-registry.js';
+import { openDebugSessionId } from '../../../src/tools/debug-session.js';
 import {
   type Call,
   createConnection,
@@ -51,7 +53,7 @@ const stepCalls = (calls: Call[], method = 'stepOver') =>
 
 const withLimits = (limits: Partial<NonNullable<SapConnection['limits']>>): SapConnection => ({
   ...createConnection(),
-  limits: { maxSeconds: 600, maxResultKB: 200, idleSeconds: 120, sessionSeconds: 900, ...limits },
+  limits: { ...DEFAULT_LIMITS, ...limits },
 });
 
 const at = (line: number) => ({ path: MAIN, line });
@@ -61,8 +63,8 @@ beforeAll(() => {
   setDebugTimingsForTests({ armDelayMs: 0, triggerSettleMs: 200 });
 });
 
-afterEach(() => {
-  forgetDebugSessionsForTests();
+afterEach(async () => {
+  await resetDebuggingForTests();
   mockFetch.mockReset();
 });
 
@@ -254,7 +256,7 @@ describe('abap_debug — interactive sessions', () => {
   it('releases the open session when the server stops', async () => {
     const { calls } = installFakeSap({ hit: true });
     await start({ line: 9 });
-    await endDebugSessions('the server was stopped');
+    await stopAllDebugging('the server was stopped');
     expect(openDebugSessionId()).toBeUndefined();
     expect(stepCalls(calls, 'stepContinue').length).toBeGreaterThan(0);
     expect((await move({ action: 'inspect' })).text).toContain('the server was stopped');
@@ -265,11 +267,9 @@ describe('abap_debug — interactive sessions', () => {
     await start({ line: 9 });
     const capture = await call('abap_debug', { type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
     expect(capture.result.isError).toBe(true);
-    expect(capture.text).toContain('An interactive debug session (S1) for SAP user ADMIN is open');
+    expect(capture.text).toContain('Your interactive debug session S1 is still open');
     expect((await start({ line: 9 })).text).toContain('Your interactive debug session S1 is still open');
-    expect((await move({ action: 'inspect', session: 's9' })).text).toBe(
-      'There is no debug session S9: your open one is S1.',
-    );
+    expect((await move({ action: 'inspect', session: 's9' })).text).toBe('There is no debug session S9: yours is S1.');
     await move({ action: 'end', session: 's1' });
 
     installFakeSap({ hit: true });
@@ -313,5 +313,95 @@ describe('abap_debug — interactive sessions', () => {
     );
     expect((await move({ action: 'end', toLine: 3 })).text).toContain('toLine does not apply to action "end"');
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('abap_debug_session — work that outlasts its call', () => {
+  it('answers a start still waiting for its stop with the session id; wait gives the first stop', async () => {
+    installFakeSap({ hit: true, stopAfterMs: 900 });
+    const started = await start({ line: 9 }, withLimits({ callSeconds: 0.5 }));
+    expect(started.result.isError).toBeFalsy();
+    expect(started.json).toMatchObject({
+      session: 'S1',
+      running: true,
+      doing: 'waiting for the run to stop at a breakpoint (0 of 60 s)',
+    });
+    expect(started.json?.next).toContain('action "wait"');
+    expect((await move({ action: 'step' })).text).toContain('Session S1 is still starting');
+
+    const first = await move({ action: 'wait' });
+    expect(first.json).toMatchObject({ hit: true, session: 'S1', stop: { stop: 1 }, position: { line: 9 } });
+    expect(openDebugSessionId()).toBe('S1');
+    // Its answer was given: wait now says where the program stands.
+    expect((await move({ action: 'wait' })).json).toMatchObject({
+      session: 'S1',
+      action: 'wait',
+      running: false,
+      position: { line: 9 },
+    });
+    expect((await move({ action: 'end' })).json).toMatchObject({ ended: true, release: { released: true } });
+  });
+
+  it('lets a continue outlast its call: wait gives the next stop', async () => {
+    installFakeSap({ hit: true, execution: [at(9), at(11)], continueAfterMs: 900 });
+    await start({ breakpoints: [{ line: 9 }, { line: 11 }] }, withLimits({ callSeconds: 0.5 }));
+    const going = await move({ action: 'continue' });
+    expect(going.json).toMatchObject({ session: 'S1', running: true, doing: 'running to the next stop' });
+    // The program runs meanwhile: no other move.
+    expect((await move({ action: 'inspect' })).text).toBe(
+      'Session S1 is still busy (running to the next stop): action "wait" waits for the answer, action "end" ends the session.',
+    );
+    const next = await move({ action: 'wait' });
+    expect(next.json).toMatchObject({ session: 'S1', action: 'continue', stop: { stop: 2, at: line(11) } });
+    expect((await move({ action: 'end' })).json).toMatchObject({ ended: true, stops: 2 });
+  });
+
+  it('ends a session while its continue still waits, stopping the continue first', async () => {
+    installFakeSap({ hit: true, execution: [at(9), at(11)], continueAfterMs: 60_000 });
+    await start({ breakpoints: [{ line: 9 }, { line: 11 }] }, withLimits({ callSeconds: 0.5 }));
+    expect((await move({ action: 'continue' })).json).toMatchObject({ running: true });
+    const end = await move({ action: 'end' });
+    expect(end.json).toMatchObject({
+      session: 'S1',
+      action: 'end',
+      ended: true,
+      reason: 'the session was ended on request',
+      release: { released: true, via: 'continue' },
+    });
+    expect(openDebugSessionId()).toBeUndefined();
+  });
+
+  it('releases a session whose last answer nobody picked up once the idle time is over', async () => {
+    installFakeSap({ hit: true, execution: [at(9), at(11)], continueAfterMs: 600 });
+    await start({ breakpoints: [{ line: 9 }, { line: 11 }] }, withLimits({ callSeconds: 0.5, idleSeconds: 0.3 }));
+    expect((await move({ action: 'continue' })).json).toMatchObject({ running: true });
+    // The idle time runs from the end of the move, not from the call that started it.
+    await vi.waitFor(() => expect(openDebugSessionId()).toBeUndefined(), { timeout: 3000 });
+    const late = await move({ action: 'wait' });
+    expect(late.json).toMatchObject({ session: 'S1', ended: true, release: { released: true } });
+    expect(late.json?.reason).toContain('no call came for 0.3 s');
+  });
+
+  it('caps the interactive sessions open at once on the server', async () => {
+    installFakeSap({ hit: true });
+    const limited = withLimits({ maxSessions: 1 });
+    const alice = await call(
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, interactive: true },
+      limited,
+      'alice',
+    );
+    expect(alice.json).toMatchObject({ session: 'S1' });
+    const bob = await call(
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, interactive: true },
+      { ...createConnection({}, 'bob'), limits: limited.limits },
+      'bob',
+    );
+    expect(bob.result.isError).toBe(true);
+    expect(bob.text).toBe(
+      'Interactive debug sessions open on this server: 1 of 1 (ABAP_DEBUGGER_MAX_SESSIONS). Each can hold an SAP work process while its program is stopped — try again when one has ended.',
+    );
+    expect((await move({ action: 'end' }, 'alice')).json).toMatchObject({ ended: true });
   });
 });

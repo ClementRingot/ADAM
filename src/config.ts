@@ -64,6 +64,9 @@ function readLimits(env: NodeJS.ProcessEnv, problems: string[]): DebugLimits {
     maxResultKB: bounded('ABAP_DEBUGGER_MAX_RESULT_KB', DEFAULT_LIMITS.maxResultKB, 5, 1000),
     idleSeconds: bounded('ABAP_DEBUGGER_IDLE_SECONDS', DEFAULT_LIMITS.idleSeconds, 10, 3600),
     sessionSeconds: bounded('ABAP_DEBUGGER_SESSION_SECONDS', DEFAULT_LIMITS.sessionSeconds, 60, 14_400),
+    callSeconds: bounded('ABAP_DEBUGGER_CALL_SECONDS', DEFAULT_LIMITS.callSeconds, 10, 3600),
+    maxCaptures: bounded('ABAP_DEBUGGER_MAX_CAPTURES', DEFAULT_LIMITS.maxCaptures, 1, 100),
+    maxSessions: bounded('ABAP_DEBUGGER_MAX_SESSIONS', DEFAULT_LIMITS.maxSessions, 1, 100),
   };
 }
 

@@ -202,10 +202,10 @@ export const DEBUG_INPUT_SHAPE = {
   timeoutSeconds: z.coerce
     .number()
     .int()
-    .min(1, 'timeoutSeconds must be 1-240.')
-    .max(240, 'timeoutSeconds must be 1-240.')
+    .min(1, 'timeoutSeconds must be 1-900.')
+    .max(900, 'timeoutSeconds must be 1-900.')
     .optional()
-    .describe('How long to wait for the first stop (1-240, default 60).'),
+    .describe('How long to wait for the first stop (1-900, default 60).'),
 };
 
 type DebugBreakpointInput = z.infer<typeof DebugBreakpointSchema>;

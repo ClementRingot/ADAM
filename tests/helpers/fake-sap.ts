@@ -180,6 +180,30 @@ export interface FakeSapOptions {
   runToLineEnds?: boolean;
   /** The program finishes at the step after this many (a step then answers "debuggee ended"). */
   endsAfterSteps?: number;
+  /** The run reaches its breakpoint this long after it started: the long poll answers only then. */
+  stopAfterMs?: number;
+  /** A `stepContinue` that runs on to a further stop answers only this long after it was sent. */
+  continueAfterMs?: number;
+}
+
+/** `ms` of waiting that ends early, rejecting as fetch does, when the request is aborted. */
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(new DOMException('aborted', 'AbortError'));
+    if (signal?.aborted) {
+      aborted();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        aborted();
+      },
+      { once: true },
+    );
+  });
 }
 
 export const cannotAttach = (line: number) =>
@@ -327,6 +351,7 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       if (options.hit) {
         if (options.runByUser) stoppedOn = options.servers ? options.debuggeeServer : undefined;
         else await triggeredPromise;
+        if (options.stopAfterMs) await delay(options.stopAfterMs, init?.signal);
         if (options.execution) {
           cursor = options.execution.findIndex((_, index) => stopsAt(index, external, externalConditions));
           position = { ...(options.execution[cursor] as Position) };
@@ -499,6 +524,7 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
           for (cursor++; options.execution && cursor < options.execution.length; cursor++) {
             const next = options.execution[cursor] as Position;
             if (stopsAt(cursor, sessionBreakpoints, sessionConditions)) {
+              if (options.continueAfterMs) await delay(options.continueAfterMs, init?.signal);
               position = { ...next };
               return mockResponse(
                 200,

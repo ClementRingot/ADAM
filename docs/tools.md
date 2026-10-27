@@ -3,7 +3,7 @@
 | Tool | What it does |
 |---|---|
 | [`abap_debug`](#abap_debug--capture-one-run) | Arms breakpoints, runs the code and records every stop of that run — or, with `interactive: true`, holds the program at its first stop |
-| [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) | Drives a held program one move at a time: step, continue, inspect, end |
+| [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) | Drives a held program one move at a time: step, continue, inspect, end — and waits for a capture or move that outlasted its call |
 | [`abap_source`](#abap_source--the-active-source-with-line-numbers) | The active source with the line numbers breakpoints use |
 | [`abap_search`](#abap_search--find-objects) | Finds objects by name or pattern |
 
@@ -51,7 +51,7 @@ The protocol behind each step is described in [the ADT debugger protocol](adt-de
 | `maxSeconds` | Time budget once the program stopped (default 120; ceiling `ABAP_DEBUGGER_MAX_SECONDS`, default 600). A step costs two or three requests to SAP |
 | `maxResultKB` | Size budget of the result, in KB of JSON (default 40, about 10k tokens; ceiling `ABAP_DEBUGGER_MAX_RESULT_KB`, default 200) |
 | `interactive` | `true`: return at the first stop and keep the program waiting there for [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) |
-| `timeoutSeconds` | How long to wait for the first stop (1-240, default 60) |
+| `timeoutSeconds` | How long to wait for the first stop (1-900, default 60) |
 
 ### Breakpoints
 
@@ -96,6 +96,12 @@ JSON with:
 
 Without a stop, the result carries the `reason` (timeout, trigger finished first, conflict) and a `hint`.
 
+**A capture that outlasts its call.** A call answers within `ABAP_DEBUGGER_CALL_SECONDS` (default 50 s:
+many clients give up after 60). A capture still waiting for its stop or following its run then answers
+`{ session, running: true, doing, seconds }` and goes on in the background: `abap_debug_session` with
+`action: "wait"` returns its result once it is done (each call waits up to the same time again), and
+`action: "end"` stops it — it then cleans up and answers what it recorded so far.
+
 **Repeated stops.** A breakpoint's later stops — a loop — are compact: `{ stop, at, hit, values }`,
 without the position and stack its first stop already showed, and with `unchanged` for a structure or
 table equal to the previous stop's. A capture is bounded by what its result costs and by time, not by
@@ -132,11 +138,11 @@ current line marked `>`) and the watched variables.
 
 | Parameter | Description |
 |---|---|
-| `action` | `step`, `continue`, `inspect` or `end` |
-| `session` | The id `abap_debug` returned (default: the open session) |
+| `action` | `step`, `continue`, `inspect`, `wait` or `end` |
+| `session` | The id `abap_debug` returned (default: your current capture or session) |
 | `stepMode`, `count`, `until` | `step`: `over` (default), `into` or `out`; how many steps (default 1; past 20, a compact trace); end early on a line or a change |
 | `toLine` | `continue`: run to this line of the source the program stands in, instead of the next breakpoint |
-| `timeoutSeconds` | `continue`: how long to wait for the next stop (1-240, default 60) |
+| `timeoutSeconds` | `continue`: how long to wait for the next stop (1-900, default 60) |
 | `variables` | `step` and `continue`: the variables to watch from now on. `inspect`: read these now — any variable, structures expanded, tables' first rows (default: the whole frame) |
 | `stack` | `inspect`: include the call stack |
 | `terminate` | `end`: abort the program where it stands instead of letting it run to its end — e.g. before it commits |
@@ -152,6 +158,12 @@ removes the breakpoints and reports the trigger's outcome. A session is also rel
 
 Every answer says how long the session has left. One session per user at a time: while it is open,
 other captures for the same SAP user are refused.
+
+**Moves that outlast their call.** A `continue` waiting for the next stop, or a long step run, answers
+`running: true` once the call's time (`ABAP_DEBUGGER_CALL_SECONDS`) is up and goes on in the
+background; `wait` returns its answer, and no other move starts meanwhile. `end` stops a move still
+running and releases the program. `wait` with nothing running says where the program stands. The idle
+time starts after each call — and, for a move that outlasted its call, once the move is done.
 
 ## `abap_source` — the active source with line numbers
 
@@ -248,7 +260,12 @@ abap_debug_session {action: "end"}
   `maxSeconds` (default 120 s) allow, each capped by the server's ceiling. A one-shot capture then
   lets the program go on without stopping, an interactive session keeps it waiting; a warning says
   which bound ended the call. A client that cancels the call stops it the same way.
-- **One capture per SAP user** at a time, and one interactive session per MCP user.
+- **One capture per SAP user** at a time, and one capture or interactive session per MCP user. The
+  server runs at most `ABAP_DEBUGGER_MAX_CAPTURES` captures (default 4) and keeps at most
+  `ABAP_DEBUGGER_MAX_SESSIONS` sessions open (default 4) at once: each held program takes an SAP
+  dialog work process (see [sizing](configuration.md#sizing-against-the-sap-system)).
+- **Each call answers within `ABAP_DEBUGGER_CALL_SECONDS`** (default 50 s); what takes longer goes on
+  in the background until `wait` picks it up.
 - **Progress.** Clients that ask for progress notifications get one at most every two seconds while a
   call waits for the first stop or records stops and steps — some clients keep a long call alive on
   them.

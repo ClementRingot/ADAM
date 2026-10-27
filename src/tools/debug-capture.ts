@@ -54,17 +54,30 @@ import {
   type StopTarget,
   unsetRunEvents,
 } from './debug-arm.js';
+import { BackgroundWork, stillRunning } from './debug-background.js';
 import { collectStops, type FirstStop, type Inspection, type StepMode, type StepUntil } from './debug-follow.js';
 import type { DebugInput } from './debug-input.js';
 import {
   AHEAD_BUDGET_MS,
   type CallBudget,
+  callDeadline,
   DEFAULT_LIMITS,
+  type DebugLimits,
   MAX_TOTAL_STEPS,
   planCallBudget,
   RELEASE_BUDGET_MS,
   timings,
 } from './debug-limits.js';
+import {
+  activeCount,
+  type DebugEntry,
+  entryOf,
+  holderOf,
+  nextDebugId,
+  ownerOf,
+  removeEntry,
+  setEntry,
+} from './debug-registry.js';
 import { debuggeePosition } from './debug-view.js';
 import { errorResult, type ToolResult, textResult, toolJson } from './result.js';
 
@@ -625,6 +638,7 @@ export class CaptureRun {
         })
       : undefined;
     const waitStart = Date.now();
+    context.progress?.(`waiting for the run to stop at a breakpoint (0 of ${req.timeoutSeconds} s)`);
     const ticker = context.progress
       ? setInterval(
           () =>
@@ -780,45 +794,85 @@ async function runCapture(conn: SapConnection, req: DebugRequest, user: string, 
   }
 }
 
-/** Who debugs which SAP user in this process — SAP keys the listener by user, so one at a time each —
- *  as the message a second claim gets. */
-const debugHolders = new Map<string, string>();
-
-/** Claim `user` for a capture or a session: undefined when granted, else why it is busy. */
-export function claimDebugUser(user: string, busyMessage: string): string | undefined {
-  const holder = debugHolders.get(user);
-  if (holder) return holder;
-  debugHolders.set(user, busyMessage);
-  return undefined;
-}
-
-export function releaseDebugUser(user: string): void {
-  debugHolders.delete(user);
-}
-
 export const UNKNOWN_USER_MESSAGE =
   "Cannot tell which SAP user this session runs as, and SAP's debugger needs that logon user (requestUser) to catch anything. SAP did not name it (/sap/bc/adt/core/http/systeminformation is missing on SAP_BASIS 7.50 and older); there, set SAP_USER to the logon user (Basic or cookie authentication).";
 
-/** The abap_debug tool: one capture per SAP user at a time. */
+/** Why the owner of `entry` cannot start a capture or a session while it is active. */
+function ownEntryBusy(entry: DebugEntry): string {
+  return entry.kind === 'capture'
+    ? `Your debug capture ${entry.id} is still running: abap_debug_session action="wait" returns its result, action="end" stops it.`
+    : `Your interactive debug session ${entry.id} is still open: end it with abap_debug_session action="end" before starting another.`;
+}
+
+/** Why SAP user `holder.user` cannot be debugged now: `holder` debugs it — SAP keys the listener by user. */
+function userBusy(holder: DebugEntry, limits: DebugLimits): string {
+  return holder.kind === 'capture'
+    ? `A debug capture (${holder.id}) for SAP user ${holder.user} is already running on this server — wait for it to finish.`
+    : `An interactive debug session (${holder.id}) for SAP user ${holder.user} is open on this server — it must end first: abap_debug_session action="end" from its owner, or it is released after ${limits.idleSeconds} s without a call.`;
+}
+
+/** Why the server takes no further capture or session: the cap of its kind is reached. */
+function capReached(kind: DebugEntry['kind'], limits: DebugLimits): string | undefined {
+  const [count, max, variable, what] =
+    kind === 'capture'
+      ? [activeCount('capture'), limits.maxCaptures, 'ABAP_DEBUGGER_MAX_CAPTURES', 'Debug captures running']
+      : [activeCount('session'), limits.maxSessions, 'ABAP_DEBUGGER_MAX_SESSIONS', 'Interactive debug sessions open'];
+  if (count < max) return undefined;
+  return `${what} on this server: ${count} of ${max} (${variable}). Each can hold an SAP work process while its program is stopped — try again when one has ended.`;
+}
+
+/**
+ * Why `owner` cannot start a capture or session (`kind`) for SAP user `user` now; undefined: go
+ * ahead. The caller registers its entry without awaiting anything in between, so the checks and the
+ * claim are atomic.
+ */
+export function refuseStart(
+  owner: string,
+  user: string,
+  kind: DebugEntry['kind'],
+  limits: DebugLimits,
+): string | undefined {
+  const own = entryOf(owner);
+  if (own?.active) return ownEntryBusy(own);
+  const holder = holderOf(user);
+  if (holder) return userBusy(holder, limits);
+  return capReached(kind, limits);
+}
+
+/**
+ * The abap_debug tool: one capture per SAP user at a time. The capture runs in the background and
+ * the call waits for it up to its budget (ABAP_DEBUGGER_CALL_SECONDS); a capture still waiting for
+ * its stop or following its run then answers with its session id, for abap_debug_session "wait".
+ */
 export async function handleDebugCapture(
   conn: SapConnection,
   input: DebugInput,
   context: ToolContext = {},
 ): Promise<ToolResult> {
+  const owner = ownerOf(context);
+  const limits = conn.limits ?? DEFAULT_LIMITS;
   const user = await resolveDebugUser(conn);
   if (!user) return errorResult(UNKNOWN_USER_MESSAGE);
-  // From here to the claim nothing awaits, so the check and the claim are atomic.
-  const busy = claimDebugUser(
-    user,
-    `A debug capture for SAP user ${user} is already running on this server — wait for it to finish.`,
-  );
-  if (busy) return errorResult(busy);
-  try {
-    return await runCapture(conn, readDebugRequest(input), user, context);
-  } catch (err) {
-    if (err instanceof DebugInputError) return errorResult(err.message);
-    throw err;
-  } finally {
-    releaseDebugUser(user);
-  }
+  const refused = refuseStart(owner, user, 'capture', limits);
+  if (refused) return errorResult(refused);
+  const req = readDebugRequest(input);
+  const work = new BackgroundWork(nextDebugId(), owner, 'capture', user, 'arming the breakpoints', async (ctx) => {
+    try {
+      return await runCapture(conn, req, user, ctx);
+    } catch (err) {
+      if (err instanceof DebugInputError) return errorResult(err.message);
+      throw err;
+    }
+  });
+  setEntry(work);
+  return answerWhenDone(work, context, limits);
+}
+
+/** Wait for a capture (or a session's start) up to the call's budget: its answer, or that it goes on. */
+export async function answerWhenDone(work: BackgroundWork, context: ToolContext, limits: DebugLimits) {
+  const result = await work.waitFor(context, callDeadline(limits));
+  if (!result) return stillRunning(work, limits);
+  // Answered: nothing is left to wait for (a session that started is its owner's entry now).
+  removeEntry(work);
+  return result;
 }

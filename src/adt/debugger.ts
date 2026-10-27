@@ -764,9 +764,13 @@ export class DebuggerSession {
     private options: AdtRequestOptions = {},
   ) {}
 
-  /** Later requests end by `deadline` — the next call of an interactive session brings its own. */
-  retime(deadline: number): void {
-    this.options = { ...this.options, deadline };
+  /**
+   * Later requests end by `deadline`, or once `signal` aborts — each move of an interactive session
+   * brings its own.
+   */
+  retime(deadline: number, signal?: AbortSignal): void {
+    const { signal: _previous, ...rest } = this.options;
+    this.options = { ...rest, deadline, ...(signal ? { signal } : {}) };
   }
 
   async attach(debuggeeId: string): Promise<DebugAttachInfo> {

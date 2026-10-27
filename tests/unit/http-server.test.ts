@@ -10,7 +10,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type HttpConfig, loadHttpConfig } from '../../src/config.js';
 import { createHttpApp, type HttpSap, httpSap, lazyConnections, listen } from '../../src/http-server.js';
 import { setDebugTimingsForTests } from '../../src/tools/debug-capture.js';
-import { forgetDebugSessionsForTests, openDebugSessionId } from '../../src/tools/debug-session.js';
+import { resetDebuggingForTests } from '../../src/tools/debug-registry.js';
+import { openDebugSessionId } from '../../src/tools/debug-session.js';
 import { createConnection, installFakeSap } from '../helpers/fake-sap.js';
 
 const mockFetch = vi.hoisted(() => vi.fn());
@@ -57,7 +58,7 @@ afterEach(async () => {
   await new Promise((resolve) => (server ? server.close(resolve) : resolve(undefined)));
   server?.closeAllConnections();
   server = undefined;
-  forgetDebugSessionsForTests();
+  await resetDebuggingForTests();
   mockFetch.mockReset();
 });
 

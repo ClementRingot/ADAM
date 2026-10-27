@@ -98,7 +98,7 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
 | Tool | What it does |
 |---|---|
 | `abap_debug` | Arms breakpoints, runs the code and records every stop of that run: position, call stack, variables, steps. With `interactive: true`, holds the program at its first stop |
-| `abap_debug_session` | Drives a held program one move at a time: `step`, `continue`, `inspect`, `end` |
+| `abap_debug_session` | Drives a held program one move at a time: `step`, `continue`, `inspect`, `end` — and `wait`s for a capture or move that outlasts its call |
 | `abap_source` | The active source of a class, program or function module, with the line numbers breakpoints use |
 | `abap_search` | Finds objects by name or pattern |
 
@@ -154,7 +154,10 @@ on real systems.
 - **Always cleaned up**: on every path, errors and timeouts included, the breakpoints and the listener
   are removed and the program is released.
 - **Bounded**: 20 breakpoints and 50 stops per call; steps as far as the call's time (default 120 s)
-  and result size (default 40 KB) allow, both capped by the server's ceilings.
+  and result size (default 40 KB) allow, both capped by the server's ceilings; a few captures and
+  sessions at once per server, since each held program takes an SAP work process.
+- **Fits the client's patience**: a call answers within 50 s (many clients give up after 60); longer
+  work goes on in the background, and `abap_debug_session` `wait` picks up its answer.
 
 ## On SAP BTP
 

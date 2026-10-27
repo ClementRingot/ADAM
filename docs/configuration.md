@@ -54,7 +54,33 @@ reads it at startup, so not from `--env-file`) rather than turning `SAP_INSECURE
 | `ABAP_DEBUGGER_MAX_RESULT_KB` | Ceiling of a call's `maxResultKB` (5-1000, default 200) |
 | `ABAP_DEBUGGER_IDLE_SECONDS` | An interactive session is released after this long without a call (10-3600, default 120) |
 | `ABAP_DEBUGGER_SESSION_SECONDS` | An interactive session is released after this long in all (60-14400, default 900) |
+| `ABAP_DEBUGGER_CALL_SECONDS` | A tool call answers within this time; a capture or move that takes longer goes on in the background (10-3600, default 50) — see [below](#calls-that-take-longer) |
+| `ABAP_DEBUGGER_MAX_CAPTURES` | One-shot captures running at once on this server (1-100, default 4) |
+| `ABAP_DEBUGGER_MAX_SESSIONS` | Interactive sessions open at once on this server (1-100, default 4) |
 | `ABAP_DEBUGGER_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error` — logs go to stderr |
+
+### Calls that take longer
+
+Many MCP clients give up on a tool call after 60 seconds, while a capture may wait minutes for its
+stop (`trigger: "none"` while you open the app) or follow a long run, and an interactive `continue`
+may wait as long for the next stop. So a call answers within `ABAP_DEBUGGER_CALL_SECONDS` (default
+50): work that is not done by then goes on in the background, and the call answers `running: true`
+with the session id. `abap_debug_session` with `action: "wait"` waits for the answer again,
+`action: "end"` stops it. If your client gives up sooner than 60 seconds, set the variable a few
+seconds below its timeout; a client that waits longer can take a higher value and fewer `wait` calls.
+
+### Sizing against the SAP system
+
+While a capture or a session holds a program at a stop, SAP keeps a dialog work process for it
+(exclusive debugging). SAP limits how many at once with the profile parameter `rdisp/wpdbug_max_no`
+— by default half of the dialog work processes — and Eclipse users debugging the same system take
+from the same pool. Keep `ABAP_DEBUGGER_MAX_CAPTURES` plus `ABAP_DEBUGGER_MAX_SESSIONS` well below it,
+especially on a shared server on SAP BTP.
+
+SAP also ends a debugging session after `rdisp/max_debug_lazy_time` (600 seconds by default) without
+debugger activity, and terminates the request that was debugged — a batch job alone continues. Keep
+`ABAP_DEBUGGER_IDLE_SECONDS` below that value, so that this server releases a forgotten program
+before SAP aborts it.
 
 ### Over HTTP
 
