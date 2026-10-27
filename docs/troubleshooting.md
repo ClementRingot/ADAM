@@ -14,7 +14,12 @@ only that action runs.
 
 **"Another debugger is already listening for SAP user …".** Eclipse, VS Code or another capture is
 debugging the same SAP user, and a capture never takes such a session over. End that debug session
-first, then retry.
+first, then retry. If none runs — a capture whose server was killed leaves its listener for up to two
+minutes — `abap_breakpoints` with `action: "delete"` and `listener: true` removes it.
+
+**The SAP user's requests stop at odd places in Eclipse.** Breakpoints of a capture whose server was
+killed may still be armed: `abap_breakpoints` with `action: "list"` shows them, `"delete"` removes them
+(the next capture of the user removes them too).
 
 **The attach fails on a system with several application servers.** With `trigger: "http"` or `"none"`
 the program may stop on a server where the capture holds no session; the result names the server it

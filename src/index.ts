@@ -38,6 +38,7 @@ Configuration (environment variables, e.g. the "env" block of the MCP client's s
   ABAP_DEBUGGER_CALL_SECONDS   a tool call answers within this time; longer work goes on in the background (default 50)
   ABAP_DEBUGGER_MAX_CAPTURES   one-shot captures running at once on this server (default 4)
   ABAP_DEBUGGER_MAX_SESSIONS   interactive sessions open at once on this server (default 4)
+  ABAP_DEBUGGER_STATE_DIR  where captures record their armed breakpoints until removed (default: the temp directory)
   ABAP_DEBUGGER_LOG_LEVEL  debug | info | warn | error (stderr; default info)
 
 Over HTTP:

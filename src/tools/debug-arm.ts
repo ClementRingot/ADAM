@@ -575,7 +575,13 @@ export async function armInRun(
  *  at one (an exception SAP code raises) and wait for an attach — so the removal has a short budget. */
 const DISARM_BUDGET_MS = 15_000;
 
-export async function disarm(conn: SapConnection, identity: DebugIdentity, ids: readonly string[], warnings: string[]) {
+/** Remove the capture's external breakpoints; false when SAP did not confirm they are gone. */
+export async function disarm(
+  conn: SapConnection,
+  identity: DebugIdentity,
+  ids: readonly string[],
+  warnings: string[],
+): Promise<boolean> {
   const options = { deadline: Date.now() + DISARM_BUDGET_MS };
   let failed = false;
   for (const id of ids) {
@@ -585,12 +591,14 @@ export async function disarm(conn: SapConnection, identity: DebugIdentity, ids: 
       failed = true;
     }
   }
-  if (!failed) return;
+  if (!failed) return true;
   try {
     await syncBreakpoints(conn.http, identity, [], 'external', { deadline: Date.now() + DISARM_BUDGET_MS });
+    return true;
   } catch (err) {
     warnings.push(
-      `Could not remove the capture's external breakpoints: ${debuggerErrorText(err)} (they expire with the SAP user's debugging session).`,
+      `Could not remove the capture's external breakpoints: ${debuggerErrorText(err)}. The next capture of this user removes them, or abap_breakpoints with action "delete".`,
     );
+    return false;
   }
 }

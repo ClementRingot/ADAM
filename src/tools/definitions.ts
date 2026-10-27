@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { BreakpointsInputSchema, handleBreakpoints } from './breakpoints.js';
 import type { SapConnection, ToolContext } from './connection.js';
 import { handleDebugCapture } from './debug-capture.js';
 import { type DebugInput, DebugInputSchema } from './debug-input.js';
@@ -57,6 +58,15 @@ export const TOOLS: ToolDefinition[] = [
     schema: DebugSessionInputSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     run: handleDebugSession as ToolDefinition['run'],
+  },
+  {
+    name: 'abap_breakpoints',
+    title: 'List or remove what the debugger left for your SAP user',
+    description:
+      "list: your capture or interactive session on this server, the breakpoints a capture could not remove (its server process was killed, or SAP refused the removal — the next capture removes them too), and whether a debugger listener is registered for your SAP user on SAP. delete: end your capture or session and remove those leftovers; listener: true also removes the listener — SAP removes it by user, Eclipse's included. Use it when a capture is refused because a debugger listens, or the user's requests stop at odd places. SAP has no request that lists every breakpoint of a user: Eclipse's own are in Eclipse.",
+    schema: BreakpointsInputSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    run: handleBreakpoints as ToolDefinition['run'],
   },
   {
     name: 'abap_source',

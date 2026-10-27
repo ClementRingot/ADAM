@@ -57,6 +57,7 @@ reads it at startup, so not from `--env-file`) rather than turning `SAP_INSECURE
 | `ABAP_DEBUGGER_CALL_SECONDS` | A tool call answers within this time; a capture or move that takes longer goes on in the background (10-3600, default 50) — see [below](#calls-that-take-longer) |
 | `ABAP_DEBUGGER_MAX_CAPTURES` | One-shot captures running at once on this server (1-100, default 4) |
 | `ABAP_DEBUGGER_MAX_SESSIONS` | Interactive sessions open at once on this server (1-100, default 4) |
+| `ABAP_DEBUGGER_STATE_DIR` | Where each capture records its debugger identity while its breakpoints may be armed, so that what a killed capture leaves behind can be found and removed (default: `abap-debugger-mcp` in the system's temporary directory) |
 | `ABAP_DEBUGGER_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error` — logs go to stderr |
 
 ### Calls that take longer

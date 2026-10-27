@@ -99,6 +99,7 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
 |---|---|
 | `abap_debug` | Arms breakpoints, runs the code and records every stop of that run: position, call stack, variables, steps. With `interactive: true`, holds the program at its first stop |
 | `abap_debug_session` | Drives a held program one move at a time: `step`, `continue`, `inspect`, `end` — and `wait`s for a capture or move that outlasts its call |
+| `abap_breakpoints` | Lists what the debugger holds or left behind for your SAP user — breakpoints a crashed capture could not remove, a stale listener — and removes it |
 | `abap_source` | The active source of a class, program or function module, with the line numbers breakpoints use — and of interfaces, includes, CDS views, behavior and service definitions; a service binding's service definitions: the way from a Fiori app to its code |
 | `abap_search` | Finds objects of every type by name, name start or pattern — service bindings and definitions included, with SAP's generated service objects left out |
 
@@ -154,7 +155,8 @@ on real systems.
 - **Harmless triggers**: ABAP Unit runs harmless tests only; the HTTP trigger only reads an OData path
   on the connected system.
 - **Always cleaned up**: on every path, errors and timeouts included, the breakpoints and the listener
-  are removed and the program is released.
+  are removed and the program is released. If the server itself is killed mid-capture, the next capture
+  of the same user removes what was left — and `abap_breakpoints` shows and removes it on request.
 - **Bounded**: 20 breakpoints and 50 stops per call; steps as far as the call's time (default 120 s)
   and result size (default 40 KB) allow, both capped by the server's ceilings; a few captures and
   sessions at once per server, since each held program takes an SAP work process.

@@ -139,6 +139,18 @@ export class AdtHttpClient {
     return session;
   }
 
+  /** The SAP system and client this client talks to — no credentials: tells records of systems apart. */
+  get systemKey(): string {
+    let base = this.config.baseUrl;
+    try {
+      const url = new URL(base);
+      base = `${url.protocol}//${url.host}${url.pathname}`;
+    } catch {
+      // not a URL: kept as configured
+    }
+    return `${base.replace(/\/+$/, '').toLowerCase()} client ${this.config.client ?? 'default'}`;
+  }
+
   /** The session's `sap-contextid` cookie (`SID:ANON:<application server>:<id>`, URL-encoded), if SAP set one. */
   get sessionContextId(): string | undefined {
     return this.cookieJar.get('sap-contextid');

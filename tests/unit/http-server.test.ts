@@ -97,6 +97,7 @@ describe('the MCP server over HTTP', () => {
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       'abap_debug',
       'abap_debug_session',
+      'abap_breakpoints',
       'abap_source',
       'abap_search',
     ]);

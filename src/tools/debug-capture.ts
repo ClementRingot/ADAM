@@ -57,6 +57,7 @@ import {
 import { BackgroundWork, stillRunning } from './debug-background.js';
 import { collectStops, type FirstStop, type Inspection, type StepMode, type StepUntil } from './debug-follow.js';
 import type { DebugInput } from './debug-input.js';
+import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
   AHEAD_BUDGET_MS,
   type CallBudget,
@@ -548,7 +549,7 @@ export class CaptureRun {
   async clearExternal(): Promise<void> {
     if (this.externalCleared) return;
     this.externalCleared = true;
-    await disarm(this.conn, this.identity, this.armedIds, this.warnings);
+    settleArmed(this.identity, await disarm(this.conn, this.identity, this.armedIds, this.warnings));
   }
 
   /** Idempotent: runs before a result is built (so its warnings are reported) and again in finally. */
@@ -614,14 +615,29 @@ export class CaptureRun {
     if (conflict) {
       return {
         result: errorResult(
-          `Another debugger is already listening for SAP user ${user}: ${conflict}. A capture never takes over an active debug session (Eclipse, VS Code or another capture) — stop that session first.`,
+          `Another debugger is already listening for SAP user ${user}: ${conflict}. A capture never takes over an active debug session (Eclipse, VS Code or another capture) — stop that session first. If none runs (a capture that crashed leaves its listener for up to two minutes), abap_breakpoints with action "delete" and listener: true removes it.`,
         ),
       };
+    }
+
+    // Breakpoints an earlier capture of this user left behind would stop this run at odd places too.
+    const leftovers = leftoversOf(conn.http, user);
+    if (leftovers.length > 0) {
+      const { removed, failed } = await removeLeftovers(conn.http, leftovers, {
+        deadline: Date.now() + AHEAD_BUDGET_MS,
+      });
+      if (removed.length > 0) {
+        warnings.push(`Removed the breakpoints ${removed.length} earlier capture(s) of this user left behind.`);
+      }
+      for (const { error } of failed) {
+        warnings.push(`Could not remove the breakpoints an earlier capture left behind: ${error}.`);
+      }
     }
 
     // Sessions open BEFORE anything is armed: once breakpoints are armed, this server's own requests
     // run as the debugged user too and must stay as few as possible.
     this.ahead = await openAhead(conn, plan, warnings);
+    recordArmed(conn.http, identity);
     const armed = await armBreakpoints(conn, identity, targets, req.events, this.armedIds);
     this.armed = armed;
     if (armed.ids.length === 0) {

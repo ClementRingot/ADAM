@@ -148,6 +148,7 @@ class InteractiveSession implements DebugEntry {
       user: this.user,
       state: this.summary ? 'ended' : this.closed ? 'ending' : this.pending?.active ? 'running' : 'waiting',
       ...(top && !this.closed ? { position: describeFrame(top) } : {}),
+      breakpoints: breakpointsWithHits(this.caught.armed, this.inspection.hits),
       stops: this.inspection.stops.length,
       steps: this.stepsTaken,
       seconds: Math.round((Date.now() - this.startedAt) / 1000),

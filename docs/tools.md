@@ -4,6 +4,7 @@
 |---|---|
 | [`abap_debug`](#abap_debug--capture-one-run) | Arms breakpoints, runs the code and records every stop of that run — or, with `interactive: true`, holds the program at its first stop |
 | [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) | Drives a held program one move at a time: step, continue, inspect, end — and waits for a capture or move that outlasted its call |
+| [`abap_breakpoints`](#abap_breakpoints--what-the-debugger-left-for-your-sap-user) | Lists, and removes, what the debugger holds or left behind for your SAP user: breakpoints, listener |
 | [`abap_source`](#abap_source--the-active-source-with-line-numbers) | The active source with the line numbers breakpoints use |
 | [`abap_search`](#abap_search--find-objects) | Finds objects by name or pattern |
 
@@ -167,6 +168,28 @@ other captures for the same SAP user are refused.
 background; `wait` returns its answer, and no other move starts meanwhile. `end` stops a move still
 running and releases the program. `wait` with nothing running says where the program stands. The idle
 time starts after each call — and, for a move that outlasted its call, once the move is done.
+
+## `abap_breakpoints` — what the debugger left for your SAP user
+
+| Parameter | Description |
+|---|---|
+| `action` | `list` or `delete` |
+| `listener` | `delete`: also remove the debugger listener registered for your SAP user |
+
+`list` shows your capture or interactive session on this server (with its breakpoints), the
+breakpoints a capture could not remove — its server process was killed, or SAP refused the removal —
+and who listens for your SAP user on SAP: your own capture, another debugger (Eclipse, VS Code, a
+capture that crashed), or nobody. `delete` ends your capture or session and removes those leftovers;
+with `listener: true` it also removes the listener — SAP removes listeners by user, so an Eclipse
+session debugging as you loses its listener too. A listener a capture of this server still needs is
+kept.
+
+Each capture records its debugger identity in `ABAP_DEBUGGER_STATE_DIR` (default: a folder in the
+system's temporary directory) before it arms anything, and drops the record once its breakpoints are
+gone; the next capture of the same user removes what was left behind before it arms its own. SAP has
+no request that lists every breakpoint of a user, so breakpoints set in Eclipse stay in Eclipse's
+Breakpoints view. Left-over breakpoints stop nothing while no debugger listens for the user, but stop
+the user's requests at odd places once one does.
 
 ## `abap_source` — the active source with line numbers
 
