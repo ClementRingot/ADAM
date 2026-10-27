@@ -231,7 +231,8 @@ At most 1,500 lines per call. The sources of classes, programs and function modu
 
 **From a Fiori app to the code.** The app's OData service is a service binding: find it with
 `abap_search` (`types: ["SRVB"]`), then `SRVB` → `SRVD` → the CDS view of an entity → the `BDEF` of
-the root view → the behavior pool and its handler methods.
+the root view → the behavior pool and its handler methods. A classic Gateway service (a SEGW project,
+`IWPR`) runs its data-provider class instead: `abap_search` for `*_DPC_EXT` with the project's name.
 
 ## `abap_search` — find objects
 

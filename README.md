@@ -186,11 +186,11 @@ Connector for an on-premise system, a user token for the BTP ABAP Environment. S
 
 ## Status
 
-Version 0.1. The capture engine has been observed live on the SAP BTP ABAP Environment: attaching
-across application servers, several stops in one run, steps. This server's own HTTP client, the
-conditional, message and statement breakpoints, long step runs, interactive sessions and the BTP
-deployment are tested against a simulated SAP so far. Live checks on-premise (7.50, 7.58, 8.16) and a
-first deployment on a real subaccount come next — see the [roadmap](docs/roadmap.md).
+Version 0.1. On the SAP BTP ABAP Environment, the server has run live — over HTTP, as a remote
+connector: attaching across application servers, several stops in one run, steps, conditions, long
+step runs, statement kinds and an interactive session. The newest parts — answers that outlast a call,
+watchpoints, the removal of leftovers, the wider search — are tested against a simulated SAP so far,
+like every on-premise release (7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
 
 ## Development
 

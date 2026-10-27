@@ -130,7 +130,7 @@ Every call below runs on **one stateful session**, on the server where the progr
 | Stack | `GET /sap/bc/adt/debugger/stack?method=getStack&emode=_&semanticURIs=true` | `<dbg:stack>` of `<stackEntry stackPosition stackType stackUri programName includeName line eventType eventName sourceType systemProgram isVit uri/>`. SAP_BASIS 7.50 has no `/debugger/stack` (404): `POST /sap/bc/adt/debugger?method=getStack&emode=_&semanticURIs=true` instead (A gates it on discovery, S falls back on the 404 — live on 7.50). |
 | Variables | `POST /sap/bc/adt/debugger?method=getVariables`, body `<asx:abap><asx:values><DATA><STPDA_ADT_VARIABLE><ID>LV_X</ID></STPDA_ADT_VARIABLE>…`, `Content-Type: application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.Variables` | Rows `STPDA_ADT_VARIABLE`: `ID`, `NAME`, `DECLARED_TYPE_NAME`, `ACTUAL_TYPE_NAME`, `META_TYPE`, `VALUE`, `TECHNICAL_TYPE`, `LENGTH`, `TABLE_LINES`, `IS_VALUE_INCOMPLETE`, … Ids are expressions: `LS_S-COMP`, `LT_T[2]`, `ME->MV_A`, `SY-SUBRC` (V). |
 | Child variables | `POST /sap/bc/adt/debugger?method=getChildVariables`, body `<DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID>…`, `dataname=com.sap.adt.debugger.ChildVariables` | `HIERARCHIES` (`PARENT_ID`, `CHILD_ID`, `CHILD_NAME`) and `VARIABLES`. `@ROOT`'s children are the frame's scopes (V shows them as the Variables view's scopes) or, on some releases, the variables directly; a structure's children are its components. Several parents fit in one request. |
-| Step | `POST /sap/bc/adt/debugger?method=stepInto` — likewise `stepOver`, `stepReturn`, `stepContinue`, `stepRunToLine` (with `uri=<source URI>#start=<line>`) and `terminateDebuggee` | `<dbg:step isSteppingPossible …>`, optionally with `<reachedBreakpoints>`. `stepContinue` answering 200 means stopped again at the next breakpoint, still attached; the exception `debuggeeEnded` or `noSessionAttached` means the program ran to its end (S). `stepRunToLine` takes the target line as `uri` (A, V, S; not yet observed live). |
+| Step | `POST /sap/bc/adt/debugger?method=stepInto` — likewise `stepOver`, `stepReturn`, `stepContinue`, `stepRunToLine` (with `uri=<source URI>#start=<line>`) and `terminateDebuggee` | `<dbg:step isSteppingPossible …>`, optionally with `<reachedBreakpoints>`. `stepContinue` answering 200 means stopped again at the next breakpoint, still attached; the exception `debuggeeEnded` or `noSessionAttached` means the program ran to its end (S). `stepRunToLine` takes the target line as `uri` (A, V, S; live: it runs to the line). |
 | Session breakpoints | `POST /sap/bc/adt/debugger/breakpoints` with `scope="debugger"`, or `DELETE …/breakpoints/{id}?scope=debugger&…`, on the attached session | The attached run keeps its own copies of the breakpoints, apart from the external ones (V syncs and deletes `scope=debugger` copies on each attached thread). The server deletes one copy to retire a breakpoint whose `hits` are spent, and clears them all before the release. |
 | Watchpoints | `POST /sap/bc/adt/debugger/watchpoints?variableName=…&condition=…&active=true`, `DELETE …/watchpoints/{id}`, on the attached session (A) | `<watchpoints><watchpoint id variableName kind active expired procedure>` with `condition`, `oldValue`, `currentValue` texts (A). Set where the run stands, for a variable visible there; the run then stops where it changes. No request lists a run's watchpoints. The server tells a watchpoint's stop by the id in `reachedBreakpoints`, else by the watched value that changed, and deletes every watchpoint before the release — a live one would stop the releasing `stepContinue`. Not yet observed live. |
 | Release | `stepContinue` until `debuggeeEnded` | `method=detach` is unknown on 7.58 (400 "Unknown method") (S); V releases the same way. `terminateDebuggee` aborts the program and its caller's request: the server sends it when an interactive session ends with `terminate: true`, and as the last resort when three continues do not end the run. |
@@ -266,11 +266,35 @@ propagation):
 - **Unexplained.** An unassigned field symbol reads like an empty value. A breakpoint can make fewer
   stops than its `hits` (consistent with the test data, not confirmed).
 
+With this server, deployed over HTTP and reached as a remote MCP connector, on the same trial
+(October 2026), on a demo class with harmless unit tests:
+
+- **One run, several stops.** A loop breakpoint with `hits: 3`, two steps after each stop and five
+  named variables: three stops of one run, each with its steps.
+- **Conditions.** `idx = 2` stopped only on that pass. A condition naming a variable that does not
+  exist was accepted when armed, and the stop came back flagged `unresolvableCondition`: SAP stopped
+  regardless of it.
+- **Long step runs.** 300 steps from one stop came back as one compact trace.
+- **Statement kinds.** SAP lists them (`/debugger/breakpoints/statements`); an unknown kind is refused
+  with that list before anything is armed.
+- **Statement breakpoints armed for the whole user stop this server's own requests.** `CLEAR` armed as
+  an external breakpoint caught the server's ADT requests too, which then hung past the client's time
+  limit. Statement breakpoints are therefore set in the debugged run only, once a line or method
+  breakpoint stopped it, and the server opens its sessions before arming anything.
+- **Method breakpoints** land on the first statement where SAP refuses the `METHOD` line itself (this
+  class), on the `METHOD` line where it accepts it (the behavior pool above). `until: { changed }`
+  ended the steps at the change.
+- **Interactive session.** Started at a line with named variables, three steps at once, `continue`
+  with `toLine` (`stepRunToLine` ran to the line), `inspect` with the stack, then `end` with
+  `terminate: true`: the test method was aborted and ABAP Unit went on with the other tests.
+- **The client's time limit.** The MCP client gave up on a call after 60 seconds, which ended
+  captures waiting for their stop. Each call now answers within `ABAP_DEBUGGER_CALL_SECONDS` and the
+  rest goes on in the background.
+
 ## 9. Live checks still owed
 
-The runs above cover the BTP ABAP Environment only, and preceded this server's own HTTP client, its
-long step runs, its interactive sessions and its BTP deployment. Still to check
-([LIVE-1](roadmap.md#live-1), [LIVE-2](roadmap.md#live-2)):
+The runs above cover the BTP ABAP Environment only. Still to check
+([LIVE-1](roadmap.md#live-1), [LIVE-2](roadmap.md#live-2), [WATCH-1](roadmap.md#watch-1)):
 
 1. **On-premise 7.58 and 8.16**: `trigger: "unittest"` on a class with a line breakpoint — a stop, the
    stack's top on the line, the locals; record the `@ROOT` scope names (`CHILD_NAME`).
@@ -298,16 +322,15 @@ long step runs, its interactive sessions and its BTP deployment. Still to check
     principal propagation.
 13. **Session breakpoints**: once a breakpoint's session copy is deleted, no more stops there; whether
     `reachedBreakpoints` on the attach and on a step carries the external ids.
-14. **Conditions**: how SAP answers an invalid condition (refused at the final sync, or a stop flagged
-    `unresolvableCondition`), and that a step onto the line of a condition that does not hold carries
-    no `reachedBreakpoints`.
-15. **Message and statement breakpoints**: the message types SAP accepts (and the empty `msgTy`), the
-    statement kinds it lists, and that it names the event breakpoint it stopped at.
+14. **Conditions**: that a step onto the line of a condition that does not hold carries no
+    `reachedBreakpoints` (an invalid condition is accepted and its stop flagged, [§8](#8-observed-live)).
+15. **Message and statement breakpoints**: the message types SAP accepts (and the empty `msgTy`), and
+    that it names the event breakpoint it stopped at.
 16. **Long step runs**: the time one step costs (step, stack, variables) on-premise and on BTP, to tune
     the default `maxSeconds`.
 17. **Interactive sessions**: how long SAP keeps a held program and its stateful session between
-    calls, how the trigger's request fares meanwhile, what `stepRunToLine` and `terminateDebuggee`
-    answer, and that the latter rolls back the program's uncommitted work.
+    calls, how the trigger's request fares meanwhile, and that `terminateDebuggee` rolls back the
+    program's uncommitted work.
 18. **Non-exclusive attach**: once `rdisp/wpdbug_max_no` held programs exist, what the attach answers
     for a user with debug change authorization (`isNonExclusive="true"` expected) and for one without
     (a refusal expected).

@@ -8,6 +8,7 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 | [LIVE-2](#live-2) | First deployment on a real SAP BTP subaccount | P1 | S | Needs a subaccount |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
 | [WATCH-1](#watch-1) | Watchpoints: check them on a real system | P2 | S | Needs live check |
+| [TRACE-1](#trace-1) | One call from an OData URL or a Fiori app to its handler methods | P3 | M | Idea |
 | [LOG-1](#log-1) | Dynamic logpoints: observe a line across many runs | P3 | M | Needs research |
 
 <a id="live-1"></a>
@@ -16,14 +17,17 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 **Idea.** Run the [live checks](adt-debugger-protocol.md#9-live-checks-still-owed) with this server on
 the BTP ABAP Environment and on-premise 7.50, 7.58 and 8.16.
 
-**Why it remains.** The capture engine was observed live on the BTP ABAP Environment only
-([what was seen](adt-debugger-protocol.md#8-observed-live)), before this server's own HTTP client, its
-conditional, message and statement breakpoints, its long step runs and its interactive sessions; those are tested
-against simulated SAP answers so far.
+**Why it remains.** On the BTP ABAP Environment this server itself has run conditions, long step runs,
+statement kinds and an interactive session ([what was seen](adt-debugger-protocol.md#8-observed-live)).
+No on-premise release has been tried yet, and the later additions were observed nowhere: answers that
+outlast a call (`wait`), the release on a non-exclusive attach, the removal of leftovers
+(`abap_breakpoints`), and the wider search and source types.
 
-**Resume with.** Basic authentication on an on-premise system — one class with unit tests, one loop,
-one RAP behavior pool with `trigger: "none"` — then the BTP browser login, then an interactive session
-held for a few minutes; record SAP's answers as test fixtures.
+**Resume with.** On the BTP trial after a redeploy: a capture with `trigger: "none"` that waits past
+50 seconds and is picked up with `wait`; `abap_breakpoints` `list` during a capture and `delete` after a
+killed one; `abap_search` on a service binding's name; `abap_source` from `SRVB` to the behavior pool.
+Then Basic authentication on an on-premise system — one class with unit tests, one loop, one RAP
+behavior pool with `trigger: "none"`. Record SAP's answers as test fixtures.
 
 <a id="live-2"></a>
 ## LIVE-2 — First deployment on SAP BTP
@@ -59,6 +63,20 @@ value that changed — as are its refusals and how a watchpoint on a local behav
 
 **Resume with.** A loop that changes a local and an attribute: watch both from the loop's first line,
 with and without a condition, once with a variable not yet visible; record SAP's answers as fixtures.
+
+<a id="trace-1"></a>
+## TRACE-1 — From an OData URL or a Fiori app to the handlers, in one call
+
+**Idea.** `abap_search` and `abap_source` lead from a service binding to its service definition, the
+CDS views it exposes, the behavior definition and the behavior pool, one call each. One call could walk
+it all from what the user has at hand: the app's OData URL, its BSP application's
+`/sap/bc/ui5_ui5/…/manifest.json`, or a classic Gateway (SEGW) service and its `*_DPC_EXT` class.
+
+**Why it remains.** The walk is four or five cheap calls today. A tracer needs the mapping from a URL
+to its binding — OData V2 service names, V4 service groups — checked on a real system.
+
+**Resume with.** The published URLs of the trial system's bindings next to their SRVB metadata, and a
+SEGW service's registration (`IWSG`), to see what links them.
 
 <a id="log-1"></a>
 ## LOG-1 — Dynamic logpoints
