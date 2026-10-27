@@ -224,8 +224,11 @@ At most 1,500 lines per call. The sources of classes, programs and function modu
 - **`SRVB`** has no source: the binding's kind (OData V2 or V4, UI or Web API), whether it is
   published, and the service definition behind each service version;
 - **`SRVD`** lists the entities it exposes — CDS views (`DDLS`);
-- **`BDEF`** names its behavior pool (`implementation in class …`), whose `implementations` include
-  holds the handler classes (`lhc_*`) to debug;
+- **`DDLS`**: a projection names the view it projects, whose `BDEF` holds the behavior; a root entity's
+  `BDEF` has its name;
+- **`BDEF`** names its behavior pools (`implementation in class …`, per entity), whose
+  `implementations` include holds the handler classes (`lhc_*`) to debug; a projection `BDEF` names
+  none — follow its view to the base;
 - **`INCL`**: no breakpoints in includes yet — set them in the class, program or function module that
   runs the code.
 

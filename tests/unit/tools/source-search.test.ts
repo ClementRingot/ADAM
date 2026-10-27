@@ -57,6 +57,19 @@ function installFakeSap(): Array<{ path: string; query: URLSearchParams }> {
         'managed implementation in class zbp_r_travel unique;\nstrict ( 2 );\n\ndefine behavior for ZR_TRAVEL alias Travel\n{\n  create;\n}',
       );
     }
+    // As on the BTP trial: the projection view, its projection BDEF, the base view's BDEF with a pool per entity.
+    if (parsed.pathname === '/sap/bc/adt/ddic/ddl/sources/zc_travel/source/main') {
+      return mockResponse(
+        200,
+        "@EndUserText.label: 'Travel'\ndefine root view entity ZC_Travel\n  provider contract transactional_query\n  as projection on ZR_Travel\n{\n  key TravelUUID\n}",
+      );
+    }
+    if (parsed.pathname === '/sap/bc/adt/bo/behaviordefinitions/zc_travel/source/main') {
+      return mockResponse(
+        200,
+        'projection;\nstrict(2);\nuse draft;\n\ndefine behavior for ZC_Travel alias Travel\n{\n  use create;\n}',
+      );
+    }
     if (parsed.pathname === '/sap/bc/adt/programs/includes/zorder_top/source/main') {
       return mockResponse(200, 'DATA gv_total TYPE i.');
     }
@@ -166,6 +179,16 @@ describe('abap_source', () => {
       'Behavior pool ZBP_R_TRAVEL: abap_source {"type":"CLAS","name":"ZBP_R_TRAVEL","include":"implementations"} shows its handler classes (lhc_*).',
     );
     expect(behavior.text).toContain('1: managed implementation in class zbp_r_travel unique;');
+  });
+
+  it('leads from a projection view and its projection BDEF to the base behavior definition', async () => {
+    installFakeSap();
+    const view = await call('abap_source', { type: 'DDLS', name: 'ZC_TRAVEL' });
+    expect(view.text).toContain(
+      'A projection on ZR_TRAVEL: abap_source {"type":"BDEF","name":"ZR_TRAVEL"} names the behavior pool, if the entity has behavior.',
+    );
+    const projection = await call('abap_source', { type: 'BDEF', name: 'ZC_TRAVEL' });
+    expect(projection.text).toContain('A projection: its behavior pool is named in the behavior definition');
   });
 
   it('reads an include, saying breakpoints go elsewhere', async () => {

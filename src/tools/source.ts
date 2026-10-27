@@ -129,14 +129,34 @@ function describeBinding(binding: ServiceBinding, name: string): string {
   return lines.join('\n');
 }
 
-/** What a behavior or service definition leads to, for the header. */
+/** What a CDS view, a behavior or a service definition leads to, for the header. */
 function leads(type: string, source: string): string[] {
   if (type === 'BDEF') {
-    const pools = [...new Set([...source.matchAll(/implementation\s+in\s+class\s+([\w/]+)/gi)].map((m) => m[1]))];
+    // `implementation in class` comes per entity (`define behavior for … implementation in class …`).
+    const pools = [
+      ...new Set([...source.matchAll(/implementation\s+in\s+class\s+([\w/]+)/gi)].map((m) => m[1]?.toUpperCase())),
+    ];
+    if (pools.length === 0 && /^\s*projection\b/im.test(source)) {
+      return [
+        'A projection: its behavior pool is named in the behavior definition of the view each entity projects (the DDLS shows "as projection on").',
+      ];
+    }
     return pools.map(
       (pool) =>
-        `Behavior pool ${pool?.toUpperCase()}: ${call('abap_source', { type: 'CLAS', name: pool?.toUpperCase() ?? '', include: 'implementations' })} shows its handler classes (lhc_*).`,
+        `Behavior pool ${pool}: ${call('abap_source', { type: 'CLAS', name: pool ?? '', include: 'implementations' })} shows its handler classes (lhc_*).`,
     );
+  }
+  if (type === 'DDLS') {
+    const base = /\bas\s+projection\s+on\s+([\w/]+)/i.exec(source)?.[1]?.toUpperCase();
+    if (base) {
+      return [
+        `A projection on ${base}: ${call('abap_source', { type: 'BDEF', name: base })} names the behavior pool, if the entity has behavior.`,
+      ];
+    }
+    const root = /\bdefine\s+root\s+view\s+entity\s+([\w/]+)/i.exec(source)?.[1]?.toUpperCase();
+    return root
+      ? [`A root entity: its behavior definition, if any, is ${call('abap_source', { type: 'BDEF', name: root })}.`]
+      : [];
   }
   if (type === 'SRVD') {
     const exposed = [...source.matchAll(/^\s*expose\s+([\w/]+)(?:\s+as\s+([\w/]+))?/gim)].map(
