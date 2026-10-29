@@ -152,6 +152,12 @@ export interface FakeSapOptions {
   debuggeeServer?: string;
   /** trigger="none": the user's own run reaches the breakpoint. */
   runByUser?: boolean;
+  /** The user's SAP GUI logons (USR41, read through the ADT data preview); a number: the preview answers that
+   *  HTTP status. Unset: no data preview (404). */
+  usr41?: Array<{ server: string; date?: string; time?: string }> | number;
+  /** As on S/4HANA: the user's run (`runByUser`, a SAP GUI run) stops only on the server whose session armed the
+   *  external breakpoints last — a stateless sync names no server. Removing the last one there switches it off. */
+  guiStopsOnlyWhereArmed?: boolean;
   /** SAP flags the stopped debuggee IS_ATTACH_IMPOSSIBLE. */
   attachImpossible?: boolean;
   /** The OData service refuses the trigger (BTP ABAP: UCON blocks an unexposed custom service). */
@@ -278,6 +284,8 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
   let spoiled = false;
   /** Multi-server: the server the debuggee waits on, from its stop to its release. */
   let stoppedOn: string | undefined;
+  /** guiStopsOnlyWhereArmed: the server whose session armed the external breakpoints last, while armed. */
+  let armedOn: string | undefined;
   const debuggeeXml = () => {
     let xml = options.attachImpossible
       ? DEBUGGEE_XML.replace('<IS_ATTACH_IMPOSSIBLE>false', '<IS_ATTACH_IMPOSSIBLE>X')
@@ -359,6 +367,9 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       if (method === 'DELETE') return mockResponse(200, '');
       // POST: the long poll.
       if (options.hit) {
+        if (options.runByUser && options.guiStopsOnlyWhereArmed && armedOn !== options.debuggeeServer) {
+          return mockResponse(200, '');
+        }
         if (options.runByUser) stoppedOn = options.servers ? options.debuggeeServer : undefined;
         else await triggeredPromise;
         if (options.stopAfterMs) await delay(options.stopAfterMs, init?.signal);
@@ -450,6 +461,8 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       external.clear();
       for (const [key, id] of armed) external.set(key, id);
       externalConditions = conditions;
+      if (armed.size > 0) armedOn = call.server;
+      else if (armedOn === call.server) armedOn = undefined;
       return mockResponse(
         200,
         `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
@@ -489,7 +502,32 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       const id = decodeURIComponent(call.path.split('/').at(-1) ?? '');
       const scope = q.get('scope') === 'debugger' ? sessionBreakpoints : external;
       for (const [key, value] of scope) if (value === id) scope.delete(key);
+      if (scope === external && external.size === 0 && armedOn === call.server) armedOn = undefined;
       return mockResponse(200, '');
+    }
+    if (path === '/sap/bc/adt/datapreview/freestyle' && method === 'POST' && options.usr41 !== undefined) {
+      if (typeof options.usr41 === 'number') return mockResponse(options.usr41, 'No authorization for table USR41');
+      const rows = options.usr41;
+      const column = (name: string, values: string[]) =>
+        `<dataPreview:columns><dataPreview:metadata dataPreview:name="${name}" dataPreview:type="C" dataPreview:description="${name}"/>${
+          values.length > 0
+            ? `<dataPreview:dataSet>${values.map((value) => `<dataPreview:data>${value}</dataPreview:data>`).join('')}</dataPreview:dataSet>`
+            : '<dataPreview:dataSet/>'
+        }</dataPreview:columns>`;
+      return mockResponse(
+        200,
+        `<?xml version="1.0" encoding="utf-8"?><dataPreview:tableData xmlns:dataPreview="http://www.sap.com/adt/dataPreview"><dataPreview:totalRows>${rows.length}</dataPreview:totalRows>${column(
+          'SERVER',
+          rows.map((row) => row.server),
+        )}${column(
+          'LOGON_DATE',
+          rows.map((row) => row.date ?? '20260101'),
+        )}${column(
+          'LOGON_TIME',
+          rows.map((row) => row.time ?? '080000'),
+        )}</dataPreview:tableData>`,
+        { 'content-type': 'application/vnd.sap.adt.datapreview.table.v1+xml; charset=utf-8' },
+      );
     }
     if (path === '/sap/bc/adt/abapunit/testruns') {
       if (options.hit && options.servers) stoppedOn = call.server ?? options.debuggeeServer;
@@ -662,7 +700,7 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
     }
     return entries.length > 0 ? `<reachedBreakpoints>${entries.join('')}</reachedBreakpoints>` : '';
   }
-  return { calls, terminated: () => terminated };
+  return { calls, terminated: () => terminated, armedOn: () => armedOn };
 }
 
 export const named = (calls: Call[], method: string, path: string) =>

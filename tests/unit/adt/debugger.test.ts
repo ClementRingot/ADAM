@@ -19,6 +19,7 @@ import {
   findListenerConflict,
   listDebugStatements,
   listenForDebuggee,
+  openArmingSessions,
   openSessionOnServer,
   openSessionsAhead,
   parseAttachResponse,
@@ -405,6 +406,77 @@ describe("the debuggee's application server", () => {
     await expect(openSessionsAhead(http)).rejects.toThrow(AdtApiError);
     expect(first.endStatefulSession).toHaveBeenCalledTimes(1);
     expect(second.get).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens one more session per server to arm from, taking over the pair's second one", async () => {
+    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-rpsxx']);
+    const ahead = await openSessionsAhead(http);
+    expect(ahead.trigger).toBe(sessions[2]);
+    const armers = await openArmingSessions(http, ahead, 'Appserver-RPSXX');
+    expect([...armers.entries()]).toEqual([
+      ['APPSERVER-T4W2X', sessions[2]],
+      ['APPSERVER-RPSXX', sessions[3]],
+    ]);
+    // The attach sessions stay as they were; the pair's second session is the arming one now.
+    expect([...ahead.byServer.values()]).toEqual([sessions[0], sessions[1]]);
+    expect(ahead.trigger).toBeUndefined();
+    expect(sessions).toHaveLength(4);
+    expect(ended()).toEqual([]);
+  });
+
+  it('finds the wanted server the sessions ahead missed, gives it an attach session too, and ends the extra ones', async () => {
+    const { http, sessions, ended } = balancedSap([
+      'appserver-t4w2x',
+      'appserver-t4w2x',
+      'appserver-rpsxx',
+      'appserver-t4w2x',
+      'appserver-rpsxx',
+    ]);
+    const ahead = await openSessionsAhead(http);
+    expect([...ahead.byServer.keys()]).toEqual(['APPSERVER-T4W2X']);
+    const armers = await openArmingSessions(http, ahead, 'appserver-rpsxx');
+    expect([...armers.entries()]).toEqual([
+      ['APPSERVER-T4W2X', sessions[1]],
+      ['APPSERVER-RPSXX', sessions[4]],
+    ]);
+    expect([...ahead.byServer.entries()]).toEqual([
+      ['APPSERVER-T4W2X', sessions[0]],
+      ['APPSERVER-RPSXX', sessions[2]],
+    ]);
+    expect(ended()).toEqual([sessions[3]]);
+  });
+
+  it('stops when SAP names no server or after maxProbes, and ends a pair session it cannot place', async () => {
+    const trigger = { endStatefulSession: vi.fn().mockResolvedValue(true), sessionContextId: undefined };
+    const unnamed = balancedSap([undefined]);
+    const known = new Map([['APPSERVER-A', {} as AdtHttpClient]]);
+    const ahead = { byServer: known, trigger: trigger as unknown as AdtHttpClient };
+    expect((await openArmingSessions(unnamed.http, ahead, 'appserver-a')).size).toBe(0);
+    expect(trigger.endStatefulSession).toHaveBeenCalledTimes(1);
+    expect(ahead.trigger).toBeUndefined();
+    expect(unnamed.ended()).toEqual([unnamed.sessions[0]]);
+
+    const elsewhere = balancedSap(['appserver-a']);
+    const armers = await openArmingSessions(elsewhere.http, { byServer: new Map(known) }, 'appserver-b', {
+      maxProbes: 3,
+    });
+    expect([...armers.entries()]).toEqual([['APPSERVER-A', elsewhere.sessions[0]]]);
+    expect(elsewhere.ended()).toEqual([elsewhere.sessions[1], elsewhere.sessions[2]]);
+  });
+
+  it('ends its arming sessions when a probe fails', async () => {
+    const trigger = {
+      endStatefulSession: vi.fn().mockResolvedValue(true),
+      sessionContextId: contextOn('appserver-a'),
+    };
+    const broken = balancedSap(['appserver-b'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
+    const ahead = {
+      byServer: new Map([['APPSERVER-A', {} as AdtHttpClient]]),
+      trigger: trigger as unknown as AdtHttpClient,
+    };
+    await expect(openArmingSessions(broken.http, ahead, 'appserver-b')).rejects.toThrow(AdtApiError);
+    expect(trigger.endStatefulSession).toHaveBeenCalledTimes(1);
+    expect(ahead.trigger).toBeUndefined();
   });
 
   it('takes the first session as is when the debuggee names no server', async () => {

@@ -520,6 +520,55 @@ export async function openSessionsAhead(
   return { byServer };
 }
 
+/** Arming sessions for a balanced pair and the SAP GUI's server rarely take more than 4 probes. */
+const MAX_ARMING_PROBES = 8;
+
+/**
+ * One more stateful session per application server, to arm the breakpoints FROM: a SAP GUI run stops
+ * reliably only on the server whose session armed them last (see docs/adt-debugger-protocol.md, "SAP
+ * GUI runs"), so the capture arms from each server and from the user's SAP GUI server (`wanted`) last.
+ * Takes over `ahead.trigger` (a second session on a known server) and records a server first seen
+ * here in `ahead.byServer` (its attach session) — `ahead` is changed. Probes until `wanted` and every
+ * server of `byServer` have one, or `maxProbes`; returns them keyed upper-case. Ends its own sessions
+ * on error.
+ */
+export async function openArmingSessions(
+  http: AdtHttpClient,
+  ahead: SessionsAhead,
+  wanted: string,
+  options: AdtRequestOptions & { maxProbes?: number } = {},
+): Promise<Map<string, AdtHttpClient>> {
+  const { maxProbes = MAX_ARMING_PROBES, ...requestOptions } = options;
+  const target = wanted.trim().toUpperCase();
+  const armers = new Map<string, AdtHttpClient>();
+  const complete = (): boolean => armers.has(target) && [...ahead.byServer.keys()].every((key) => armers.has(key));
+  const trigger = ahead.trigger;
+  ahead.trigger = undefined;
+  let probes = 0;
+  try {
+    const triggerServer = trigger ? contextServer(trigger.sessionContextId)?.toUpperCase() : undefined;
+    if (trigger && triggerServer) armers.set(triggerServer, trigger);
+    else if (trigger) await endSession(trigger, requestOptions);
+    while (probes < maxProbes && !complete()) {
+      probes++;
+      const { session, server } = await probeSession(http, requestOptions);
+      const key = server?.toUpperCase();
+      if (!key) {
+        await endSession(session, requestOptions);
+        break;
+      }
+      if (!ahead.byServer.has(key)) ahead.byServer.set(key, session);
+      else if (!armers.has(key)) armers.set(key, session);
+      else await endSession(session, requestOptions);
+    }
+  } catch (err) {
+    for (const session of armers.values()) await endSession(session, requestOptions);
+    throw err;
+  }
+  logger.debug('Debugger arming sessions opened', { servers: [...armers.keys()], wanted: target, probes });
+  return armers;
+}
+
 export interface PinnedSession {
   http: AdtHttpClient;
   /** The server SAP pinned the session to; undefined when it did not say. */

@@ -308,6 +308,103 @@ describe('abap_debug — a hit', () => {
     expect(calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual(['appserver-rpsxx']);
     // The sessions opened ahead covered both servers: nothing probed after the stop.
     expect(calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful)).toHaveLength(3);
+    // No data preview here (BTP-like), so no SAP GUI server either: the run stopped, so no warning about it.
+    expect(json).not.toHaveProperty('warnings');
+  });
+
+  describe('a SAP GUI run on a system with several application servers (S/4HANA)', () => {
+    // As seen live on S/4HANA: a SAP GUI run stops only on the server whose session armed the breakpoints last.
+    const gui = {
+      hit: true,
+      runByUser: true,
+      sessionUser: 'ADMIN',
+      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+      debuggeeServer: 'appserver-rpsxx',
+      guiStopsOnlyWhereArmed: true,
+    } satisfies FakeSapOptions;
+    const externalSyncs = (calls: Call[]) => {
+      const listening = calls.findIndex((c) => c.method === 'POST' && c.path === '/sap/bc/adt/debugger/listeners');
+      return named(calls.slice(0, listening), 'POST', '/sap/bc/adt/debugger/breakpoints');
+    };
+
+    it("arms from the user's SAP GUI server last, so that run stops, and disarms from there", async () => {
+      const fake = installFakeSap({
+        ...gui,
+        usr41: [
+          { server: 'appserver-t4w2x', time: '080000' },
+          { server: 'appserver-rpsxx', time: '093000' },
+        ],
+      });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
+
+      expect(json).toMatchObject({
+        hit: true,
+        attached: true,
+        debuggee: { server: 'appserver-rpsxx' },
+        trigger: { kind: 'none', guiServer: 'appserver-rpsxx' },
+        release: { released: true },
+      });
+      expect(json).not.toHaveProperty('warnings');
+      // The user's SAP GUI server: their latest SAP GUI logon in USR41, read through the data preview.
+      expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle').map((c) => c.body)).toEqual([
+        "SELECT server, logon_date, logon_time FROM usr41 WHERE bname = 'ADMIN'",
+      ]);
+      // The probe from the stateless client, then the final set from a session on each server — the SAP GUI's last.
+      expect(externalSyncs(fake.calls).map((c) => c.server)).toEqual([
+        undefined,
+        'appserver-t4w2x',
+        'appserver-rpsxx',
+      ]);
+      // Removed from there too: removing the last breakpoint switches debugging off on the server that removes it.
+      const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
+      expect(removals.length).toBeGreaterThan(0);
+      expect(removals.every((c) => c.server === 'appserver-rpsxx')).toBe(true);
+      expect(fake.armedOn()).toBeUndefined();
+      // Every session ends: the two attach sessions and the two arming ones.
+      expect(
+        fake.calls
+          .filter((c) => c.sessionType === 'stateless')
+          .map((c) => c.server)
+          .sort(),
+      ).toEqual(['appserver-rpsxx', 'appserver-rpsxx', 'appserver-t4w2x', 'appserver-t4w2x']);
+    });
+
+    it('says why such a run may not stop when USR41 cannot be read', async () => {
+      const fake = installFakeSap({ ...gui, usr41: 403 });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
+
+      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
+      expect(json?.trigger).not.toHaveProperty('guiServer');
+      expect(json?.warnings).toEqual([
+        expect.stringContaining(
+          "Could not look up which application server runs SAP user ADMIN's SAP GUI (table USR41 through the ADT data preview: ",
+        ),
+      ]);
+      expect(json?.warnings[0]).toContain('No authorization for table USR41');
+      expect(json?.hint).toContain(
+        'With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last',
+      );
+      // As before: armed from the stateless client alone, and every session ended.
+      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
+      expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(3);
+    });
+
+    it("names the server a SAP GUI run stops on when the user's run was elsewhere", async () => {
+      installFakeSap({
+        ...gui,
+        usr41: [
+          { server: 'appserver-rpsxx', date: '20261027' },
+          { server: 'appserver-t4w2x', date: '20261028' },
+        ],
+      });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
+
+      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { guiServer: 'appserver-t4w2x' } });
+      expect(json).not.toHaveProperty('warnings');
+      expect(json?.hint).toContain(
+        "Run from SAP GUI, it stops reliably on application server appserver-t4w2x only (ADMIN's latest SAP GUI logon, which armed the breakpoints last), not on appserver-rpsxx where ADMIN is logged on too; System → Status in SAP GUI names the server.",
+      );
+    });
   });
 
   it('shows a structure watched across steps by its components', async () => {

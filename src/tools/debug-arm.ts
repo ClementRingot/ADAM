@@ -16,6 +16,7 @@ import {
   syncBreakpoints,
 } from '../adt/debugger.js';
 import { resolveFunctionGroup as findFunctionGroup, readSource } from '../adt/repository.js';
+import type { AdtHttpClient } from '../adt/http.js';
 import type { SapConnection } from './connection.js';
 
 /** `line`: SAP refuses lines without a statement, so probe the next few lines too. */
@@ -211,6 +212,8 @@ export interface ArmedBreakpoints {
   report: Array<Record<string, unknown>>;
   /** Event breakpoints armed in the run at its first stop (`armInRun`), not for the whole user. */
   inRun: RunEvent[];
+  /** With an `ArmRoute`: the session whose sync armed them last — `disarm` removes them from it. */
+  armedFrom?: AdtHttpClient;
 }
 
 /** Does SAP's `id` name this breakpoint — under its id or one it had before? */
@@ -303,6 +306,18 @@ function acceptedLine(
   return undefined;
 }
 
+/** A session on an application server, to arm the breakpoints from (`openArmingSessions`). */
+export interface ArmingSession {
+  server: string;
+  http: AdtHttpClient;
+}
+
+/** Where the breakpoints are armed from: every session of `before`, then `last` — the user's SAP GUI server. */
+export interface ArmRoute {
+  before: readonly ArmingSession[];
+  last: ArmingSession;
+}
+
 /**
  * Arm every line target on the first candidate SAP accepts (one probe POST carrying all candidates,
  * then a second sync keeping one line per target — two targets on the same line arm it once) plus
@@ -315,6 +330,10 @@ function acceptedLine(
  * So with a line or method breakpoint to enter the run, the event breakpoints wait for its first stop
  * and are set in that run only (`armInRun`); without one, exception and message breakpoints are the
  * only way in and go external.
+ *
+ * With a `route`, the second sync runs from each of its sessions in turn, `route.last` (the user's
+ * SAP GUI server) last: a SAP GUI run stops reliably only on the server that armed the breakpoints
+ * last. A sync that fails there costs a warning, not the capture.
  */
 export async function armBreakpoints(
   conn: SapConnection,
@@ -322,6 +341,8 @@ export async function armBreakpoints(
   targets: readonly StopTarget[],
   events: readonly EventLocation[],
   armedIds: string[],
+  route?: ArmRoute,
+  warnings: string[] = [],
 ): Promise<ArmedBreakpoints> {
   const inRun = targets.length > 0;
   const eventSpecs = inRun ? [] : events.map(eventSpec);
@@ -355,16 +376,27 @@ export async function armBreakpoints(
     if (hit && !owner.has(positionKey(index, hit.line))) owner.set(positionKey(index, hit.line), index);
   });
   let states = probe;
+  const finalSpecs = (): DebugBreakpointSpec[] => [
+    ...[...owner.values()].map((index) => lineSpec(index, accepted[index]?.requested ?? 0, true)),
+    ...eventSpecs,
+  ];
+  let armedFrom: AdtHttpClient | undefined;
+  if (route && probe.some((state) => state.id)) {
+    for (const { server, http } of [...route.before, route.last]) {
+      try {
+        states = remember(await syncBreakpoints(http, identity, finalSpecs()));
+        armedFrom = http;
+      } catch (err) {
+        warnings.push(
+          `Could not arm the breakpoints from application server ${server} (${debuggerErrorText(err)}): a SAP GUI run there may not stop.`,
+        );
+      }
+    }
+  }
   // The probe may have armed several candidate lines per target — keep exactly one each, with its condition.
   const conditioned = [...owner.values()].some((index) => targets[index]?.condition);
-  if (conditioned || probe.filter((state) => state.id && isLineState(state)).length > owner.size) {
-    states = remember(
-      await syncBreakpoints(conn.http, identity, [
-        ...[...owner.values()].map((index) => lineSpec(index, accepted[index]?.requested ?? 0, true)),
-        ...eventSpecs,
-      ]),
-    );
-  }
+  const narrow = conditioned || probe.filter((state) => state.id && isLineState(state)).length > owner.size;
+  if (!armedFrom && narrow) states = remember(await syncBreakpoints(conn.http, identity, finalSpecs()));
 
   const armed: ArmedBreakpoint[] = [];
   const report: Array<Record<string, unknown>> = [];
@@ -469,7 +501,7 @@ export async function armBreakpoints(
       // the refusal stands on its own
     }
   }
-  return { ids: [...armedIds], armed, report, inRun: runEvents };
+  return { ids: [...armedIds], armed, report, inRun: runEvents, ...(armedFrom ? { armedFrom } : {}) };
 }
 
 /** A pending run event that never got set: the run did not stop. */
@@ -575,30 +607,40 @@ export async function armInRun(
  *  at one (an exception SAP code raises) and wait for an attach — so the removal has a short budget. */
 const DISARM_BUDGET_MS = 15_000;
 
-/** Remove the capture's external breakpoints; false when SAP did not confirm they are gone. */
+/**
+ * Remove the capture's external breakpoints; false when SAP did not confirm they are gone. `via`: the
+ * session that armed them (`ArmedBreakpoints.armedFrom`) — removing the last one switches debugging
+ * off only on the server that removes it. When that session fails, the empty sync falls back to
+ * `conn.http`.
+ */
 export async function disarm(
   conn: SapConnection,
   identity: DebugIdentity,
   ids: readonly string[],
   warnings: string[],
+  via: AdtHttpClient = conn.http,
 ): Promise<boolean> {
   const options = { deadline: Date.now() + DISARM_BUDGET_MS };
   let failed = false;
   for (const id of ids) {
     try {
-      await deleteBreakpoint(conn.http, identity, id, 'external', options);
+      await deleteBreakpoint(via, identity, id, 'external', options);
     } catch {
       failed = true;
     }
   }
   if (!failed) return true;
-  try {
-    await syncBreakpoints(conn.http, identity, [], 'external', { deadline: Date.now() + DISARM_BUDGET_MS });
-    return true;
-  } catch (err) {
-    warnings.push(
-      `Could not remove the capture's external breakpoints: ${debuggerErrorText(err)}. The next capture of this user removes them, or abap_breakpoints with action "delete".`,
-    );
-    return false;
+  let error: unknown;
+  for (const http of via === conn.http ? [via] : [via, conn.http]) {
+    try {
+      await syncBreakpoints(http, identity, [], 'external', { deadline: Date.now() + DISARM_BUDGET_MS });
+      return true;
+    } catch (err) {
+      error = err;
+    }
   }
+  warnings.push(
+    `Could not remove the capture's external breakpoints: ${debuggerErrorText(error)}. The next capture of this user removes them, or abap_breakpoints with action "delete".`,
+  );
+  return false;
 }

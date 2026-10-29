@@ -63,6 +63,7 @@ import {
   type StepUntil,
   type WatchItem,
 } from './debug-follow.js';
+import { type GuiRoute, guiHint, openGuiRoute } from './debug-gui.js';
 import type { DebugInput } from './debug-input.js';
 import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
@@ -491,7 +492,13 @@ async function checkStatements(conn: SapConnection, events: readonly EventLocati
 
 type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 
-function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean, triggerFailed: boolean): string {
+function notHitHint(
+  req: DebugRequest,
+  user: string,
+  triggerFinished: boolean,
+  triggerFailed: boolean,
+  gui = '',
+): string {
   if (triggerFailed) {
     return req.trigger === 'http'
       ? 'The trigger request itself failed (trigger.error), so nothing ran to the breakpoint. Make that call work on its own first (the same path in a browser or REST client, as the same SAP user). A service published moments ago can answer 403 "blocked by UCON" for a few minutes (seen on the BTP ABAP Environment).'
@@ -503,12 +510,13 @@ function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean, t
     return `The unit tests finished without reaching the breakpoint — check that a harmless test covers this code (ABAP Unit coverage in ADT shows which methods the tests reach), or use trigger="http" / trigger="none".${race}`;
   }
   if (triggerFinished) return `The trigger finished without reaching the breakpoint.${race}`;
-  return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.`;
+  return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${gui}`;
 }
 
 /**
- * Sessions opened before the run (see `openSessionsAhead`). Only the capture's unit-test trigger can run on
- * one; for the others the pair's second session is ended at once. A failure only costs the pinning.
+ * Sessions opened before the run (see `openSessionsAhead`). The capture's unit-test trigger runs on the
+ * pair's second session, and with trigger "none" it arms the breakpoints for SAP GUI (`openGuiRoute`);
+ * for an HTTP trigger it is ended at once. A failure only costs the pinning.
  */
 async function openAhead(conn: SapConnection, plan: TriggerPlan, warnings: string[]): Promise<SessionsAhead> {
   let ahead: SessionsAhead;
@@ -520,7 +528,7 @@ async function openAhead(conn: SapConnection, plan: TriggerPlan, warnings: strin
     );
     return { byServer: new Map() };
   }
-  if (ahead.trigger && plan.kind !== 'unittest') {
+  if (ahead.trigger && plan.kind === 'http') {
     await endSession(ahead.trigger, { deadline: Date.now() + AHEAD_BUDGET_MS });
     return { byServer: ahead.byServer };
   }
@@ -556,6 +564,10 @@ export class CaptureRun {
   armed: ArmedBreakpoints | undefined;
   readonly startedAt = Date.now();
   private ahead: SessionsAhead = { byServer: new Map() };
+  /** With trigger "none": where the breakpoints are armed from for the user's SAP GUI. */
+  private gui: GuiRoute | undefined;
+  /** What went wrong arming for SAP GUI: reported only when nothing stopped (no SAP GUI on BTP, say). */
+  private readonly guiWarnings: string[] = [];
   private listenerStarted = false;
   private externalCleared = false;
   private tornDown = false;
@@ -574,7 +586,10 @@ export class CaptureRun {
   async clearExternal(): Promise<void> {
     if (this.externalCleared) return;
     this.externalCleared = true;
-    settleArmed(this.identity, await disarm(this.conn, this.identity, this.armedIds, this.warnings));
+    settleArmed(
+      this.identity,
+      await disarm(this.conn, this.identity, this.armedIds, this.warnings, this.armed?.armedFrom),
+    );
   }
 
   /** Idempotent: runs before a result is built (so its warnings are reported) and again in finally. */
@@ -583,6 +598,9 @@ export class CaptureRun {
     this.tornDown = true;
     this.listenAbort.abort();
     await this.clearExternal();
+    for (const session of this.gui?.sessions ?? []) {
+      await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    }
     for (const session of this.ahead.byServer.values()) {
       if (session !== this.attachedFrom) await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
     }
@@ -662,8 +680,18 @@ export class CaptureRun {
     // Sessions open BEFORE anything is armed: once breakpoints are armed, this server's own requests
     // run as the debugged user too and must stay as few as possible.
     this.ahead = await openAhead(conn, plan, warnings);
+    if (plan.kind === 'none') this.gui = await openGuiRoute(conn, user, this.ahead, this.guiWarnings);
+    const multiServer = this.ahead.byServer.size > 1;
     recordArmed(conn.http, identity);
-    const armed = await armBreakpoints(conn, identity, targets, req.events, this.armedIds);
+    const armed = await armBreakpoints(
+      conn,
+      identity,
+      targets,
+      req.events,
+      this.armedIds,
+      this.gui?.route,
+      this.guiWarnings,
+    );
     this.armed = armed;
     if (armed.ids.length === 0) {
       return {
@@ -725,13 +753,21 @@ export class CaptureRun {
     // Where the capture's own run went (pinned ahead of it): the server the debuggee stops on.
     const triggerServer =
       running && this.ahead.trigger ? contextServer(this.ahead.trigger.sessionContextId) : undefined;
+    // The user's SAP GUI server, when its session armed the breakpoints last: a SAP GUI run stops there.
+    const guiServer = this.gui && armed.armedFrom === this.gui.route.last.http ? this.gui.server : undefined;
     const base: CaptureBase = {
       user,
       breakpoints: armed.report,
-      trigger: { kind: plan.kind, target: plan.label, ...(triggerServer ? { server: triggerServer } : {}) },
+      trigger: {
+        kind: plan.kind,
+        target: plan.label,
+        ...(triggerServer ? { server: triggerServer } : {}),
+        ...(guiServer ? { guiServer } : {}),
+      },
     };
 
     if (outcome.status !== 'caught') {
+      warnings.push(...this.guiWarnings);
       unsetRunEvents(armed);
       await this.teardown();
       const triggerOutcome = await this.settleTrigger();
@@ -757,7 +793,13 @@ export class CaptureRun {
             ...base,
             trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
             ...(warnings.length > 0 ? { warnings } : {}),
-            hint: notHitHint(req, user, triggerFinished, triggerFailure !== undefined),
+            hint: notHitHint(
+              req,
+              user,
+              triggerFinished,
+              triggerFailure !== undefined,
+              plan.kind === 'none' ? guiHint(user, guiServer, this.gui?.others ?? [], multiServer) : '',
+            ),
           }),
         ),
       };
