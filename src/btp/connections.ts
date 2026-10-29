@@ -145,6 +145,8 @@ export interface ConnectionSettings {
   language: string;
   limits: DebugLimits;
   abapRelease?: string;
+  /** false: never look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP). */
+  sapGuiLookup?: boolean;
 }
 
 /**
@@ -194,6 +196,7 @@ export class BtpConnections {
       ...(logonUser ? { logonUser } : {}),
       ...(this.settings.abapRelease ? { abapRelease: this.settings.abapRelease } : {}),
       limits: this.settings.limits,
+      ...(this.settings.sapGuiLookup === false ? { sapGuiLookup: false } : {}),
     };
   }
 

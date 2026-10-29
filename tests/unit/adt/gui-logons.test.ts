@@ -35,7 +35,14 @@ describe('parseDataPreview', () => {
     expect(parseDataPreview(ONE_LOGON)).toEqual([
       { SERVER: 'vhcala4hci_A4H_01', LOGON_DATE: '20261028', LOGON_TIME: '113108' },
     ]);
-    expect(parseDataPreview(logons([['a', '20261027', '080000'], ['b', '20261028', '000501']]))).toEqual([
+    expect(
+      parseDataPreview(
+        logons([
+          ['a', '20261027', '080000'],
+          ['b', '20261028', '000501'],
+        ]),
+      ),
+    ).toEqual([
       { SERVER: 'a', LOGON_DATE: '20261027', LOGON_TIME: '080000' },
       { SERVER: 'b', LOGON_DATE: '20261028', LOGON_TIME: '000501' },
     ]);
@@ -88,7 +95,9 @@ describe('readGuiLogons', () => {
   it('quotes the user name as an ABAP SQL literal', async () => {
     const http = answering(NO_LOGON);
     await readGuiLogons(http as unknown as AdtHttpClient, "o'neil");
-    expect(http.post.mock.calls[0]?.[1]).toBe("SELECT server, logon_date, logon_time FROM usr41 WHERE bname = 'O''NEIL'");
+    expect(http.post.mock.calls[0]?.[1]).toBe(
+      "SELECT server, logon_date, logon_time FROM usr41 WHERE bname = 'O''NEIL'",
+    );
   });
 
   it('lets a refusal through: no authorization for USR41, no data preview', async () => {

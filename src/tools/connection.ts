@@ -15,6 +15,11 @@ export interface SapConnection {
   abapRelease?: string;
   /** The server's ceilings for debugging (time, result size, interactive sessions); defaults apply when unset. */
   limits?: DebugLimits;
+  /**
+   * false (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false): never read the user's SAP GUI logons (USR41) to arm
+   * from their SAP GUI's server. Unset: on.
+   */
+  sapGuiLookup?: boolean;
 }
 
 /** One tool call's link back to the client. */

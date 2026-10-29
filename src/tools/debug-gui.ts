@@ -5,6 +5,9 @@
  * on S/4HANA). So the capture looks up the user's SAP GUI server — their latest SAP GUI logon — and
  * arms from one session on each server it knows, that one last. HTTP runs (a Fiori app, Postman)
  * stop on any server either way. See docs/adt-debugger-protocol.md ("SAP GUI runs").
+ *
+ * Only where a SAP GUI can be: when SAP names an AS ABAP instance among its servers (the BTP ABAP
+ * Environment's pods have no SAP GUI), and unless ABAP_DEBUGGER_SAP_GUI_LOOKUP=false.
  */
 
 import {
@@ -32,10 +35,25 @@ export interface GuiRoute {
 }
 
 /**
+ * An application server as SM51 names an AS ABAP instance, `<host>_<SID>_<instance number>` (e.g.
+ * `sapdev01_DEV_00`): the kind SAP GUI logs on to. The BTP ABAP Environment's servers are pods
+ * (`appserver-t4w2x`), and it has no SAP GUI.
+ */
+export function isInstanceName(server: string): boolean {
+  return /^\S+_[A-Z][A-Z0-9]{2}_\d{2}$/i.test(server.trim());
+}
+
+/** SAP named several AS ABAP instances: a SAP GUI run then stops reliably on one server only. */
+export function severalInstances(ahead: SessionsAhead): boolean {
+  return [...ahead.byServer.keys()].filter(isInstanceName).length > 1;
+}
+
+/**
  * The arming route of a capture whose run the user starts (trigger "none"). Undefined — the capture
- * arms from the stateless client, as before — when SAP names no server, the user has no SAP GUI
- * logon, or a step fails (a warning says which, when it matters). Takes over `ahead.trigger` (ended
- * when unused) and may add a server to `ahead.byServer`.
+ * arms from the stateless client, as before — when no server SAP names is an AS ABAP instance (no
+ * SAP GUI there), the lookup is off, the user has no SAP GUI logon, or a step fails (a warning says
+ * which, when it matters). Takes over `ahead.trigger` (ended when unused) and may add a server to
+ * `ahead.byServer`.
  */
 export async function openGuiRoute(
   conn: SapConnection,
@@ -49,12 +67,12 @@ export async function openGuiRoute(
     ahead.trigger = undefined;
     return undefined;
   };
-  if (ahead.byServer.size === 0) return dropTrigger();
+  if (conn.sapGuiLookup === false || ![...ahead.byServer.keys()].some(isInstanceName)) return dropTrigger();
   let logons: GuiLogon[];
   try {
     logons = await readGuiLogons(conn.http, user, options);
   } catch (err) {
-    if (ahead.byServer.size > 1) {
+    if (severalInstances(ahead)) {
       warnings.push(
         `Could not look up which application server runs SAP user ${user}'s SAP GUI (table USR41 through the ADT data preview: ${debuggerErrorText(err)}). With several servers a SAP GUI run stops reliably only on the one that armed the breakpoints last — not necessarily yours.`,
       );
@@ -94,18 +112,22 @@ export async function openGuiRoute(
 /**
  * For a trigger-"none" run that never stopped: where a SAP GUI run stops. `armedServer`: the user's
  * SAP GUI server when the breakpoints were armed from it last; `multiServer`: SAP named more than one
- * server.
+ * AS ABAP instance (`severalInstances`); `lookupOff`: ABAP_DEBUGGER_SAP_GUI_LOOKUP=false.
  */
 export function guiHint(
   user: string,
   armedServer: string | undefined,
   others: readonly string[],
   multiServer: boolean,
+  lookupOff = false,
 ): string {
   if (armedServer) {
     const elsewhere = others.length > 0 ? `, not on ${others.join(', ')} where ${user} is logged on too` : '';
     return ` Run from SAP GUI, it stops reliably on application server ${armedServer} only (${user}'s latest SAP GUI logon, which armed the breakpoints last)${elsewhere}; System → Status in SAP GUI names the server.`;
   }
   if (!multiServer) return '';
+  if (lookupOff) {
+    return " With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last — not necessarily yours: this server does not look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false).";
+  }
   return ' With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last, which is the server of your SAP GUI only when the capture finds it: be logged on to SAP GUI when the capture starts.';
 }

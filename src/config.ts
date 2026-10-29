@@ -30,6 +30,8 @@ export interface Config {
   abapRelease?: string;
   /** Ceilings for debugging: time, result size, interactive sessions. */
   limits: DebugLimits;
+  /** Look up the user's SAP GUI server in USR41 for trigger "none" (ABAP_DEBUGGER_SAP_GUI_LOOKUP). */
+  sapGuiLookup: boolean;
 }
 
 export interface ConfigResult {
@@ -47,6 +49,17 @@ function value(env: NodeJS.ProcessEnv, key: string): string | undefined {
 
 function flag(env: NodeJS.ProcessEnv, key: string): boolean {
   return TRUE_VALUES.has((value(env, key) ?? '').toLowerCase());
+}
+
+const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+/** A setting that is on unless it says false; anything but true or false is a problem. */
+function onUnlessOff(env: NodeJS.ProcessEnv, key: string, problems: string[]): boolean {
+  const text = value(env, key);
+  if (text === undefined || TRUE_VALUES.has(text.toLowerCase())) return true;
+  if (FALSE_VALUES.has(text.toLowerCase())) return false;
+  problems.push(`${key} must be true or false (got "${text}").`);
+  return true;
 }
 
 /** The debugging ceilings: each variable a whole number within its bounds, else a problem. */
@@ -149,6 +162,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
   }
 
   const limits = readLimits(env, problems);
+  const sapGuiLookup = onUnlessOff(env, 'ABAP_DEBUGGER_SAP_GUI_LOOKUP', problems);
 
   if (problems.length > 0 || !url || !auth) return { problems };
   return {
@@ -169,6 +183,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
       disableSaml: flag(env, 'SAP_DISABLE_SAML'),
       ...(value(env, 'SAP_ABAP_RELEASE') ? { abapRelease: value(env, 'SAP_ABAP_RELEASE') } : {}),
       limits,
+      sapGuiLookup,
     },
   };
 }
@@ -205,6 +220,7 @@ export function createConnection(config: Config): SapConnection {
     ...(config.auth !== 'btp' && config.username ? { logonUser: config.username } : {}),
     ...(config.abapRelease ? { abapRelease: config.abapRelease } : {}),
     limits: config.limits,
+    ...(config.sapGuiLookup ? {} : { sapGuiLookup: false }),
   };
 }
 
@@ -277,14 +293,20 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): { http?: H
 
 /** What every SAP connection takes from the environment, whichever way it logs on. */
 export function loadConnectionSettings(env: NodeJS.ProcessEnv = process.env): {
-  settings: { language: string; limits: DebugLimits; abapRelease?: string };
+  settings: { language: string; limits: DebugLimits; abapRelease?: string; sapGuiLookup?: boolean };
   problems: string[];
 } {
   const problems: string[] = [];
   const limits = readLimits(env, problems);
   const abapRelease = value(env, 'SAP_ABAP_RELEASE');
+  const sapGuiLookup = onUnlessOff(env, 'ABAP_DEBUGGER_SAP_GUI_LOOKUP', problems);
   return {
     problems,
-    settings: { language: value(env, 'SAP_LANGUAGE') ?? 'EN', limits, ...(abapRelease ? { abapRelease } : {}) },
+    settings: {
+      language: value(env, 'SAP_LANGUAGE') ?? 'EN',
+      limits,
+      ...(abapRelease ? { abapRelease } : {}),
+      ...(sapGuiLookup ? {} : { sapGuiLookup: false }),
+    },
   };
 }

@@ -15,8 +15,8 @@ import {
   listDebugStatements,
   syncBreakpoints,
 } from '../adt/debugger.js';
-import { resolveFunctionGroup as findFunctionGroup, readSource } from '../adt/repository.js';
 import type { AdtHttpClient } from '../adt/http.js';
+import { resolveFunctionGroup as findFunctionGroup, readSource } from '../adt/repository.js';
 import type { SapConnection } from './connection.js';
 
 /** `line`: SAP refuses lines without a statement, so probe the next few lines too. */

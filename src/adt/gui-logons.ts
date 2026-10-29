@@ -33,7 +33,9 @@ export interface GuiLogon {
 export function parseDataPreview(body: string): Array<Record<string, string>> {
   const rows: Array<Record<string, string>> = [];
   for (const column of asNodes(asNode(parseXml(body).tableData)?.columns)) {
-    const name = attr(asNode(column.metadata) ?? {}, 'name').trim().toUpperCase();
+    const name = attr(asNode(column.metadata) ?? {}, 'name')
+      .trim()
+      .toUpperCase();
     if (!name) continue;
     const data = asNode(column.dataSet)?.data;
     const values = Array.isArray(data) ? data : data === undefined ? [] : [data];

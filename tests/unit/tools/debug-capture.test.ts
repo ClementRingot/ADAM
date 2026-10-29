@@ -308,7 +308,8 @@ describe('abap_debug — a hit', () => {
     expect(calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual(['appserver-rpsxx']);
     // The sessions opened ahead covered both servers: nothing probed after the stop.
     expect(calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful)).toHaveLength(3);
-    // No data preview here (BTP-like), so no SAP GUI server either: the run stopped, so no warning about it.
+    // Pods, not AS ABAP instances (the BTP ABAP Environment): no SAP GUI there, so no lookup and no warning.
+    expect(named(calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
     expect(json).not.toHaveProperty('warnings');
   });
 
@@ -318,8 +319,8 @@ describe('abap_debug — a hit', () => {
       hit: true,
       runByUser: true,
       sessionUser: 'ADMIN',
-      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
-      debuggeeServer: 'appserver-rpsxx',
+      servers: ['sappas_S4D_00', 'sapaas_S4D_01'],
+      debuggeeServer: 'sapaas_S4D_01',
       guiStopsOnlyWhereArmed: true,
     } satisfies FakeSapOptions;
     const externalSyncs = (calls: Call[]) => {
@@ -331,8 +332,8 @@ describe('abap_debug — a hit', () => {
       const fake = installFakeSap({
         ...gui,
         usr41: [
-          { server: 'appserver-t4w2x', time: '080000' },
-          { server: 'appserver-rpsxx', time: '093000' },
+          { server: 'sappas_S4D_00', time: '080000' },
+          { server: 'sapaas_S4D_01', time: '093000' },
         ],
       });
       const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
@@ -340,8 +341,8 @@ describe('abap_debug — a hit', () => {
       expect(json).toMatchObject({
         hit: true,
         attached: true,
-        debuggee: { server: 'appserver-rpsxx' },
-        trigger: { kind: 'none', guiServer: 'appserver-rpsxx' },
+        debuggee: { server: 'sapaas_S4D_01' },
+        trigger: { kind: 'none', guiServer: 'sapaas_S4D_01' },
         release: { released: true },
       });
       expect(json).not.toHaveProperty('warnings');
@@ -350,15 +351,11 @@ describe('abap_debug — a hit', () => {
         "SELECT server, logon_date, logon_time FROM usr41 WHERE bname = 'ADMIN'",
       ]);
       // The probe from the stateless client, then the final set from a session on each server — the SAP GUI's last.
-      expect(externalSyncs(fake.calls).map((c) => c.server)).toEqual([
-        undefined,
-        'appserver-t4w2x',
-        'appserver-rpsxx',
-      ]);
+      expect(externalSyncs(fake.calls).map((c) => c.server)).toEqual([undefined, 'sappas_S4D_00', 'sapaas_S4D_01']);
       // Removed from there too: removing the last breakpoint switches debugging off on the server that removes it.
       const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
       expect(removals.length).toBeGreaterThan(0);
-      expect(removals.every((c) => c.server === 'appserver-rpsxx')).toBe(true);
+      expect(removals.every((c) => c.server === 'sapaas_S4D_01')).toBe(true);
       expect(fake.armedOn()).toBeUndefined();
       // Every session ends: the two attach sessions and the two arming ones.
       expect(
@@ -366,7 +363,7 @@ describe('abap_debug — a hit', () => {
           .filter((c) => c.sessionType === 'stateless')
           .map((c) => c.server)
           .sort(),
-      ).toEqual(['appserver-rpsxx', 'appserver-rpsxx', 'appserver-t4w2x', 'appserver-t4w2x']);
+      ).toEqual(['sapaas_S4D_01', 'sapaas_S4D_01', 'sappas_S4D_00', 'sappas_S4D_00']);
     });
 
     it('says why such a run may not stop when USR41 cannot be read', async () => {
@@ -393,17 +390,50 @@ describe('abap_debug — a hit', () => {
       installFakeSap({
         ...gui,
         usr41: [
-          { server: 'appserver-rpsxx', date: '20261027' },
-          { server: 'appserver-t4w2x', date: '20261028' },
+          { server: 'sapaas_S4D_01', date: '20261027' },
+          { server: 'sappas_S4D_00', date: '20261028' },
         ],
       });
       const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
 
-      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { guiServer: 'appserver-t4w2x' } });
+      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { guiServer: 'sappas_S4D_00' } });
       expect(json).not.toHaveProperty('warnings');
       expect(json?.hint).toContain(
-        "Run from SAP GUI, it stops reliably on application server appserver-t4w2x only (ADMIN's latest SAP GUI logon, which armed the breakpoints last), not on appserver-rpsxx where ADMIN is logged on too; System → Status in SAP GUI names the server.",
+        "Run from SAP GUI, it stops reliably on application server sappas_S4D_00 only (ADMIN's latest SAP GUI logon, which armed the breakpoints last), not on sapaas_S4D_01 where ADMIN is logged on too; System → Status in SAP GUI names the server.",
       );
+    });
+
+    it('never reads USR41 with ABAP_DEBUGGER_SAP_GUI_LOOKUP=false, and says so when nothing stopped', async () => {
+      const fake = installFakeSap({ ...gui, usr41: [{ server: 'sapaas_S4D_01' }] });
+      const { json } = await debug(
+        { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 },
+        { ...createConnection(), sapGuiLookup: false },
+      );
+
+      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
+      expect(json?.trigger).not.toHaveProperty('guiServer');
+      expect(json).not.toHaveProperty('warnings');
+      expect(json?.hint).toContain("does not look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false)");
+      expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
+      // Armed from the stateless client alone, as without SAP GUI; every session ended.
+      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
+      expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(3);
+    });
+
+    it("neither reads USR41 nor mentions SAP GUI on the BTP ABAP Environment's pods", async () => {
+      const fake = installFakeSap({
+        ...gui,
+        servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+        debuggeeServer: 'appserver-rpsxx',
+        usr41: [{ server: 'appserver-rpsxx' }],
+      });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
+
+      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
+      expect(json).not.toHaveProperty('warnings');
+      expect(json?.hint).not.toContain('SAP GUI');
+      expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
+      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
     });
   });
 

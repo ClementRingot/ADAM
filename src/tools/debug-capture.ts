@@ -63,7 +63,7 @@ import {
   type StepUntil,
   type WatchItem,
 } from './debug-follow.js';
-import { type GuiRoute, guiHint, openGuiRoute } from './debug-gui.js';
+import { type GuiRoute, guiHint, openGuiRoute, severalInstances } from './debug-gui.js';
 import type { DebugInput } from './debug-input.js';
 import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
@@ -681,7 +681,7 @@ export class CaptureRun {
     // run as the debugged user too and must stay as few as possible.
     this.ahead = await openAhead(conn, plan, warnings);
     if (plan.kind === 'none') this.gui = await openGuiRoute(conn, user, this.ahead, this.guiWarnings);
-    const multiServer = this.ahead.byServer.size > 1;
+    const multiServer = severalInstances(this.ahead);
     recordArmed(conn.http, identity);
     const armed = await armBreakpoints(
       conn,
@@ -798,7 +798,9 @@ export class CaptureRun {
               user,
               triggerFinished,
               triggerFailure !== undefined,
-              plan.kind === 'none' ? guiHint(user, guiServer, this.gui?.others ?? [], multiServer) : '',
+              plan.kind === 'none'
+                ? guiHint(user, guiServer, this.gui?.others ?? [], multiServer, conn.sapGuiLookup === false)
+                : '',
             ),
           }),
         ),

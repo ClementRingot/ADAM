@@ -171,6 +171,15 @@ describe('BtpConnections', () => {
     const a = await connections.connect(undefined, 'client:a');
     expect(await connections.connect(undefined, 'client:b')).toBe(a);
     expect(a.logonUser).toBe('DEBUGGER');
+    expect(a).not.toHaveProperty('sapGuiLookup');
+    const off = new BtpConnections(
+      { btp, name: 'A4H', destination: basic, perUser: false },
+      {
+        ...settings,
+        sapGuiLookup: false,
+      },
+    );
+    expect((await off.connect(undefined, 'client:a')).sapGuiLookup).toBe(false);
     mockFetch.mockResolvedValueOnce(mockResponse(200, 'ok'));
     await a.http.get('/sap/bc/adt/core/discovery');
     const [, init] = mockFetch.mock.calls[0] as [string, { headers: Record<string, string> }];

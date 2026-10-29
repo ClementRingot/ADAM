@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createConnection, loadConfig } from '../../src/config.js';
+import { createConnection, loadConfig, loadConnectionSettings } from '../../src/config.js';
 
 const SERVICE_KEY = JSON.stringify({
   url: 'https://abc.abap.eu10.hana.ondemand.com',
@@ -121,6 +121,28 @@ describe('loadConfig', () => {
     expect(loadConfig({ ...base, ABAP_DEBUGGER_CALL_SECONDS: '5', ABAP_DEBUGGER_MAX_SESSIONS: '0' }).problems).toEqual([
       'ABAP_DEBUGGER_CALL_SECONDS must be a whole number from 10 to 3600 (got "5").',
       'ABAP_DEBUGGER_MAX_SESSIONS must be a whole number from 1 to 100 (got "0").',
+    ]);
+  });
+
+  it('looks up the SAP GUI server unless ABAP_DEBUGGER_SAP_GUI_LOOKUP says false', () => {
+    const base = { SAP_URL: 'https://sap', SAP_USER: 'u', SAP_PASSWORD: 'p' };
+    const on = loadConfig(base).config;
+    expect(on?.sapGuiLookup).toBe(true);
+    expect(createConnection(on as NonNullable<typeof on>)).not.toHaveProperty('sapGuiLookup');
+    for (const text of ['false', 'OFF', '0', 'no']) {
+      const off = loadConfig({ ...base, ABAP_DEBUGGER_SAP_GUI_LOOKUP: text }).config;
+      expect(off?.sapGuiLookup).toBe(false);
+      expect(createConnection(off as NonNullable<typeof off>).sapGuiLookup).toBe(false);
+    }
+    expect(loadConfig({ ...base, ABAP_DEBUGGER_SAP_GUI_LOOKUP: 'true' }).config?.sapGuiLookup).toBe(true);
+    expect(loadConfig({ ...base, ABAP_DEBUGGER_SAP_GUI_LOOKUP: 'never' }).problems).toEqual([
+      'ABAP_DEBUGGER_SAP_GUI_LOOKUP must be true or false (got "never").',
+    ]);
+    // Over HTTP the same setting reaches every user's connection.
+    expect(loadConnectionSettings({}).settings).not.toHaveProperty('sapGuiLookup');
+    expect(loadConnectionSettings({ ABAP_DEBUGGER_SAP_GUI_LOOKUP: 'false' }).settings.sapGuiLookup).toBe(false);
+    expect(loadConnectionSettings({ ABAP_DEBUGGER_SAP_GUI_LOOKUP: 'maybe' }).problems).toEqual([
+      'ABAP_DEBUGGER_SAP_GUI_LOOKUP must be true or false (got "maybe").',
     ]);
   });
 
