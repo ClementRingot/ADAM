@@ -158,7 +158,8 @@ on real systems.
   on the connected system.
 - **One read beyond the debugger**: so that a run started from SAP GUI stops on a system with several
   application servers, a capture reads your own SAP GUI logons (table USR41) through the ADT data
-  preview, with your authorizations; `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false` turns it off.
+  preview, with your authorizations — before arming and every 5 seconds while it waits;
+  `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false` turns it off.
 - **Always cleaned up**: on every path, errors and timeouts included, the breakpoints and the listener
   are removed and the program is released. If the server itself is killed mid-capture, the next capture
   of the same user removes what was left — and `abap_breakpoints` shows and removes it on request.

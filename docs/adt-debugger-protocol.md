@@ -221,7 +221,14 @@ So with `trigger: "none"`, where the run may come from SAP GUI, the server:
 2. opens one more stateful session on each server it knows, the user's SAP GUI server included
    (`openArmingSessions`, at most 8 probes);
 3. runs the final breakpoint sync from each of them, from the SAP GUI server's session last, and
-   removes the breakpoints from that same session at the end.
+   removes the breakpoints from that same session at the end;
+4. while it waits, reads the logons again every 5 seconds: when the latest is on another server than
+   the one that armed last — a SAP GUI logon opened after the capture started — it opens an arming
+   session there (`openArmingSessionOn`, an attach session first for a server not seen before) and
+   runs the same full sync from it. SAP may renumber the breakpoints: their old ids stay known, for
+   the stops that name them. The reads stop once the wait is over, before anything is attached or
+   removed, after a failed read, and never start while an exception or message breakpoint is armed
+   for the whole user, since the reads themselves could stop at it.
 
 The query runs as the session user and needs that user's authorization to display `USR41` through
 the data preview; a refusal costs a warning, and the capture arms from the stateless client as
@@ -381,8 +388,10 @@ The runs above cover the BTP ABAP Environment, and SAP GUI runs on one S/4HANA s
     watchpoint's stop, how it refuses a variable not visible where the run stands, whether a
     watchpoint on a local stops in other frames, and the condition's semantics (after the change).
 21. **SAP GUI runs, end to end**: a capture through this server (not the experiment scripts) catching a
-    SAP GUI run on the SAP GUI's server; after its removal there, whether debugging stays switched on
-    for the user on the servers that armed before it; with three servers or more; the release.
+    SAP GUI run on the SAP GUI's server, and one from a logon opened while the capture waits; after the
+    removal there, whether debugging stays switched on for the user on the servers that armed before
+    it; whether SAP renumbers breakpoints synced again from another server; with three servers or
+    more; the release.
 22. **USR41 through the data preview**: SAP's answer without authorization for the table or for the
     data preview, and on a release without `/datapreview/freestyle`.
 23. **SAP GUI for HTML**: whether a WebGUI session (a classic transaction opened from the Fiori

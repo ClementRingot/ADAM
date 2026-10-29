@@ -212,7 +212,9 @@ export interface ArmedBreakpoints {
   report: Array<Record<string, unknown>>;
   /** Event breakpoints armed in the run at its first stop (`armInRun`), not for the whole user. */
   inRun: RunEvent[];
-  /** With an `ArmRoute`: the session whose sync armed them last — `disarm` removes them from it. */
+  /** The breakpoints as armed for the user: what `rearmFrom` sends again. */
+  specs: DebugBreakpointSpec[];
+  /** With an `ArmRoute` or `rearmFrom`: the session whose sync armed them last — `disarm` removes them from it. */
   armedFrom?: AdtHttpClient;
 }
 
@@ -501,7 +503,42 @@ export async function armBreakpoints(
       // the refusal stands on its own
     }
   }
-  return { ids: [...armedIds], armed, report, inRun: runEvents, ...(armedFrom ? { armedFrom } : {}) };
+  return {
+    ids: [...armedIds],
+    armed,
+    report,
+    inRun: runEvents,
+    specs: finalSpecs(),
+    ...(armedFrom ? { armedFrom } : {}),
+  };
+}
+
+/**
+ * Arm the same breakpoints again from `http`, a session on another application server — for a SAP
+ * GUI logon that appeared while the capture waits. SAP may renumber them: an old id stays an alias,
+ * and `armedIds` (the cleanup list) takes the new ones; `armed.armedFrom` becomes `http`. Returns the
+ * labels of the breakpoints SAP did not keep this time.
+ */
+export async function rearmFrom(
+  http: AdtHttpClient,
+  identity: DebugIdentity,
+  armed: ArmedBreakpoints,
+  armedIds: string[],
+): Promise<string[]> {
+  const states = await syncBreakpoints(http, identity, armed.specs);
+  const lost: string[] = [];
+  for (const bp of armed.armed) {
+    const id = states.find((state) => state.clientId === bp.clientId)?.id;
+    if (!id) lost.push(bp.label);
+    else if (id !== bp.id) {
+      bp.aliases = [...(bp.aliases ?? []), bp.id];
+      bp.id = id;
+    }
+  }
+  armedIds.splice(0, armedIds.length, ...states.flatMap((state) => (state.id ? [state.id] : [])));
+  armed.ids = [...armedIds];
+  armed.armedFrom = http;
+  return lost;
 }
 
 /** A pending run event that never got set: the run did not stop. */

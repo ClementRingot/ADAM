@@ -63,7 +63,7 @@ import {
   type StepUntil,
   type WatchItem,
 } from './debug-follow.js';
-import { type GuiRoute, guiHint, openGuiRoute, severalInstances } from './debug-gui.js';
+import { type GuiArming, GuiWatch, guiHint, openGuiRoute, severalInstances } from './debug-gui.js';
 import type { DebugInput } from './debug-input.js';
 import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
@@ -565,7 +565,9 @@ export class CaptureRun {
   readonly startedAt = Date.now();
   private ahead: SessionsAhead = { byServer: new Map() };
   /** With trigger "none": where the breakpoints are armed from for the user's SAP GUI. */
-  private gui: GuiRoute | undefined;
+  private readonly gui: GuiArming = { others: [], armers: new Map() };
+  /** With trigger "none" on several AS ABAP instances: reads the SAP GUI logons again while the capture waits. */
+  private guiWatch: GuiWatch | undefined;
   /** What went wrong arming for SAP GUI: reported only when nothing stopped (no SAP GUI on BTP, say). */
   private readonly guiWarnings: string[] = [];
   private listenerStarted = false;
@@ -586,6 +588,8 @@ export class CaptureRun {
   async clearExternal(): Promise<void> {
     if (this.externalCleared) return;
     this.externalCleared = true;
+    // An arming still in flight would leave breakpoints behind the removal.
+    await this.guiWatch?.stop();
     settleArmed(
       this.identity,
       await disarm(this.conn, this.identity, this.armedIds, this.warnings, this.armed?.armedFrom),
@@ -598,7 +602,7 @@ export class CaptureRun {
     this.tornDown = true;
     this.listenAbort.abort();
     await this.clearExternal();
-    for (const session of this.gui?.sessions ?? []) {
+    for (const session of this.gui.armers.values()) {
       await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
     }
     for (const session of this.ahead.byServer.values()) {
@@ -680,7 +684,9 @@ export class CaptureRun {
     // Sessions open BEFORE anything is armed: once breakpoints are armed, this server's own requests
     // run as the debugged user too and must stay as few as possible.
     this.ahead = await openAhead(conn, plan, warnings);
-    if (plan.kind === 'none') this.gui = await openGuiRoute(conn, user, this.ahead, this.guiWarnings);
+    const lookup = plan.kind === 'none' ? await openGuiRoute(conn, user, this.ahead, this.guiWarnings) : undefined;
+    const route = lookup?.route;
+    if (route) for (const [server, session] of route.armers) this.gui.armers.set(server, session);
     const multiServer = severalInstances(this.ahead);
     recordArmed(conn.http, identity);
     const armed = await armBreakpoints(
@@ -689,10 +695,15 @@ export class CaptureRun {
       targets,
       req.events,
       this.armedIds,
-      this.gui?.route,
+      route?.route,
       this.guiWarnings,
     );
     this.armed = armed;
+    // The user's SAP GUI server, when its session armed the breakpoints last: a SAP GUI run stops there.
+    if (route && armed.armedFrom === route.route.last.http) {
+      this.gui.server = route.server;
+      this.gui.others = route.others;
+    }
     if (armed.ids.length === 0) {
       return {
         result: errorResult(
@@ -709,6 +720,26 @@ export class CaptureRun {
     const listen: Promise<ListenSettled> = listenUntil(conn.http, identity, req.timeoutSeconds, {
       signal: this.listenAbort.signal,
     }).catch((error: unknown) => ({ status: 'error' as const, error }));
+    // While it waits, a SAP GUI logon opened since gets the breakpoints armed from its server too. Only
+    // with line breakpoints armed for the user: an exception or message breakpoint armed for the whole
+    // user could stop the reads themselves.
+    if (lookup?.readable && multiServer && armed.armed.every((bp) => bp.kind === 'line')) {
+      this.guiWatch = new GuiWatch({
+        conn,
+        user,
+        identity,
+        ahead: this.ahead,
+        armed,
+        armedIds: this.armedIds,
+        arming: this.gui,
+        warnings: this.guiWarnings,
+        ...(lookup.missed ? { missed: lookup.missed } : {}),
+        everyMs: timings.guiRecheckMs,
+        onArmed: (server) =>
+          context.progress?.(`armed again from application server ${server}, where ${user} logged on to SAP GUI`),
+      });
+      this.guiWatch.start();
+    }
 
     if (plan.kind !== 'none') {
       await sleep(timings.armDelayMs);
@@ -746,6 +777,8 @@ export class CaptureRun {
     } finally {
       if (ticker) clearInterval(ticker);
     }
+    // The wait is over: no more arming, so that the attach and the removal see one set of breakpoints.
+    await this.guiWatch?.stop();
     // A suspended run cannot finish: a trigger that settles first ran without stopping — end the poll.
     const triggerFinished = first.source === 'trigger';
     if (first.source !== 'listener') this.listenAbort.abort();
@@ -753,8 +786,7 @@ export class CaptureRun {
     // Where the capture's own run went (pinned ahead of it): the server the debuggee stops on.
     const triggerServer =
       running && this.ahead.trigger ? contextServer(this.ahead.trigger.sessionContextId) : undefined;
-    // The user's SAP GUI server, when its session armed the breakpoints last: a SAP GUI run stops there.
-    const guiServer = this.gui && armed.armedFrom === this.gui.route.last.http ? this.gui.server : undefined;
+    const guiServer = this.gui.server;
     const base: CaptureBase = {
       user,
       breakpoints: armed.report,
@@ -799,7 +831,13 @@ export class CaptureRun {
               triggerFinished,
               triggerFailure !== undefined,
               plan.kind === 'none'
-                ? guiHint(user, guiServer, this.gui?.others ?? [], multiServer, conn.sapGuiLookup === false)
+                ? guiHint(user, {
+                    ...(guiServer ? { armedServer: guiServer } : {}),
+                    others: this.gui.others,
+                    multiServer,
+                    lookupOff: conn.sapGuiLookup === false,
+                    watched: this.guiWatch !== undefined,
+                  })
                 : '',
             ),
           }),

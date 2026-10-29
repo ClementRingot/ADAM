@@ -105,8 +105,9 @@ Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP
 reliably only on the server whose session armed the breakpoints last; HTTP runs, such as a Fiori app's
 requests, stop on any server. So with `trigger: "none"` the capture looks up your SAP GUI's server —
 your latest SAP GUI logon, read from table USR41 through the ADT data preview — and arms the breakpoints
-from a session on each server, that one last. Be logged on to SAP GUI before the capture starts, and run
-the code there. The result's `trigger.guiServer` names the server; when nothing stopped, the hint says
+from a session on each server, that one last. Log on to SAP GUI before the capture starts or while it
+waits — it reads your logons again every 5 seconds and arms from a new logon's server — and run the
+code there. The result's `trigger.guiServer` names the server; when nothing stopped, the hint says
 where a SAP GUI run stops (System → Status in SAP GUI shows your session's server). The lookup needs
 your authorization to display USR41: without it, a warning says so and the capture arms as before. It
 is skipped where there is no SAP GUI (the BTP ABAP Environment) and with

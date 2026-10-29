@@ -23,8 +23,9 @@ killed may still be armed: `abap_breakpoints` with `action: "list"` shows them, 
 
 **A run started from SAP GUI does not stop, while the same code run from a Fiori app does.** With
 several application servers, a SAP GUI run stops reliably only on the server that armed the breakpoints
-last. Be logged on to SAP GUI before the capture starts: the capture then finds your SAP GUI's server
-(your latest logon) and arms from it last, and its result names it (`trigger.guiServer`). System →
+last. Be logged on to SAP GUI when the capture starts, or log on while it waits: the capture finds your
+SAP GUI's server (your latest logon, read again every 5 seconds) and arms from it last, and its result
+names it (`trigger.guiServer`). Run the code a few seconds after a new logon. System →
 Status in SAP GUI shows which server your session runs on. A warning says when the capture could not
 look the server up, most often without authorization to display table USR41 through the data preview;
 with several SAP GUI logons, run the code in the one on the server the hint names.

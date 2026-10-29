@@ -90,6 +90,8 @@ export const timings = {
   progressIntervalMs: 2000,
   /** While waiting for the first stop, a progress notification this often. */
   waitTickMs: 5000,
+  /** While a trigger-"none" capture waits on several AS ABAP instances: how often it reads the user's SAP GUI logons again. */
+  guiRecheckMs: 5000,
 };
 
 /** Override the capture's fixed delays and margins in unit tests. */

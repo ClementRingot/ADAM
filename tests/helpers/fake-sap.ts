@@ -130,6 +130,9 @@ export interface Call {
   server?: string;
 }
 
+/** What the ADT data preview answers for USR41: the user's SAP GUI logons, or an HTTP status. */
+export type Usr41Answer = Array<{ server: string; date?: string; time?: string }> | number;
+
 export interface FakeSapOptions {
   /** The listener catches the debuggee (otherwise it waits until aborted, or times out at once). */
   hit?: boolean;
@@ -153,8 +156,8 @@ export interface FakeSapOptions {
   /** trigger="none": the user's own run reaches the breakpoint. */
   runByUser?: boolean;
   /** The user's SAP GUI logons (USR41, read through the ADT data preview); a number: the preview answers that
-   *  HTTP status. Unset: no data preview (404). */
-  usr41?: Array<{ server: string; date?: string; time?: string }> | number;
+   *  HTTP status; a function: asked at each read (a logon that appears later). Unset: no data preview (404). */
+  usr41?: Usr41Answer | (() => Usr41Answer);
   /** As on S/4HANA: the user's run (`runByUser`, a SAP GUI run) stops only on the server whose session armed the
    *  external breakpoints last — a stateless sync names no server. Removing the last one there switches it off. */
   guiStopsOnlyWhereArmed?: boolean;
@@ -506,8 +509,9 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       return mockResponse(200, '');
     }
     if (path === '/sap/bc/adt/datapreview/freestyle' && method === 'POST' && options.usr41 !== undefined) {
-      if (typeof options.usr41 === 'number') return mockResponse(options.usr41, 'No authorization for table USR41');
-      const rows = options.usr41;
+      const usr41 = typeof options.usr41 === 'function' ? options.usr41() : options.usr41;
+      if (typeof usr41 === 'number') return mockResponse(usr41, 'No authorization for table USR41');
+      const rows = usr41;
       const column = (name: string, values: string[]) =>
         `<dataPreview:columns><dataPreview:metadata dataPreview:name="${name}" dataPreview:type="C" dataPreview:description="${name}"/>${
           values.length > 0

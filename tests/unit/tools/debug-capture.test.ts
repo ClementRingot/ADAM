@@ -5,7 +5,7 @@
  * The SAP answers are REFERENCE-DERIVED (abap-adt-api / vibing-steampunk shapes, see
  * docs/adt-debugger-protocol.md), not live captures.
  */
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { callTool } from '../../../src/server.js';
 import { setDebugTimingsForTests, setResultBudgetForTests } from '../../../src/tools/debug-capture.js';
 import { DEFAULT_LIMITS } from '../../../src/tools/debug-limits.js';
@@ -434,6 +434,88 @@ describe('abap_debug — a hit', () => {
       expect(json?.hint).not.toContain('SAP GUI');
       expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
       expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
+    });
+
+    describe('while the capture waits, it reads the SAP GUI logons again', () => {
+      const reads = (calls: Call[]) => named(calls, 'POST', '/sap/bc/adt/datapreview/freestyle').length;
+      const externalPosts = (calls: Call[]) =>
+        named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints').filter((c) => !c.body.includes('scope="debugger"'));
+      beforeAll(() => setDebugTimingsForTests({ guiRecheckMs: 20 }));
+      afterAll(() => setDebugTimingsForTests({ guiRecheckMs: 5000 }));
+
+      it('arms as before without a SAP GUI logon, and says none appeared', async () => {
+        const fake = installFakeSap({ ...gui, usr41: [] });
+        const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
+
+        expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
+        expect(json?.trigger).not.toHaveProperty('guiServer');
+        expect(json).not.toHaveProperty('warnings');
+        expect(json?.hint).toContain(
+          "the capture arms from the server of ADMIN's latest SAP GUI logon, read again every few seconds while it waits, and found no SAP GUI logon to arm from.",
+        );
+        // Armed from the stateless client alone, as without SAP GUI; no arming session opened.
+        expect(externalPosts(fake.calls).every((c) => c.server === undefined)).toBe(true);
+        expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(3);
+        // Read before arming, then again while it waited — and no more once the capture returned.
+        const done = reads(fake.calls);
+        expect(done).toBeGreaterThan(2);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(reads(fake.calls)).toBe(done);
+      });
+
+      it('arms again from the server of a SAP GUI logon opened meanwhile, so that run stops', async () => {
+        let read = 0;
+        const fake = installFakeSap({
+          ...gui,
+          usr41: () => (++read < 3 ? [] : [{ server: 'sapaas_S4D_01' }]),
+        });
+        const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 5 });
+
+        expect(json).toMatchObject({
+          hit: true,
+          attached: true,
+          debuggee: { server: 'sapaas_S4D_01' },
+          trigger: { kind: 'none', guiServer: 'sapaas_S4D_01' },
+          release: { released: true },
+        });
+        expect(json).not.toHaveProperty('warnings');
+        // The probe and the narrowing from the stateless client, then the same set from a session on that server.
+        expect(externalPosts(fake.calls).map((c) => c.server)).toEqual([undefined, undefined, 'sapaas_S4D_01']);
+        // Removed from there: that switches debugging off on the server that armed last.
+        const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
+        expect(removals.length).toBeGreaterThan(0);
+        expect(removals.every((c) => c.server === 'sapaas_S4D_01')).toBe(true);
+        expect(fake.armedOn()).toBeUndefined();
+        // Every session ends: the two attach sessions, the pair's second one and the arming one.
+        expect(
+          fake.calls
+            .filter((c) => c.sessionType === 'stateless')
+            .map((c) => c.server)
+            .sort(),
+        ).toEqual(['sapaas_S4D_01', 'sapaas_S4D_01', 'sappas_S4D_00', 'sappas_S4D_00']);
+      });
+
+      it('stops reading after a failed read, and says so', async () => {
+        let read = 0;
+        const fake = installFakeSap({ ...gui, usr41: () => (++read === 1 ? [] : 403) });
+        const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
+
+        expect(json).toMatchObject({ hit: false, reason: 'timeout' });
+        expect(json?.warnings).toEqual([
+          expect.stringContaining("Stopped reading SAP user ADMIN's SAP GUI logons while the capture waited ("),
+        ]);
+        expect(reads(fake.calls)).toBe(2);
+      });
+
+      it('reads them no more while an exception breakpoint is armed for the whole user', async () => {
+        const fake = installFakeSap({ ...gui, usr41: [] });
+        const { json } = await debug({ exceptionClass: 'CX_SY_ZERODIVIDE', trigger: 'none', timeoutSeconds: 1 });
+
+        expect(json).toMatchObject({ hit: false, reason: 'timeout' });
+        // Its own reads could stop at that exception: the one lookup before arming only.
+        expect(reads(fake.calls)).toBe(1);
+        expect(json?.hint).toContain('be logged on to SAP GUI when the capture starts');
+      });
     });
   });
 

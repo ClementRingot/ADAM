@@ -19,6 +19,7 @@ import {
   findListenerConflict,
   listDebugStatements,
   listenForDebuggee,
+  openArmingSessionOn,
   openArmingSessions,
   openSessionOnServer,
   openSessionsAhead,
@@ -477,6 +478,38 @@ describe("the debuggee's application server", () => {
     await expect(openArmingSessions(broken.http, ahead, 'appserver-b')).rejects.toThrow(AdtApiError);
     expect(trigger.endStatefulSession).toHaveBeenCalledTimes(1);
     expect(ahead.trigger).toBeUndefined();
+  });
+
+  it('opens an arming session on the server a SAP GUI logon appeared on, an attach session first there', async () => {
+    const { http, sessions, ended } = balancedSap(['appserver-a', 'appserver-b']);
+    const ahead = { byServer: new Map([['APPSERVER-A', {} as AdtHttpClient]]) };
+    const armers = new Map<string, AdtHttpClient>();
+    const session = await openArmingSessionOn(http, ahead, 'Appserver-B', armers);
+    expect(session).toBe(sessions[3]);
+    // B was new: its first session is its attach session, its second the arming one; the others end.
+    expect([...ahead.byServer.entries()]).toEqual([
+      ['APPSERVER-A', {}],
+      ['APPSERVER-B', sessions[1]],
+    ]);
+    expect([...armers.entries()]).toEqual([['APPSERVER-B', sessions[3]]]);
+    expect(ended()).toEqual([sessions[0], sessions[2]]);
+    // Asked again: the same session, nothing probed.
+    expect(await openArmingSessionOn(http, ahead, 'appserver-b', armers)).toBe(sessions[3]);
+    expect(sessions).toHaveLength(4);
+  });
+
+  it('opens no arming session after maxProbes elsewhere, or when SAP names no server', async () => {
+    const elsewhere = balancedSap(['appserver-a']);
+    const ahead = { byServer: new Map([['APPSERVER-A', {} as AdtHttpClient]]) };
+    expect(await openArmingSessionOn(elsewhere.http, ahead, 'appserver-b', new Map(), { maxProbes: 2 })).toBe(
+      undefined,
+    );
+    expect(elsewhere.ended()).toEqual(elsewhere.sessions);
+    expect(elsewhere.sessions).toHaveLength(2);
+
+    const unnamed = balancedSap([undefined]);
+    expect(await openArmingSessionOn(unnamed.http, { byServer: new Map() }, 'appserver-b', new Map())).toBe(undefined);
+    expect(unnamed.ended()).toEqual([unnamed.sessions[0]]);
   });
 
   it('takes the first session as is when the debuggee names no server', async () => {

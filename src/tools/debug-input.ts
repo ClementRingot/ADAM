@@ -165,7 +165,7 @@ export const DEBUG_INPUT_SHAPE = {
     .enum(['unittest', 'http', 'none'])
     .optional()
     .describe(
-      'What runs the code. unittest (default): the harmless ABAP Unit tests of triggerName, else of type + name, else of the first breakpoint object (FUNC: its function group). http: a GET of url. none: the capture only waits timeoutSeconds while you run the code yourself (Fiori app, SE38, Postman) as the SAME SAP user; from SAP GUI, be logged on there before the capture starts.',
+      "What runs the code. unittest (default): the harmless ABAP Unit tests of triggerName, else of type + name, else of the first breakpoint object (FUNC: its function group). http: a GET of url. none: the capture only waits timeoutSeconds while you run the code yourself (Fiori app, SE38, Postman) as the SAME SAP user; from SAP GUI, run it a few seconds after the capture started (it arms from your SAP GUI logon's server, a new logon included).",
     ),
   triggerName: z
     .string()

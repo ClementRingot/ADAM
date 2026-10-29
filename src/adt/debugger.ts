@@ -569,6 +569,35 @@ export async function openArmingSessions(
   return armers;
 }
 
+/**
+ * The arming session on application server `wanted`, from `armers` (keyed upper-case) or opened and
+ * added there — for a SAP GUI logon that appears while a capture waits. A server seen for the first
+ * time gets its attach session in `ahead.byServer` first. Probes at most `maxProbes` new sessions and
+ * ends those it keeps nowhere; undefined when none landed there or SAP names no server.
+ */
+export async function openArmingSessionOn(
+  http: AdtHttpClient,
+  ahead: SessionsAhead,
+  wanted: string,
+  armers: Map<string, AdtHttpClient>,
+  options: AdtRequestOptions & { maxProbes?: number } = {},
+): Promise<AdtHttpClient | undefined> {
+  const { maxProbes = MAX_ARMING_PROBES, ...requestOptions } = options;
+  const target = wanted.trim().toUpperCase();
+  for (let probes = 0; probes < maxProbes && !armers.has(target); probes++) {
+    const { session, server } = await probeSession(http, requestOptions);
+    const key = server?.toUpperCase();
+    if (!key) {
+      await endSession(session, requestOptions);
+      break;
+    }
+    if (!ahead.byServer.has(key)) ahead.byServer.set(key, session);
+    else if (key === target) armers.set(key, session);
+    else await endSession(session, requestOptions);
+  }
+  return armers.get(target);
+}
+
 export interface PinnedSession {
   http: AdtHttpClient;
   /** The server SAP pinned the session to; undefined when it did not say. */
