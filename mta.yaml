@@ -92,6 +92,8 @@ modules:
       ABAP_DEBUGGER_CALL_SECONDS: "50"
       ABAP_DEBUGGER_MAX_CAPTURES: "4"
       ABAP_DEBUGGER_MAX_SESSIONS: "4"
+      # Read the user's SAP GUI logons (USR41) so that a run started from SAP GUI stops; "false" never does.
+      ABAP_DEBUGGER_SAP_GUI_LOOKUP: "true"
     provides:
       - name: abap-debugger-api
         properties:

@@ -101,6 +101,17 @@ before the program is released.
 
 Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP trigger only reads.
 
+**Runs started from SAP GUI.** On a system with several application servers, a SAP GUI run stops
+reliably only on the server whose session armed the breakpoints last; HTTP runs, such as a Fiori app's
+requests, stop on any server. So with `trigger: "none"` the capture looks up your SAP GUI's server —
+your latest SAP GUI logon, read from table USR41 through the ADT data preview — and arms the breakpoints
+from a session on each server, that one last. Be logged on to SAP GUI before the capture starts, and run
+the code there. The result's `trigger.guiServer` names the server; when nothing stopped, the hint says
+where a SAP GUI run stops (System → Status in SAP GUI shows your session's server). The lookup needs
+your authorization to display USR41: without it, a warning says so and the capture arms as before. It
+is skipped where there is no SAP GUI (the BTP ABAP Environment) and with
+`ABAP_DEBUGGER_SAP_GUI_LOOKUP=false`. Details in [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
+
 ### Result
 
 JSON with:
@@ -112,7 +123,8 @@ JSON with:
 - `debuggee` — program, line, application server;
 - `stops` — each with `at` (the breakpoint), `stoppedAt` (the position), the call `stack` on a
   breakpoint's first stop, `variables`, and its `steps` or `trace`;
-- `release`, `trigger` (the unit-test summary or HTTP status) and `warnings`.
+- `release`, `trigger` (the unit-test summary or HTTP status; with `none`, `guiServer`, the server a
+  SAP GUI run stops on) and `warnings`.
 
 Without a stop, the result carries the `reason` (timeout, trigger finished first, conflict) and a `hint`.
 
@@ -368,4 +380,5 @@ abap_debug_session {action: "end"}
 only from the server the program stopped on. The capture opens sessions before the run until two land
 on the same server, and runs its unit tests on one of them, so the stop and the attach meet. With
 `trigger: "http"` or `"none"` it can attach only where it already has a session; when it cannot, the
-result says which server was missed — retry.
+result says which server was missed — retry. A run started from SAP GUI must also be armed from its
+own server: see [Triggers](#triggers).

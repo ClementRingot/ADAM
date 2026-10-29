@@ -20,15 +20,19 @@ the BTP ABAP Environment and on-premise 7.50, 7.58 and 8.16.
 
 **Why it remains.** On the BTP ABAP Environment this server itself has run conditions, long step runs,
 statement kinds and an interactive session ([what was seen](adt-debugger-protocol.md#8-observed-live)).
-No on-premise release has been tried yet, and the later additions were observed nowhere: answers that
-outlast a call (`wait`), the release on a non-exclusive attach, the removal of leftovers
-(`abap_breakpoints`), and the wider search and source types.
+On-premise, only SAP GUI runs on one S/4HANA system were tried, with experiment scripts rather than
+this server ([SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs)). The later additions were observed
+nowhere: answers that outlast a call (`wait`), the release on a non-exclusive attach, the removal of
+leftovers (`abap_breakpoints`), the wider search and source types, and the SAP GUI route itself.
 
 **Resume with.** On the BTP trial after a redeploy: a capture with `trigger: "none"` that waits past
 50 seconds and is picked up with `wait`; `abap_breakpoints` `list` during a capture and `delete` after a
 killed one; `abap_search` on a service binding's name; `abap_source` from `SRVB` to the behavior pool.
 Then Basic authentication on an on-premise system — one class with unit tests, one loop, one RAP
-behavior pool with `trigger: "none"`. Record SAP's answers as test fixtures.
+behavior pool with `trigger: "none"`; on S/4HANA, a capture caught from SAP GUI on each server, and
+what stays switched on on the other servers after the removal
+([live checks 21-23](adt-debugger-protocol.md#9-live-checks-still-owed)). Record SAP's answers as test
+fixtures.
 
 <a id="live-2"></a>
 ## LIVE-2 — First deployment on SAP BTP

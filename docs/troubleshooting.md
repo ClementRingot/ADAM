@@ -21,6 +21,14 @@ minutes — `abap_breakpoints` with `action: "delete"` and `listener: true` remo
 killed may still be armed: `abap_breakpoints` with `action: "list"` shows them, `"delete"` removes them
 (the next capture of the user removes them too).
 
+**A run started from SAP GUI does not stop, while the same code run from a Fiori app does.** With
+several application servers, a SAP GUI run stops reliably only on the server that armed the breakpoints
+last. Be logged on to SAP GUI before the capture starts: the capture then finds your SAP GUI's server
+(your latest logon) and arms from it last, and its result names it (`trigger.guiServer`). System →
+Status in SAP GUI shows which server your session runs on. A warning says when the capture could not
+look the server up, most often without authorization to display table USR41 through the data preview;
+with several SAP GUI logons, run the code in the one on the server the hint names.
+
 **The attach fails on a system with several application servers.** With `trigger: "http"` or `"none"`
 the program may stop on a server where the capture holds no session; the result names the server it
 missed. Retry, or use the unit-test trigger, which runs where the capture can attach.

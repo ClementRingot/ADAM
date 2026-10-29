@@ -156,6 +156,9 @@ on real systems.
 - **No takeover**: if Eclipse, VS Code or another capture debugs the same user, the call refuses.
 - **Harmless triggers**: ABAP Unit runs harmless tests only; the HTTP trigger only reads an OData path
   on the connected system.
+- **One read beyond the debugger**: so that a run started from SAP GUI stops on a system with several
+  application servers, a capture reads your own SAP GUI logons (table USR41) through the ADT data
+  preview, with your authorizations; `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false` turns it off.
 - **Always cleaned up**: on every path, errors and timeouts included, the breakpoints and the listener
   are removed and the program is released. If the server itself is killed mid-capture, the next capture
   of the same user removes what was left — and `abap_breakpoints` shows and removes it on request.
@@ -188,9 +191,11 @@ Connector for an on-premise system, a user token for the BTP ABAP Environment. S
 
 Version 0.1. On the SAP BTP ABAP Environment, the server has run live — over HTTP, as a remote
 connector: attaching across application servers, several stops in one run, steps, conditions, long
-step runs, statement kinds and an interactive session. The newest parts — answers that outlast a call,
-watchpoints, the removal of leftovers, the wider search — are tested against a simulated SAP so far,
-like every on-premise release (7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
+step runs, statement kinds and an interactive session. On an S/4HANA system, experiments with its
+modules showed where a run started from SAP GUI stops across application servers. The newest parts —
+answers that outlast a call, watchpoints, the removal of leftovers, the wider search, the SAP GUI
+route — are tested against a simulated SAP so far, like every on-premise release (7.50, 7.58, 8.16):
+see the [roadmap](docs/roadmap.md).
 
 ## Development
 

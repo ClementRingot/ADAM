@@ -187,6 +187,7 @@ override a property, never remove one).
 | `ABAP_DEBUGGER_IDLE_SECONDS`, `ABAP_DEBUGGER_SESSION_SECONDS` | `120`, `900` | Interactive session limits |
 | `ABAP_DEBUGGER_CALL_SECONDS` | `50` | A call answers within this time; longer work goes on in the background |
 | `ABAP_DEBUGGER_MAX_CAPTURES`, `ABAP_DEBUGGER_MAX_SESSIONS` | `4`, `4` | Captures and sessions at once on the server |
+| `ABAP_DEBUGGER_SAP_GUI_LOOKUP` | `true` | Read the user's SAP GUI logons (USR41) so that a run started from SAP GUI stops ([SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs)) |
 | `ABAP_DEBUGGER_DCR_SIGNING_SECRET` | XSUAA client secret | Signs the MCP clients' registrations (set with `cf set-env`) |
 | `ABAP_DEBUGGER_API_KEYS` | — | Comma-separated API keys (20+ characters), besides XSUAA |
 | `ABAP_DEBUGGER_ALLOWED_ORIGINS` | — | CORS origins of browser MCP clients |

@@ -7,8 +7,9 @@ what has been observed on real systems. It is the reference behind
 
 **Evidence.** The contract below is corroborated by three independent clients that drive the same
 SAP resources, two of them with recorded live verification. **L** marks what was observed live on
-the SAP BTP ABAP Environment in October 2026, with the capture engine this server is built on.
-Everything else still has to be confirmed release by release: see [§9](#9-live-checks-still-owed).
+the SAP BTP ABAP Environment in October 2026, with the capture engine this server is built on, **G**
+what was observed with SAP GUI on an S/4HANA system. Everything else still has to be confirmed
+release by release: see [§9](#9-live-checks-still-owed).
 
 | | Source |
 |---|---|
@@ -16,6 +17,7 @@ Everything else still has to be confirmed release by release: see [§9](#9-live-
 | **V** | [vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) — `client/src/adt/debugger/` (`debugListener.ts`, `debugService.ts`, `breakpointManager.ts`, `variableManager.ts`) |
 | **S** | [vibing-steampunk](https://github.com/oisee/vibing-steampunk) — `pkg/adt/debugger.go`, `pkg/saprfc/adtdebug.go`, and the live notes of its README |
 | **L** | Live, SAP BTP ABAP Environment trial, October 2026 |
+| **G** | Live, S/4HANA on-premise with two application servers, October 2026: SAP GUI runs, with experiment scripts on this server's modules (not kept; release not recorded) |
 
 ## Nothing to install on SAP
 
@@ -194,6 +196,40 @@ another cookie shape, no `systeminformation` on 7.50), the attach goes wherever 
 On BTP the servers are pods whose names change over time (`appserver-t4w2x` and `-rpsxx`, later
 `-w4krn`, L); the server discovers them at every run.
 
+### SAP GUI runs
+
+Where the breakpoints are armed from matters for a run started from SAP GUI (G):
+
+- External breakpoints are the user's on every server, and HTTP runs — a Fiori app's requests, a REST
+  client's — stop on either server, whichever session armed them.
+- A **SAP GUI dialog run stops reliably only on the server whose session armed the breakpoints last**:
+  arming switches debugging on for the user on that server alone. The stateless client's sync lands
+  wherever the load balancer sends it.
+- Removing the last breakpoint switches debugging off only on the server that removes it.
+- SAP records one `USR41` row per SAP GUI logon — `SERVER`, `LOGON_DATE`, `LOGON_TIME` — and ADT's own
+  sessions leave none. `SERVER` is the instance name SM51 shows (`<host>_<SID>_<nr>`), the name a
+  `sap-contextid` cookie carries.
+
+So with `trigger: "none"`, where the run may come from SAP GUI, the server:
+
+1. reads the user's `USR41` rows through the ADT data preview — `POST
+   /sap/bc/adt/datapreview/freestyle?rowNumber=100`, `Content-Type: text/plain`, `Accept:
+   application/xml, application/vnd.sap.adt.datapreview.table.v1+xml`, body `SELECT server, logon_date,
+   logon_time FROM usr41 WHERE bname = '<USER>'` — and takes the latest logon's server. The answer lists
+   the columns, each with its values in row order (`tableData` → `columns` → `metadata name`, `dataSet`
+   → `data`);
+2. opens one more stateful session on each server it knows, the user's SAP GUI server included
+   (`openArmingSessions`, at most 8 probes);
+3. runs the final breakpoint sync from each of them, from the SAP GUI server's session last, and
+   removes the breakpoints from that same session at the end.
+
+The query runs as the session user and needs that user's authorization to display `USR41` through
+the data preview; a refusal costs a warning, and the capture arms from the stateless client as
+before. It is sent only when a server SAP names is an AS ABAP instance (`<host>_<SID>_<nr>`): the BTP
+ABAP Environment's pods have no SAP GUI. `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false` turns it off. With
+SAP GUI logons on several servers, only the latest one's server is armed last, and the hint of a run
+that did not stop names the others.
+
 ## 6. Who is debugged
 
 Always the session's own logon user — never a name from the model, a tool argument or a token claim:
@@ -291,9 +327,13 @@ With this server, deployed over HTTP and reached as a remote MCP connector, on t
   captures waiting for their stop. Each call now answers within `ABAP_DEBUGGER_CALL_SECONDS` and the
   rest goes on in the background.
 
+On an S/4HANA on-premise system with two application servers (October 2026), experiments with this
+server's modules established where a run started from SAP GUI stops: see
+[SAP GUI runs](#sap-gui-runs).
+
 ## 9. Live checks still owed
 
-The runs above cover the BTP ABAP Environment only. Still to check
+The runs above cover the BTP ABAP Environment, and SAP GUI runs on one S/4HANA system. Still to check
 ([LIVE-1](roadmap.md#live-1), [LIVE-2](roadmap.md#live-2), [WATCH-1](roadmap.md#watch-1)):
 
 1. **On-premise 7.58 and 8.16**: `trigger: "unittest"` on a class with a line breakpoint — a stop, the
@@ -340,6 +380,13 @@ The runs above cover the BTP ABAP Environment only. Still to check
 20. **Watchpoints**: the create answer's shape, the `kind` SAP names in `reachedBreakpoints` at a
     watchpoint's stop, how it refuses a variable not visible where the run stands, whether a
     watchpoint on a local stops in other frames, and the condition's semantics (after the change).
+21. **SAP GUI runs, end to end**: a capture through this server (not the experiment scripts) catching a
+    SAP GUI run on the SAP GUI's server; after its removal there, whether debugging stays switched on
+    for the user on the servers that armed before it; with three servers or more; the release.
+22. **USR41 through the data preview**: SAP's answer without authorization for the table or for the
+    data preview, and on a release without `/datapreview/freestyle`.
+23. **SAP GUI for HTML**: whether a WebGUI session (a classic transaction opened from the Fiori
+    launchpad) leaves a `USR41` row, and whether its runs behave as SAP GUI's or as HTTP runs.
 
 ## What the server deliberately leaves out
 
