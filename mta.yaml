@@ -50,6 +50,7 @@ modules:
       # installs the runtime dependencies; `prepare` then keeps the prebuilt dist/.
       ignore:
         - .env*
+        - "*.env"
         - .npmrc
         - "*key*.json"
         - cookie*
