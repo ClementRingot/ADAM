@@ -20,7 +20,7 @@ Lines are always numbered as `abap_source` shows the **active** source.
    of taking the session over.
 3. **Run.** The trigger runs the code: the object's harmless ABAP Unit tests, an OData `GET`, or
    nothing (`trigger: "none"`) while you run it yourself — a Fiori app, a report — as the same SAP user.
-4. **Follow.** When the program stops, the capture attaches from the application server the program
+4. **Follow.** When the program stops, the capture attaches on the application server the program
    waits on, records the stop (position, call stack, variables, steps), retires a breakpoint once it
    has made its `hits`, and continues to the next stop of the **same run**. If SAP can only attach in
    non-exclusive mode — every work process for exclusive debugging taken — each debugger step would
@@ -102,16 +102,17 @@ before the program is released.
 Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP trigger only reads.
 
 **Runs started from SAP GUI.** On a system with several application servers, a SAP GUI run stops
-reliably only on the server whose session armed the breakpoints last; HTTP runs, such as a Fiori app's
+reliably only on the server where the breakpoints were armed last; HTTP runs, such as a Fiori app's
 requests, stop on any server. So with `trigger: "none"` the capture looks up your SAP GUI's server —
 your latest SAP GUI logon, read from table USR41 through the ADT data preview — and arms the breakpoints
-from a session on each server, that one last. Log on to SAP GUI before the capture starts or while it
-waits — it reads your logons again every 5 seconds and arms from a new logon's server — and run the
-code there. The result's `trigger.guiServer` names the server; when nothing stopped, the hint says
-where a SAP GUI run stops (System → Status in SAP GUI shows your session's server). The lookup needs
-your authorization to display USR41: without it, a warning says so and the capture arms as before. It
-is skipped where there is no SAP GUI (the BTP ABAP Environment) and with
-`ABAP_DEBUGGER_SAP_GUI_LOOKUP=false`. Details in [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
+there last, from a session SAP routes to that server. Log on to SAP GUI before the capture starts or
+while it waits — it reads your logons again every 5 seconds and arms on a new logon's server — and run
+the code there. This works the same with `interactive: true`. The result's `trigger.guiServer` names
+the server; when nothing stopped, the hint says where a SAP GUI run stops (System → Status in SAP GUI
+shows your session's server). The lookup needs your authorization to display USR41: without it, a
+warning says so and the capture arms as before. It is skipped where there is no SAP GUI (the BTP ABAP
+Environment) and with `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false`. Details in
+[SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
 
 ### Result
 
@@ -377,9 +378,12 @@ abap_debug_session {action: "end"}
   call waits for the first stop or records stops and steps — some clients keep a long call alive on
   them.
 
-**Several application servers** (the BTP ABAP Environment and larger on-premise systems): SAP attaches
-only from the server the program stopped on. The capture opens sessions before the run until two land
-on the same server, and runs its unit tests on one of them, so the stop and the attach meet. With
-`trigger: "http"` or `"none"` it can attach only where it already has a session; when it cannot, the
-result says which server was missed — retry. A run started from SAP GUI must also be armed from its
-own server: see [Triggers](#triggers).
+**Several application servers** (the BTP ABAP Environment and larger on-premise systems): the attach
+must run on the server the program stopped on, whichever trigger ran it. The capture's debugger session
+names that server on each of its requests (`X-sap-adt-server-instance`), and SAP runs them there,
+forwarded over RFC from wherever the load balancer put the session — no server is searched for. One
+harmless request first shows that SAP does; where it does not (an older release, or SAP cannot reach
+the server — the RFC needs the `S_RFC` authorization for `SADT_REST` that Eclipse ADT needs too), the
+capture sends no attach, which would fail and leave the program unattachable, and says why. A run
+started from SAP GUI must also be armed on its own server: see [Triggers](#triggers). Details in
+[Reaching the debuggee's application server](adt-debugger-protocol.md#5-reaching-the-debuggees-application-server).

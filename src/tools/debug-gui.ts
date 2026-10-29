@@ -1,50 +1,52 @@
 /**
  * SAP GUI runs on a system with several application servers (trigger "none"). External breakpoints
- * are the user's on every server, but a SAP GUI dialog run stops reliably only on the server whose
- * session armed them last: arming switches debugging on for the user on that server alone (seen live
- * on S/4HANA). So the capture looks up the user's SAP GUI server — their latest SAP GUI logon — and
- * arms from one session on each server it knows, that one last; while it waits, it reads the logons
- * again and arms from a later logon's server (`GuiWatch`). HTTP runs (a Fiori app, Postman) stop on
- * any server either way. See docs/adt-debugger-protocol.md ("SAP GUI runs").
+ * are the user's on every server, but a SAP GUI dialog run stops reliably only on the server where
+ * they were armed last: arming switches debugging on for the user on that server alone (seen live on
+ * S/4HANA). So the capture looks up the user's SAP GUI server — their latest SAP GUI logon — and arms
+ * the breakpoints there, from a session SAP routes to that server; while it waits, it reads the logons
+ * again and arms on a later logon's server (`GuiWatch`). HTTP runs (a Fiori app, Postman) stop on any
+ * server either way. See docs/adt-debugger-protocol.md ("SAP GUI runs").
  *
- * Only where a SAP GUI can be: when SAP names an AS ABAP instance among its servers (the BTP ABAP
- * Environment's pods have no SAP GUI), and unless ABAP_DEBUGGER_SAP_GUI_LOOKUP=false.
+ * Only where a SAP GUI can be: not on the BTP ABAP Environment, whose servers are pods, and unless
+ * ABAP_DEBUGGER_SAP_GUI_LOOKUP=false.
  */
 
 import {
-  contextServer,
+  answeringServer,
+  checkRoute,
   type DebugIdentity,
   debuggerErrorText,
   endSession,
-  openArmingSessionOn,
-  openArmingSessions,
-  type SessionsAhead,
+  openRoutedSession,
 } from '../adt/debugger.js';
 import { type GuiLogon, readGuiLogons } from '../adt/gui-logons.js';
-import type { AdtHttpClient } from '../adt/http.js';
+import type { AdtHttpClient, AdtRequestOptions } from '../adt/http.js';
 import type { SapConnection } from './connection.js';
-import { type ArmedBreakpoints, type ArmingSession, type ArmRoute, rearmFrom } from './debug-arm.js';
-import { AHEAD_BUDGET_MS } from './debug-limits.js';
+import { type ArmedBreakpoints, rearmFrom } from './debug-arm.js';
+import { SETUP_BUDGET_MS } from './debug-limits.js';
 
-/** Where the capture arms from for the user's SAP GUI, and the sessions that do it. */
+/** Where the capture arms for the user's SAP GUI, and the session that does it. */
 export interface GuiRoute {
   /** The user's SAP GUI server: their latest SAP GUI logon. */
   server: string;
   /** The servers of their other SAP GUI logons, latest first: a run there may not stop. */
   others: string[];
-  route: ArmRoute;
-  /** Every arming session, by server (upper-case). */
-  armers: Map<string, AdtHttpClient>;
+  /** A session SAP routes to `server`: the breakpoints are armed there, and removed there. */
+  armer: AdtHttpClient;
 }
 
 /** What the SAP GUI lookup found before anything was armed. */
 export interface GuiLookup {
-  /** Where to arm from; unset: from the stateless client, as without SAP GUI. */
+  /** Where to arm; unset: from the stateless client, as without SAP GUI. */
   route?: GuiRoute;
+  /** A SAP GUI can log on to this system: no BTP ABAP Environment pod answered. */
+  possible: boolean;
   /** SAP answered the lookup: worth reading again while the capture waits. */
   readable: boolean;
-  /** The user's SAP GUI server no session landed on: not worth trying again. */
-  missed?: string;
+  /** SAP refused the lookup (a warning says why). */
+  failed?: boolean;
+  /** The user's SAP GUI server no arming reached: not worth trying again. */
+  unreachable?: string;
 }
 
 /**
@@ -56,84 +58,76 @@ export function isInstanceName(server: string): boolean {
   return /^\S+_[A-Z][A-Z0-9]{2}_\d{2}$/i.test(server.trim());
 }
 
-/** SAP named several AS ABAP instances: a SAP GUI run then stops reliably on one server only. */
-export function severalInstances(ahead: SessionsAhead): boolean {
-  return [...ahead.byServer.keys()].filter(isInstanceName).length > 1;
+/**
+ * Can a SAP GUI log on to the system whose server answered as `server` (`answeringServer`)? An AS
+ * ABAP instance, or its MD5-encoded name (is/instname_encoding = md5): yes; a BTP ABAP Environment pod:
+ * no. Unknown — SAP did not say: maybe, so the lookup runs.
+ */
+export function sapGuiPossible(server: string | undefined): boolean {
+  if (!server) return true;
+  return isInstanceName(server) || /^[0-9a-f]{32}$/i.test(server);
+}
+
+/** A session to arm on `server`, once SAP showed it routes its requests there; else why not. */
+async function openArmer(
+  conn: SapConnection,
+  server: string,
+  options: AdtRequestOptions,
+): Promise<{ armer: AdtHttpClient } | { failure: string }> {
+  const armer = openRoutedSession(conn.http, server);
+  let failure: string;
+  try {
+    const route = await checkRoute(armer, server, options);
+    if (route.status !== 'failed' && route.status !== 'ignored') return { armer };
+    failure =
+      route.status === 'failed'
+        ? `SAP could not reach it (${route.error})`
+        : `SAP ran the request on ${route.ranOn} instead: this release does not forward ADT requests to another application server`;
+  } catch (err) {
+    failure = debuggerErrorText(err);
+  }
+  await endSession(armer, options);
+  return { failure };
 }
 
 /**
- * The SAP GUI lookup of a capture whose run the user starts (trigger "none"), and its arming route.
- * No route — the capture arms from the stateless client, as before — when no server SAP names is an
- * AS ABAP instance (no SAP GUI there), the lookup is off, the user has no SAP GUI logon, or a step
- * fails (a warning says which, when it matters). Takes over `ahead.trigger` (ended when unused) and
- * may add a server to `ahead.byServer`.
+ * The SAP GUI lookup of a capture whose run the user starts (trigger "none"), and where it arms. No
+ * route — the capture arms from the stateless client, as before — on the BTP ABAP Environment (no SAP
+ * GUI there), when the lookup is off, the user has no SAP GUI logon, or a step fails (a warning says
+ * which, when it matters).
  */
-export async function openGuiRoute(
-  conn: SapConnection,
-  user: string,
-  ahead: SessionsAhead,
-  warnings: string[],
-): Promise<GuiLookup> {
-  const options = { deadline: Date.now() + AHEAD_BUDGET_MS };
-  const dropTrigger = async (): Promise<void> => {
-    if (ahead.trigger) await endSession(ahead.trigger, options);
-    ahead.trigger = undefined;
-  };
-  if (conn.sapGuiLookup === false || ![...ahead.byServer.keys()].some(isInstanceName)) {
-    await dropTrigger();
-    return { readable: false };
-  }
+export async function openGuiRoute(conn: SapConnection, user: string, warnings: string[]): Promise<GuiLookup> {
+  const options = { deadline: Date.now() + SETUP_BUDGET_MS };
+  const possible = sapGuiPossible(await answeringServer(conn.http, options));
+  if (!possible || conn.sapGuiLookup === false) return { possible, readable: false };
   let logons: GuiLogon[];
   try {
     logons = await readGuiLogons(conn.http, user, options);
   } catch (err) {
-    if (severalInstances(ahead)) {
-      warnings.push(
-        `Could not look up which application server runs SAP user ${user}'s SAP GUI (table USR41 through the ADT data preview: ${debuggerErrorText(err)}). With several servers a SAP GUI run stops reliably only on the one that armed the breakpoints last — not necessarily yours.`,
-      );
-    }
-    await dropTrigger();
-    return { readable: false };
+    warnings.push(
+      `Could not look up which application server runs SAP user ${user}'s SAP GUI (table USR41 through the ADT data preview: ${debuggerErrorText(err)}). On a system with several application servers a SAP GUI run then stops reliably only where the breakpoints were armed — not necessarily on yours.`,
+    );
+    return { possible, readable: false, failed: true };
   }
   const [latest, ...others] = logons;
-  if (!latest) {
-    await dropTrigger();
-    return { readable: true };
-  }
-  let armers: Map<string, AdtHttpClient>;
-  try {
-    armers = await openArmingSessions(conn.http, ahead, latest.server, options);
-  } catch (err) {
+  if (!latest) return { possible, readable: true };
+  const opened = await openArmer(conn, latest.server, options);
+  if ('failure' in opened) {
     warnings.push(
-      `Could not open the sessions that arm the breakpoints from each application server (${debuggerErrorText(err)}): a SAP GUI run on ${latest.server} may not stop.`,
+      `Could not arm the breakpoints on application server ${latest.server}, where SAP user ${user} is logged on to SAP GUI (${opened.failure}): a SAP GUI run there may not stop.`,
     );
-    return { readable: true };
+    return { possible, readable: true, unreachable: latest.server };
   }
-  const last = armers.get(latest.server.toUpperCase());
-  if (!last) {
-    for (const session of armers.values()) await endSession(session, options);
-    warnings.push(
-      `No session landed on application server ${latest.server}, where SAP user ${user} is logged on to SAP GUI, to arm the breakpoints from: a SAP GUI run there may not stop.`,
-    );
-    return { readable: true, missed: latest.server };
-  }
-  const before: ArmingSession[] = [...armers]
-    .filter(([, http]) => http !== last)
-    .map(([key, http]) => ({ server: contextServer(http.sessionContextId) ?? key, http }));
   return {
+    possible,
     readable: true,
-    route: {
-      server: latest.server,
-      others: others.map((logon) => logon.server),
-      route: { before, last: { server: latest.server, http: last } },
-      armers,
-    },
+    route: { server: latest.server, others: others.map((logon) => logon.server), armer: opened.armer },
   };
 }
 
-/** Where the breakpoints are armed from for the user's SAP GUI, kept up to date while the capture waits. */
+/** Where the breakpoints are armed for the user's SAP GUI, kept up to date while the capture waits. */
 export interface GuiArming {
-  /** The user's SAP GUI server whose session armed the breakpoints last; unset: none did. */
+  /** The user's SAP GUI server where the breakpoints were armed last; unset: none was. */
   server?: string;
   /** The servers of the user's other SAP GUI logons, latest first. */
   others: string[];
@@ -145,27 +139,26 @@ export interface GuiWatchOptions {
   conn: SapConnection;
   user: string;
   identity: DebugIdentity;
-  ahead: SessionsAhead;
   armed: ArmedBreakpoints;
   /** The capture's cleanup list, kept up to date when SAP renumbers the breakpoints. */
   armedIds: string[];
   arming: GuiArming;
   /** The capture's SAP GUI warnings (reported when nothing stopped). */
   warnings: string[];
-  /** A server no session landed on before (`GuiLookup.missed`): not tried again. */
-  missed?: string;
+  /** A server the arming did not reach before (`GuiLookup.unreachable`): not tried again. */
+  unreachable?: string;
   /** How long between two reads. */
   everyMs: number;
-  /** The breakpoints were armed again from `server`. */
+  /** The breakpoints were armed again on `server`. */
   onArmed?: (server: string) => void;
 }
 
 /**
  * While a trigger-"none" capture waits for its stop: reads the user's SAP GUI logons again every
- * `everyMs`, and when the latest is on another server than the one that armed the breakpoints last,
- * arms them again from a session there — so that a SAP GUI logon opened after the capture started
- * stops too. Reads no more after a failed read, and does not try again a server no session landed on.
- * `stop()` waits for a read or an arming in flight: only then may the breakpoints be removed.
+ * `everyMs`, and when the latest is on another server than the one the breakpoints were armed on last,
+ * arms them again there — so that a SAP GUI logon opened after the capture started stops too. Reads no
+ * more after a failed read, and does not try again a server the arming did not reach. `stop()` waits
+ * for a read or an arming in flight: only then may the breakpoints be removed.
  */
 export class GuiWatch {
   private stopped = false;
@@ -174,7 +167,7 @@ export class GuiWatch {
   private readonly unreachable = new Set<string>();
 
   constructor(private readonly options: GuiWatchOptions) {
-    if (options.missed) this.unreachable.add(options.missed.toUpperCase());
+    if (options.unreachable) this.unreachable.add(options.unreachable.toUpperCase());
   }
 
   start(): void {
@@ -203,7 +196,7 @@ export class GuiWatch {
   /** One read, and an arming when the latest logon moved; false: read no more. */
   private async check(): Promise<boolean> {
     const { conn, user, arming, warnings } = this.options;
-    const options = { deadline: Date.now() + AHEAD_BUDGET_MS };
+    const options = { deadline: Date.now() + SETUP_BUDGET_MS };
     let logons: GuiLogon[];
     try {
       logons = await readGuiLogons(conn.http, user, options);
@@ -222,21 +215,18 @@ export class GuiWatch {
       return true;
     }
     if (this.unreachable.has(key)) return true;
-    let session: AdtHttpClient | undefined;
-    let failure = '';
-    try {
-      session = await openArmingSessionOn(conn.http, this.options.ahead, latest.server, arming.armers, options);
-    } catch (err) {
-      failure = debuggerErrorText(err);
-    }
+    let session = arming.armers.get(key);
     if (!session) {
-      this.unreachable.add(key);
-      warnings.push(
-        failure
-          ? `Could not open a session on application server ${latest.server}, where SAP user ${user} logged on to SAP GUI while the capture waited (${failure}): a SAP GUI run there may not stop.`
-          : `No session landed on application server ${latest.server}, where SAP user ${user} logged on to SAP GUI while the capture waited, to arm the breakpoints from: a SAP GUI run there may not stop.`,
-      );
-      return true;
+      const opened = await openArmer(conn, latest.server, options);
+      if ('failure' in opened) {
+        this.unreachable.add(key);
+        warnings.push(
+          `Could not arm the breakpoints on application server ${latest.server}, where SAP user ${user} logged on to SAP GUI while the capture waited (${opened.failure}): a SAP GUI run there may not stop.`,
+        );
+        return true;
+      }
+      session = opened.armer;
+      arming.armers.set(key, session);
     }
     if (this.stopped) return false;
     try {
@@ -244,13 +234,13 @@ export class GuiWatch {
       arming.server = latest.server;
       arming.others = others.map((logon) => logon.server);
       if (lost.length > 0) {
-        warnings.push(`Armed again from application server ${latest.server}, SAP did not keep ${lost.join(', ')}.`);
+        warnings.push(`Armed again on application server ${latest.server}, SAP did not keep ${lost.join(', ')}.`);
       }
       this.options.onArmed?.(latest.server);
     } catch (err) {
       this.unreachable.add(key);
       warnings.push(
-        `Could not arm the breakpoints again from application server ${latest.server} (${debuggerErrorText(err)}): a SAP GUI run there may not stop.`,
+        `Could not arm the breakpoints again on application server ${latest.server} (${debuggerErrorText(err)}): a SAP GUI run there may not stop.`,
       );
     }
     return true;
@@ -259,14 +249,16 @@ export class GuiWatch {
 
 /** What `guiHint` says where a SAP GUI run stops. */
 export interface GuiHintState {
-  /** The user's SAP GUI server, when its session armed the breakpoints last. */
+  /** The user's SAP GUI server, when the breakpoints were armed there last. */
   armedServer?: string;
   /** The servers of the user's other SAP GUI logons. */
   others: readonly string[];
-  /** SAP named more than one AS ABAP instance (`severalInstances`). */
-  multiServer: boolean;
+  /** A SAP GUI can log on to this system (`GuiLookup.possible`). */
+  possible: boolean;
   /** ABAP_DEBUGGER_SAP_GUI_LOOKUP=false. */
   lookupOff?: boolean;
+  /** SAP refused the lookup (`GuiLookup.failed`). */
+  unreadable?: boolean;
   /** The capture read the logons again while it waited (`GuiWatch`). */
   watched?: boolean;
 }
@@ -276,14 +268,17 @@ export function guiHint(user: string, state: GuiHintState): string {
   if (state.armedServer) {
     const elsewhere =
       state.others.length > 0 ? `, not on ${state.others.join(', ')} where ${user} is logged on too` : '';
-    return ` Run from SAP GUI, it stops reliably on application server ${state.armedServer} only (${user}'s latest SAP GUI logon, which armed the breakpoints last)${elsewhere}; System → Status in SAP GUI names the server.`;
+    return ` Run from SAP GUI, it stops reliably on application server ${state.armedServer} only (${user}'s latest SAP GUI logon, where the capture armed the breakpoints)${elsewhere}; System → Status in SAP GUI names the server.`;
   }
-  if (!state.multiServer) return '';
+  if (!state.possible) return '';
   if (state.lookupOff) {
-    return " With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last — not necessarily yours: this server does not look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false).";
+    return " On a system with several application servers, a SAP GUI run stops reliably only on the one where the breakpoints were armed — not necessarily yours: this server does not look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false).";
+  }
+  if (state.unreadable) {
+    return ' On a system with several application servers, a SAP GUI run stops reliably only on the one where the breakpoints were armed: the capture could not look up your SAP GUI server to arm there (see the warnings).';
   }
   if (state.watched) {
-    return ` With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last: the capture arms from the server of ${user}'s latest SAP GUI logon, read again every few seconds while it waits, and found no SAP GUI logon to arm from.`;
+    return ` Run from SAP GUI, it stops on the server of ${user}'s latest SAP GUI logon, where the capture arms the breakpoints — it read the logons again every few seconds while it waited, and found none: log on to SAP GUI as ${user} while the capture waits.`;
   }
-  return ' With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last, which is the server of your SAP GUI only when the capture finds it: be logged on to SAP GUI when the capture starts.';
+  return ' On a system with several application servers, a SAP GUI run stops reliably only on the one where the breakpoints were armed, which is the server of your SAP GUI only when the capture finds it: be logged on to SAP GUI when the capture starts.';
 }

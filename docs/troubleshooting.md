@@ -22,17 +22,21 @@ killed may still be armed: `abap_breakpoints` with `action: "list"` shows them, 
 (the next capture of the user removes them too).
 
 **A run started from SAP GUI does not stop, while the same code run from a Fiori app does.** With
-several application servers, a SAP GUI run stops reliably only on the server that armed the breakpoints
-last. Be logged on to SAP GUI when the capture starts, or log on while it waits: the capture finds your
-SAP GUI's server (your latest logon, read again every 5 seconds) and arms from it last, and its result
-names it (`trigger.guiServer`). Run the code a few seconds after a new logon. System →
+several application servers, a SAP GUI run stops reliably only on the server where the breakpoints
+were armed last. Be logged on to SAP GUI when the capture starts, or log on while it waits: the capture
+finds your SAP GUI's server (your latest logon, read again every 5 seconds) and arms there last, and its
+result names it (`trigger.guiServer`). Run the code a few seconds after a new logon. System →
 Status in SAP GUI shows which server your session runs on. A warning says when the capture could not
-look the server up, most often without authorization to display table USR41 through the data preview;
-with several SAP GUI logons, run the code in the one on the server the hint names.
+look the server up, most often without authorization to display table USR41 through the data preview,
+or could not reach it; with several SAP GUI logons, run the code in the one on the server the hint
+names.
 
-**The attach fails on a system with several application servers.** With `trigger: "http"` or `"none"`
-the program may stop on a server where the capture holds no session; the result names the server it
-missed. Retry, or use the unit-test trigger, which runs where the capture can attach.
+**"SAP could not reach the debuggee's application server …" or "SAP did not route the debugger session
+…".** The program stopped on another server than the one the capture's session landed on, and SAP did
+not run the session's requests there: the RFC to that server failed — most often the user lacks the
+`S_RFC` authorization for function group `SADT_REST`, which Eclipse ADT needs as well — or the release
+does not forward ADT requests between servers (SAP_BASIS 7.50 does not). Nothing was attached; the
+program waits at its breakpoint until SAP stops waiting for a debugger.
 
 **`ADT network error: fetch failed: …` behind a corporate proxy.** Set `SAP_PROXY`, with
 `user:password@` when the proxy answers `Proxy response (407)`. A proxy that inspects TLS signs with

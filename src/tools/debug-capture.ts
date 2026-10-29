@@ -3,7 +3,7 @@
  *
  * A stopped debuggee holds a work process plus the request that ran it, so a one-shot capture
  * completes the whole debugger loop inside ONE tool call: arm breakpoints → long-poll the listener
- * on the stateless client → run the trigger → attach on one stateful session, opened on the
+ * on the stateless client → run the trigger → attach on one stateful session SAP routes to the
  * debuggee's application server (SAP attaches from no other) → follow that ONE run from stop to stop
  * (read, step, `stepContinue`) → release → always remove the capture's breakpoints and the listener.
  * With `interactive: true`, src/tools/debug-session.ts runs the same capture up to its first stop
@@ -15,7 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { normalizeObjectType, objectUrl } from '../abap/object-types.js';
 import { runUnitTests } from '../adt/abap-unit.js';
 import {
-  contextServer,
+  checkRoute,
   createDebugIdentity,
   type Debuggee,
   DebuggerSession,
@@ -25,12 +25,11 @@ import {
   debuggerErrorText,
   endSession,
   findListenerConflict,
+  isRoutingError,
   listDebugStatements,
   listenUntil,
-  openSessionOnServer,
-  openSessionsAhead,
-  type PinnedSession,
-  type SessionsAhead,
+  openRoutedSession,
+  type RouteCheck,
   stopListener,
 } from '../adt/debugger.js';
 import { AdtApiError } from '../adt/errors.js';
@@ -63,11 +62,10 @@ import {
   type StepUntil,
   type WatchItem,
 } from './debug-follow.js';
-import { type GuiArming, GuiWatch, guiHint, openGuiRoute, severalInstances } from './debug-gui.js';
+import { type GuiArming, GuiWatch, guiHint, openGuiRoute } from './debug-gui.js';
 import type { DebugInput } from './debug-input.js';
 import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
-  AHEAD_BUDGET_MS,
   type CallBudget,
   callDeadline,
   DEFAULT_LIMITS,
@@ -75,6 +73,7 @@ import {
   MAX_TOTAL_STEPS,
   planCallBudget,
   RELEASE_BUDGET_MS,
+  SETUP_BUDGET_MS,
   timings,
 } from './debug-limits.js';
 import {
@@ -314,17 +313,12 @@ interface RunningTrigger {
   settled: Promise<TriggerOutcome>;
 }
 
-/** `session`: pinned ahead of the run — the unit tests, and so the debuggee, run on its server. */
-function startTrigger(
-  conn: SapConnection,
-  plan: TriggerPlan,
-  fetchTimeoutMs: number,
-  session?: AdtHttpClient,
-): RunningTrigger | undefined {
+/** On the stateless client: the debuggee stops on whichever server runs it, and the attach is routed there. */
+function startTrigger(conn: SapConnection, plan: TriggerPlan, fetchTimeoutMs: number): RunningTrigger | undefined {
   const options = { fetchTimeoutMs };
   let run: Promise<Record<string, unknown>>;
   if (plan.kind === 'unittest') {
-    run = runUnitTests(session ?? conn.http, plan.objectUrl, options).then((result) => ({
+    run = runUnitTests(conn.http, plan.objectUrl, options).then((result) => ({
       outcome: result.outcome,
       ...result.summary,
     }));
@@ -344,12 +338,31 @@ function startTrigger(
 }
 
 /**
- * A refusal SAP answered leaves nothing attached — a 4xx, or its "cannot attach" exception
- * (`invalidDebuggee`, sent as a 500); a transport failure leaves the state unknown.
+ * A refusal SAP answered leaves nothing attached — a 4xx, its "cannot attach" exception
+ * (`invalidDebuggee`, sent as a 500), or a request it could not forward to the debuggee's server; a
+ * transport failure leaves the state unknown.
  */
 function attachDefinitelyFailed(err: unknown): boolean {
   if (!(err instanceof AdtApiError)) return false;
-  return (err.statusCode >= 400 && err.statusCode < 500) || debuggerErrorSubType(err) === 'invalidDebuggee';
+  return (
+    (err.statusCode >= 400 && err.statusCode < 500) ||
+    debuggerErrorSubType(err) === 'invalidDebuggee' ||
+    isRoutingError(err)
+  );
+}
+
+/**
+ * Why the attach is not sent: SAP did not show it runs the debugger session's requests on the
+ * debuggee's server — an attach run elsewhere fails, and leaves the debuggee unattachable.
+ */
+function routeRefusal(route: RouteCheck, server: string): string | undefined {
+  if (route.status === 'failed') {
+    return `SAP could not reach the debuggee's application server ${server} to attach there: ${route.error}. SAP runs a request on another server over RFC, as the same SAP user — which takes the RFC authorization for function group SADT_REST (S_RFC) that ABAP Development Tools for Eclipse take too. Nothing was attached: the program waits at its breakpoint until SAP stops waiting for a debugger.`;
+  }
+  if (route.status === 'ignored') {
+    return `SAP did not route the debugger session to the debuggee's application server ${server}: its request ran on ${route.ranOn}, so this release does not forward ADT requests to another server (X-sap-adt-server-instance). Nothing was attached — an attach run on ${route.ranOn} would fail and leave the program unattachable; it waits at its breakpoint until SAP stops waiting for a debugger.`;
+  }
+  return undefined;
 }
 
 /**
@@ -369,9 +382,9 @@ export interface Attachment extends Inspection {
 }
 
 /**
- * Attach to the caught debuggee from a session on its application server, then `follow` the run.
- * Afterwards the run is released and the session ended — unless `keep()` says the caller holds on
- * to both (an interactive session).
+ * Attach to the caught debuggee from a session SAP routes to its application server — once SAP showed
+ * it does — then `follow` the run. Afterwards the run is released and the session ended — unless
+ * `keep()` says the caller holds on to both (an interactive session).
  */
 export async function inspect(
   run: CaptureRun,
@@ -381,26 +394,25 @@ export async function inspect(
   keep: () => boolean = () => false,
 ): Promise<Attachment> {
   const { conn, identity, warnings } = run;
-  const ready = run.attachedFrom;
   const inspection: Attachment = { attached: false, stops: [], hits: new Map() };
   if (debuggee.attachImpossible) {
-    if (ready) await endSession(ready, { deadline: Date.now() + RELEASE_BUDGET_MS });
-    return {
-      ...inspection,
-      error:
-        'SAP reports this debuggee cannot be attached (IS_ATTACH_IMPOSSIBLE), e.g. it runs on another application server.',
-    };
+    return { ...inspection, error: 'SAP reports this debuggee cannot be attached (IS_ATTACH_IMPOSSIBLE).' };
   }
   const { deadline } = budget;
-  let pinned: PinnedSession;
-  try {
-    pinned = ready
-      ? { http: ready, instance: debuggee.instance, probes: 0 }
-      : await openSessionOnServer(conn.http, debuggee.instance, { deadline });
-  } catch (err) {
-    return { ...inspection, error: `Could not open a debugger session: ${debuggerErrorText(err)}` };
+  // Wherever the load balancer puts the session, SAP runs its requests on the debuggee's server.
+  const sessionHttp = openRoutedSession(conn.http, debuggee.instance);
+  if (debuggee.instance) {
+    let refusal: string | undefined;
+    try {
+      refusal = routeRefusal(await checkRoute(sessionHttp, debuggee.instance, { deadline }), debuggee.instance);
+    } catch (err) {
+      refusal = `Could not open a debugger session: ${debuggerErrorText(err)}`;
+    }
+    if (refusal) {
+      await endSession(sessionHttp, { deadline: Date.now() + RELEASE_BUDGET_MS });
+      return { ...inspection, error: refusal };
+    }
   }
-  const sessionHttp = pinned.http;
   const session = new DebuggerSession(sessionHttp, identity, { deadline });
   let attachState: 'none' | 'attached' | 'unknown' = 'unknown';
   try {
@@ -434,10 +446,8 @@ export async function inspect(
       inspection.error +=
         ' — the attach did not survive into the next request: the system did not keep the stateful ADT session the debugger needs (releases below 7.51 may lack that support).';
     }
-    const elsewhere =
-      pinned.instance && debuggee.instance && pinned.instance.toUpperCase() !== debuggee.instance.toUpperCase();
-    if (subType === 'invalidDebuggee' && elsewhere) {
-      inspection.error += ` — SAP attaches only from the debuggee's application server (${debuggee.instance}), and none of ${pinned.probes} new sessions landed there (the last on ${pinned.instance}): while a debuggee waits, SAP's load balancer sends new sessions elsewhere. Retry the capture.`;
+    if (subType === 'invalidDebuggee') {
+      inspection.error += ` — the program no longer waited for a debugger on ${debuggee.instance ?? 'its application server'}: it ran on, or another debugger took it first.`;
     }
   } finally {
     if (attachState === 'attached' && !inspection.error && !inspection.release && keep()) {
@@ -513,28 +523,6 @@ function notHitHint(
   return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${gui}`;
 }
 
-/**
- * Sessions opened before the run (see `openSessionsAhead`). The capture's unit-test trigger runs on the
- * pair's second session, and with trigger "none" it arms the breakpoints for SAP GUI (`openGuiRoute`);
- * for an HTTP trigger it is ended at once. A failure only costs the pinning.
- */
-async function openAhead(conn: SapConnection, plan: TriggerPlan, warnings: string[]): Promise<SessionsAhead> {
-  let ahead: SessionsAhead;
-  try {
-    ahead = await openSessionsAhead(conn.http, { deadline: Date.now() + AHEAD_BUDGET_MS });
-  } catch (err) {
-    warnings.push(
-      `Could not open debugger sessions ahead of the run (${debuggerErrorText(err)}); the attach looks for the debuggee's server after the stop instead.`,
-    );
-    return { byServer: new Map() };
-  }
-  if (ahead.trigger && plan.kind === 'http') {
-    await endSession(ahead.trigger, { deadline: Date.now() + AHEAD_BUDGET_MS });
-    return { byServer: ahead.byServer };
-  }
-  return ahead;
-}
-
 /** The parts of every capture result: the user, the breakpoints, the trigger. */
 export interface CaptureBase {
   user: string;
@@ -550,23 +538,20 @@ export interface Caught {
 }
 
 /**
- * Everything one capture sets up on SAP — external breakpoints, the listener, sessions opened ahead,
- * the trigger — and how it all comes down again.
+ * Everything one capture sets up on SAP — external breakpoints, the listener, the sessions that arm
+ * for SAP GUI, the trigger — and how it all comes down again.
  */
 export class CaptureRun {
   readonly identity: DebugIdentity;
   readonly warnings: string[] = [];
   /** Server ids of every breakpoint the capture left armed — the cleanup list. */
   readonly armedIds: string[] = [];
-  /** The session opened ahead on the debuggee's server, which the attach uses. */
-  attachedFrom: AdtHttpClient | undefined;
   /** What the capture armed: the attach sets its run-only event breakpoints from it. */
   armed: ArmedBreakpoints | undefined;
   readonly startedAt = Date.now();
-  private ahead: SessionsAhead = { byServer: new Map() };
-  /** With trigger "none": where the breakpoints are armed from for the user's SAP GUI. */
+  /** With trigger "none": where the breakpoints are armed for the user's SAP GUI. */
   private readonly gui: GuiArming = { others: [], armers: new Map() };
-  /** With trigger "none" on several AS ABAP instances: reads the SAP GUI logons again while the capture waits. */
+  /** With trigger "none" where SAP GUI can be: reads the SAP GUI logons again while the capture waits. */
   private guiWatch: GuiWatch | undefined;
   /** What went wrong arming for SAP GUI: reported only when nothing stopped (no SAP GUI on BTP, say). */
   private readonly guiWarnings: string[] = [];
@@ -605,12 +590,6 @@ export class CaptureRun {
     for (const session of this.gui.armers.values()) {
       await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
     }
-    for (const session of this.ahead.byServer.values()) {
-      if (session !== this.attachedFrom) await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
-    }
-    if (this.ahead.trigger && !this.running) {
-      await endSession(this.ahead.trigger, { deadline: Date.now() + RELEASE_BUDGET_MS });
-    }
     if (!this.listenerStarted) return;
     try {
       await stopListener(this.conn.http, this.identity.user);
@@ -626,10 +605,6 @@ export class CaptureRun {
     const running = this.running;
     if (!running) return undefined;
     const settled = await Promise.race([running.settled, sleep(timings.triggerSettleMs).then(() => undefined)]);
-    // The trigger's session ends with its run; a run still going keeps it until SAP's session timeout.
-    if (settled && this.ahead.trigger) {
-      await endSession(this.ahead.trigger, { deadline: Date.now() + RELEASE_BUDGET_MS });
-    }
     return settled ?? { status: 'running', note: 'still running when the capture returned' };
   }
 
@@ -671,7 +646,7 @@ export class CaptureRun {
     const leftovers = leftoversOf(conn.http, user);
     if (leftovers.length > 0) {
       const { removed, failed } = await removeLeftovers(conn.http, leftovers, {
-        deadline: Date.now() + AHEAD_BUDGET_MS,
+        deadline: Date.now() + SETUP_BUDGET_MS,
       });
       if (removed.length > 0) {
         warnings.push(`Removed the breakpoints ${removed.length} earlier capture(s) of this user left behind.`);
@@ -681,13 +656,11 @@ export class CaptureRun {
       }
     }
 
-    // Sessions open BEFORE anything is armed: once breakpoints are armed, this server's own requests
-    // run as the debugged user too and must stay as few as possible.
-    this.ahead = await openAhead(conn, plan, warnings);
-    const lookup = plan.kind === 'none' ? await openGuiRoute(conn, user, this.ahead, this.guiWarnings) : undefined;
+    // The SAP GUI lookup and its arming session BEFORE anything is armed: once breakpoints are armed,
+    // this server's own requests run as the debugged user too and must stay as few as possible.
+    const lookup = plan.kind === 'none' ? await openGuiRoute(conn, user, this.guiWarnings) : undefined;
     const route = lookup?.route;
-    if (route) for (const [server, session] of route.armers) this.gui.armers.set(server, session);
-    const multiServer = severalInstances(this.ahead);
+    if (route) this.gui.armers.set(route.server.toUpperCase(), route.armer);
     recordArmed(conn.http, identity);
     const armed = await armBreakpoints(
       conn,
@@ -695,12 +668,12 @@ export class CaptureRun {
       targets,
       req.events,
       this.armedIds,
-      route?.route,
+      route ? { server: route.server, http: route.armer } : undefined,
       this.guiWarnings,
     );
     this.armed = armed;
-    // The user's SAP GUI server, when its session armed the breakpoints last: a SAP GUI run stops there.
-    if (route && armed.armedFrom === route.route.last.http) {
+    // The user's SAP GUI server, when the breakpoints were armed there last: a SAP GUI run stops there.
+    if (route && armed.armedFrom === route.armer) {
       this.gui.server = route.server;
       this.gui.others = route.others;
     }
@@ -720,30 +693,29 @@ export class CaptureRun {
     const listen: Promise<ListenSettled> = listenUntil(conn.http, identity, req.timeoutSeconds, {
       signal: this.listenAbort.signal,
     }).catch((error: unknown) => ({ status: 'error' as const, error }));
-    // While it waits, a SAP GUI logon opened since gets the breakpoints armed from its server too. Only
+    // While it waits, a SAP GUI logon opened since gets the breakpoints armed on its server too. Only
     // with line breakpoints armed for the user: an exception or message breakpoint armed for the whole
     // user could stop the reads themselves.
-    if (lookup?.readable && multiServer && armed.armed.every((bp) => bp.kind === 'line')) {
+    if (lookup?.readable && armed.armed.every((bp) => bp.kind === 'line')) {
       this.guiWatch = new GuiWatch({
         conn,
         user,
         identity,
-        ahead: this.ahead,
         armed,
         armedIds: this.armedIds,
         arming: this.gui,
         warnings: this.guiWarnings,
-        ...(lookup.missed ? { missed: lookup.missed } : {}),
+        ...(lookup.unreachable ? { unreachable: lookup.unreachable } : {}),
         everyMs: timings.guiRecheckMs,
         onArmed: (server) =>
-          context.progress?.(`armed again from application server ${server}, where ${user} logged on to SAP GUI`),
+          context.progress?.(`armed again on application server ${server}, where ${user} logged on to SAP GUI`),
       });
       this.guiWatch.start();
     }
 
     if (plan.kind !== 'none') {
       await sleep(timings.armDelayMs);
-      this.running = startTrigger(conn, plan, triggerTimeoutMs, this.ahead.trigger);
+      this.running = startTrigger(conn, plan, triggerTimeoutMs);
     }
     const running = this.running;
     const signal = context.signal;
@@ -783,19 +755,11 @@ export class CaptureRun {
     const triggerFinished = first.source === 'trigger';
     if (first.source !== 'listener') this.listenAbort.abort();
     const outcome: ListenSettled = first.source === 'listener' ? first.outcome : await listen;
-    // Where the capture's own run went (pinned ahead of it): the server the debuggee stops on.
-    const triggerServer =
-      running && this.ahead.trigger ? contextServer(this.ahead.trigger.sessionContextId) : undefined;
     const guiServer = this.gui.server;
     const base: CaptureBase = {
       user,
       breakpoints: armed.report,
-      trigger: {
-        kind: plan.kind,
-        target: plan.label,
-        ...(triggerServer ? { server: triggerServer } : {}),
-        ...(guiServer ? { guiServer } : {}),
-      },
+      trigger: { kind: plan.kind, target: plan.label, ...(guiServer ? { guiServer } : {}) },
     };
 
     if (outcome.status !== 'caught') {
@@ -834,8 +798,9 @@ export class CaptureRun {
                 ? guiHint(user, {
                     ...(guiServer ? { armedServer: guiServer } : {}),
                     others: this.gui.others,
-                    multiServer,
+                    possible: lookup?.possible ?? false,
                     lookupOff: conn.sapGuiLookup === false,
+                    unreadable: lookup?.failed === true,
                     watched: this.guiWatch !== undefined,
                   })
                 : '',
@@ -845,9 +810,7 @@ export class CaptureRun {
       };
     }
 
-    const { debuggee } = outcome;
-    this.attachedFrom = debuggee.instance ? this.ahead.byServer.get(debuggee.instance.toUpperCase()) : undefined;
-    return { debuggee, armed, base };
+    return { debuggee: outcome.debuggee, armed, base };
   }
 }
 

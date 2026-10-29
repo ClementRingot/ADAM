@@ -23,8 +23,8 @@ export const DEFAULT_RESULT_KB = 40;
 /** Own budget for the release, so an exhausted inspection can never leave a debuggee suspended. */
 export const RELEASE_BUDGET_MS = 60_000;
 
-/** Opening the sessions ahead of the run (a few cheap requests). */
-export const AHEAD_BUDGET_MS = 20_000;
+/** The few cheap requests before the run: removing leftovers, the SAP GUI lookup and its arming session. */
+export const SETUP_BUDGET_MS = 20_000;
 
 /** The server's ceilings (environment variables), and how long an interactive session may last. */
 export interface DebugLimits {

@@ -111,6 +111,9 @@ describe('abap_debug — a hit', () => {
     );
     expect(sessionCalls.length).toBeGreaterThan(0);
     expect(sessionCalls.every((c) => c.stateful)).toBe(true);
+    // A debuggee that names no server (one application server): nothing is routed, nothing checked.
+    expect(calls.every((c) => c.routedTo === undefined)).toBe(true);
+    expect(sessionCalls[0]?.query.get('method')).toBe('attach');
     expect(named(calls, 'GET', '/sap/bc/adt/debugger/stack')[0]?.stateful).toBe(true);
     // The read used the ACTIVE source.
     expect(named(calls, 'GET', '/sap/bc/adt/oo/classes/ZCL_ORDER/source/main')[0]?.query.get('version')).toBe('active');
@@ -234,11 +237,12 @@ describe('abap_debug — a hit', () => {
     expect(reads.slice(3).every((c) => !c.body.includes('LV_BAD'))).toBe(true);
   });
 
-  it('runs the unit tests and attaches on one server, both pinned before the stop (multi-server system)', async () => {
+  it("attaches through a session SAP routes to the debuggee's server, wherever the balancer put it (multi-server system)", async () => {
     const { calls } = installFakeSap({
       hit: true,
       sessionUser: 'ADMIN',
       servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+      debuggeeServer: 'appserver-rpsxx',
     });
     const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, variables: ['LV_TOTAL'] });
 
@@ -246,50 +250,68 @@ describe('abap_debug — a hit', () => {
     expect(json).toMatchObject({
       hit: true,
       attached: true,
-      debuggee: { server: 'appserver-t4w2x' },
+      debuggee: { server: 'appserver-rpsxx' },
       stops: [{ variables: [{ name: 'LV_TOTAL', value: '39' }] }],
       release: { released: true, via: 'continue' },
-      trigger: { status: 'completed', server: 'appserver-t4w2x' },
+      trigger: { status: 'completed' },
     });
-    // Before the run, while the balancer still alternates: sessions until two share a server.
-    const probes = calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful);
-    expect(probes.map((c) => c.server)).toEqual(['appserver-t4w2x', 'appserver-rpsxx', 'appserver-t4w2x']);
-    // The unit tests run on the pair's second session, so the debuggee stops on its server ...
-    expect(named(calls, 'POST', '/sap/bc/adt/abapunit/testruns').map((c) => c.server)).toEqual(['appserver-t4w2x']);
-    // ... where the first one waits: a single attach and the whole debugger session there, no probing after the stop.
-    const session = calls.filter((c) => c.path.startsWith('/sap/bc/adt/debugger') && c.query.get('method'));
+    // The unit tests run stateless: the debuggee stops wherever the balancer sent them.
+    expect(named(calls, 'POST', '/sap/bc/adt/abapunit/testruns').map((c) => c.stateful)).toEqual([false]);
+    // One stateful session, opened after the stop: the balancer puts it on the other server ...
+    const session = calls.filter((c) => c.stateful);
+    expect(new Set(session.map((c) => c.landed))).toEqual(new Set(['appserver-t4w2x']));
+    // ... and each of its requests names the debuggee's server, where SAP runs it: first a harmless one that shows
+    // SAP forwards it, then the attach and the whole debugger session.
+    expect(session[0]).toMatchObject({ method: 'GET', path: '/sap/bc/adt/core/http/systeminformation' });
+    expect(session.every((c) => c.routedTo === 'appserver-rpsxx' && c.server === 'appserver-rpsxx')).toBe(true);
     expect(session.filter((c) => c.query.get('method') === 'attach')).toHaveLength(1);
-    expect(session.every((c) => c.server === 'appserver-t4w2x')).toBe(true);
-    // Every session the capture opened ends with Eclipse's close-session request on its own context: the unused
-    // one, the debugger's after the release, the trigger's after its run.
+    // Nothing probes for servers: one "who am I", one route check.
+    expect(named(calls, 'GET', '/sap/bc/adt/core/http/systeminformation')).toHaveLength(2);
+    // The session ends with Eclipse's close-session request where it is — not forwarded.
     const closes = calls.filter((c) => c.sessionType === 'stateless');
-    expect(closes.every((c) => c.method === 'GET' && c.path === '/sap/bc/adt/core/http/sessions')).toBe(true);
-    expect(
-      calls
-        .filter((c) => c.sessionType === 'stateless')
-        .map((c) => c.server)
-        .sort(),
-    ).toEqual(['appserver-rpsxx', 'appserver-t4w2x', 'appserver-t4w2x']);
+    expect(closes).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/sap/bc/adt/core/http/sessions', server: 'appserver-t4w2x' }),
+    ]);
+    expect(closes[0]).not.toHaveProperty('routedTo');
   });
 
-  it('opens its sessions before arming anything: armed breakpoints catch every request of the user', async () => {
+  it("lets the BTP ABAP Environment's load balancer put the debugger session on the debuggee's server (saplb)", async () => {
     const { calls } = installFakeSap({
       hit: true,
+      sessionUser: 'ADMIN',
+      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+      debuggeeServer: 'appserver-rpsxx',
+      routing: false,
+      balancerRoutes: true,
+    });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+
+    expect(json).toMatchObject({
+      hit: true,
+      attached: true,
+      debuggee: { server: 'appserver-rpsxx' },
+      release: { released: true },
+    });
+    // The session landed where its first request asked, and SAP ran each request there itself: nothing forwarded.
+    const session = calls.filter((c) => c.stateful);
+    expect(session.every((c) => c.landed === 'appserver-rpsxx' && c.server === 'appserver-rpsxx')).toBe(true);
+  });
+
+  it('opens no session before the stop: nothing is pinned or probed ahead of the run', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      sessionUser: 'ADMIN',
       servers: ['appserver-t4w2x', 'appserver-rpsxx'],
       debuggeeServer: 'appserver-t4w2x',
     });
-    await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
-    const firstArm = calls.findIndex((c) => c.method === 'POST' && c.path === '/sap/bc/adt/debugger/breakpoints');
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+    expect(json).toMatchObject({ hit: true, attached: true, debuggee: { server: 'appserver-t4w2x' } });
     const trigger = calls.findIndex((c) => c.path === '/sap/bc/adt/abapunit/testruns');
-    // Every session opened ahead of the run (before its trigger) was opened before the first breakpoint.
-    const ahead = calls
-      .map((c, index) => ({ c, index }))
-      .filter(({ c, index }) => index < trigger && c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful);
-    expect(ahead.length).toBeGreaterThan(0);
-    expect(ahead.every(({ index }) => index < firstArm)).toBe(true);
+    expect(trigger).toBeGreaterThan(0);
+    expect(calls.slice(0, trigger).some((c) => c.stateful)).toBe(false);
   });
 
-  it("attaches to the user's own run from the session already waiting on its server", async () => {
+  it("attaches to the user's own run on the server it stopped on (BTP ABAP Environment pods)", async () => {
     const { calls } = installFakeSap({
       hit: true,
       runByUser: true,
@@ -306,8 +328,6 @@ describe('abap_debug — a hit', () => {
       release: { released: true },
     });
     expect(calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual(['appserver-rpsxx']);
-    // The sessions opened ahead covered both servers: nothing probed after the stop.
-    expect(calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful)).toHaveLength(3);
     // Pods, not AS ABAP instances (the BTP ABAP Environment): no SAP GUI there, so no lookup and no warning.
     expect(named(calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
     expect(json).not.toHaveProperty('warnings');
@@ -328,7 +348,7 @@ describe('abap_debug — a hit', () => {
       return named(calls.slice(0, listening), 'POST', '/sap/bc/adt/debugger/breakpoints');
     };
 
-    it("arms from the user's SAP GUI server last, so that run stops, and disarms from there", async () => {
+    it("arms on the user's SAP GUI server through a session routed there, so that run stops, and disarms there", async () => {
       const fake = installFakeSap({
         ...gui,
         usr41: [
@@ -350,20 +370,23 @@ describe('abap_debug — a hit', () => {
       expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle').map((c) => c.body)).toEqual([
         "SELECT server, logon_date, logon_time FROM usr41 WHERE bname = 'ADMIN'",
       ]);
-      // The probe from the stateless client, then the final set from a session on each server — the SAP GUI's last.
-      expect(externalSyncs(fake.calls).map((c) => c.server)).toEqual([undefined, 'sappas_S4D_00', 'sapaas_S4D_01']);
-      // Removed from there too: removing the last breakpoint switches debugging off on the server that removes it.
+      // The probe from the stateless client, then the final set on the SAP GUI's server — from a session the
+      // balancer put on the other one, routed there.
+      const syncs = externalSyncs(fake.calls);
+      expect(syncs.map((c) => c.server)).toEqual([undefined, 'sapaas_S4D_01']);
+      expect(syncs[1]).toMatchObject({ landed: 'sappas_S4D_00', routedTo: 'sapaas_S4D_01' });
+      // Removed there too: removing the last breakpoint switches debugging off on the server that removes it.
       const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
       expect(removals.length).toBeGreaterThan(0);
       expect(removals.every((c) => c.server === 'sapaas_S4D_01')).toBe(true);
       expect(fake.armedOn()).toBeUndefined();
-      // Every session ends: the two attach sessions and the two arming ones.
-      expect(
-        fake.calls
-          .filter((c) => c.sessionType === 'stateless')
-          .map((c) => c.server)
-          .sort(),
-      ).toEqual(['sapaas_S4D_01', 'sapaas_S4D_01', 'sappas_S4D_00', 'sappas_S4D_00']);
+      // The debugger's session is routed to the debuggee's server too; both sessions end where they are.
+      expect(fake.calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual([
+        'sapaas_S4D_01',
+      ]);
+      const closes = fake.calls.filter((c) => c.sessionType === 'stateless');
+      expect(closes).toHaveLength(2);
+      expect(closes.every((c) => c.routedTo === undefined)).toBe(true);
     });
 
     it('says why such a run may not stop when USR41 cannot be read', async () => {
@@ -379,11 +402,11 @@ describe('abap_debug — a hit', () => {
       ]);
       expect(json?.warnings[0]).toContain('No authorization for table USR41');
       expect(json?.hint).toContain(
-        'With several application servers, a SAP GUI run stops reliably only on the one that armed the breakpoints last',
+        'a SAP GUI run stops reliably only on the one where the breakpoints were armed: the capture could not look up your SAP GUI server to arm there',
       );
-      // As before: armed from the stateless client alone, and every session ended.
+      // As before: armed from the stateless client alone — and no session opened.
       expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
-      expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(3);
+      expect(fake.calls.some((c) => c.stateful)).toBe(false);
     });
 
     it("names the server a SAP GUI run stops on when the user's run was elsewhere", async () => {
@@ -399,8 +422,27 @@ describe('abap_debug — a hit', () => {
       expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { guiServer: 'sappas_S4D_00' } });
       expect(json).not.toHaveProperty('warnings');
       expect(json?.hint).toContain(
-        "Run from SAP GUI, it stops reliably on application server sappas_S4D_00 only (ADMIN's latest SAP GUI logon, which armed the breakpoints last), not on sapaas_S4D_01 where ADMIN is logged on too; System → Status in SAP GUI names the server.",
+        "Run from SAP GUI, it stops reliably on application server sappas_S4D_00 only (ADMIN's latest SAP GUI logon, where the capture armed the breakpoints), not on sapaas_S4D_01 where ADMIN is logged on too; System → Status in SAP GUI names the server.",
       );
+    });
+
+    it('arms nowhere else when SAP cannot reach the SAP GUI server, and says so', async () => {
+      // The arming session lands on sappas_S4D_00; SAP cannot forward its requests to sapaas_S4D_01.
+      const fake = installFakeSap({
+        ...gui,
+        usr41: [{ server: 'sapaas_S4D_01' }],
+        routingFails: 'No RFC authorization for function group SADT_REST',
+      });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
+
+      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
+      expect(json?.trigger).not.toHaveProperty('guiServer');
+      expect(json?.warnings).toEqual([
+        'Could not arm the breakpoints on application server sapaas_S4D_01, where SAP user ADMIN is logged on to SAP GUI (SAP could not reach it (No RFC authorization for function group SADT_REST)): a SAP GUI run there may not stop.',
+      ]);
+      // Armed from the stateless client alone; the session that could not reach the server ended at once.
+      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
+      expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(1);
     });
 
     it('never reads USR41 with ABAP_DEBUGGER_SAP_GUI_LOOKUP=false, and says so when nothing stopped', async () => {
@@ -415,9 +457,9 @@ describe('abap_debug — a hit', () => {
       expect(json).not.toHaveProperty('warnings');
       expect(json?.hint).toContain("does not look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false)");
       expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
-      // Armed from the stateless client alone, as without SAP GUI; every session ended.
+      // Armed from the stateless client alone, as without SAP GUI; no session opened.
       expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
-      expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(3);
+      expect(fake.calls.some((c) => c.stateful)).toBe(false);
     });
 
     it("neither reads USR41 nor mentions SAP GUI on the BTP ABAP Environment's pods", async () => {
@@ -451,11 +493,11 @@ describe('abap_debug — a hit', () => {
         expect(json?.trigger).not.toHaveProperty('guiServer');
         expect(json).not.toHaveProperty('warnings');
         expect(json?.hint).toContain(
-          "the capture arms from the server of ADMIN's latest SAP GUI logon, read again every few seconds while it waits, and found no SAP GUI logon to arm from.",
+          "Run from SAP GUI, it stops on the server of ADMIN's latest SAP GUI logon, where the capture arms the breakpoints — it read the logons again every few seconds while it waited, and found none: log on to SAP GUI as ADMIN while the capture waits.",
         );
         // Armed from the stateless client alone, as without SAP GUI; no arming session opened.
         expect(externalPosts(fake.calls).every((c) => c.server === undefined)).toBe(true);
-        expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(3);
+        expect(fake.calls.some((c) => c.stateful)).toBe(false);
         // Read before arming, then again while it waited — and no more once the capture returned.
         const done = reads(fake.calls);
         expect(done).toBeGreaterThan(2);
@@ -479,20 +521,18 @@ describe('abap_debug — a hit', () => {
           release: { released: true },
         });
         expect(json).not.toHaveProperty('warnings');
-        // The probe and the narrowing from the stateless client, then the same set from a session on that server.
-        expect(externalPosts(fake.calls).map((c) => c.server)).toEqual([undefined, undefined, 'sapaas_S4D_01']);
-        // Removed from there: that switches debugging off on the server that armed last.
+        // The probe and the narrowing from the stateless client, then the same set on that server, from a session
+        // routed there.
+        const posts = externalPosts(fake.calls);
+        expect(posts.map((c) => c.server)).toEqual([undefined, undefined, 'sapaas_S4D_01']);
+        expect(posts[2]).toMatchObject({ routedTo: 'sapaas_S4D_01' });
+        // Removed there: that switches debugging off on the server where they were armed last.
         const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
         expect(removals.length).toBeGreaterThan(0);
         expect(removals.every((c) => c.server === 'sapaas_S4D_01')).toBe(true);
         expect(fake.armedOn()).toBeUndefined();
-        // Every session ends: the two attach sessions, the pair's second one and the arming one.
-        expect(
-          fake.calls
-            .filter((c) => c.sessionType === 'stateless')
-            .map((c) => c.server)
-            .sort(),
-        ).toEqual(['sapaas_S4D_01', 'sapaas_S4D_01', 'sappas_S4D_00', 'sappas_S4D_00']);
+        // Every session ends: the arming one and the debugger's.
+        expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(2);
       });
 
       it('stops reading after a failed read, and says so', async () => {
@@ -1393,54 +1433,67 @@ describe('abap_debug — event breakpoints', () => {
   });
 });
 
-describe('abap_debug — an attach SAP refuses', () => {
-  it('names the server it could not reach and releases nothing it never attached', async () => {
-    // The balancer only ever offers t4w2x; the user's run stops on rpsxx.
-    const { calls } = installFakeSap({
-      hit: true,
-      runByUser: true,
-      sessionUser: 'ADMIN',
-      servers: ['appserver-t4w2x'],
-      debuggeeServer: 'appserver-rpsxx',
-    });
+describe("abap_debug — a debugger session SAP does not run on the debuggee's server", () => {
+  // The user's run stops on rpsxx; the balancer sends the debugger's session to t4w2x.
+  const elsewhere = {
+    hit: true,
+    runByUser: true,
+    sessionUser: 'ADMIN',
+    servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+    debuggeeServer: 'appserver-rpsxx',
+  } satisfies FakeSapOptions;
+
+  it('sends no attach when SAP ignores the route (an older release), and releases nothing it never attached', async () => {
+    const { calls } = installFakeSap({ ...elsewhere, routing: false });
     const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
 
     expect(result.isError).toBeFalsy();
     expect(json).toMatchObject({ hit: true, attached: false, debuggee: { server: 'appserver-rpsxx' } });
-    expect(json?.error).toContain('(invalidDebuggee)');
     expect(json?.error).toContain(
-      "SAP attaches only from the debuggee's application server (appserver-rpsxx), and none of 8 new sessions landed there (the last on appserver-t4w2x)",
+      "SAP did not route the debugger session to the debuggee's application server appserver-rpsxx: its request ran on appserver-t4w2x, so this release does not forward ADT requests to another server (X-sap-adt-server-instance).",
     );
-    // Not attached = nothing to release: no stepContinue, no "released" claim.
+    // An attach run on t4w2x would have failed and spoiled the debuggee: none was sent, so nothing to release.
+    expect(calls.some((c) => c.query.get('method') === 'attach')).toBe(false);
     expect(json?.release).toBeUndefined();
-    expect(calls.filter((c) => c.query.get('method') === 'attach')).toHaveLength(1);
     expect(calls.some((c) => c.query.get('method') === 'stepContinue')).toBe(false);
-    // Every session the capture opened is ended again: two ahead of the run, eight after the stop.
-    expect(calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(10);
+    // The one session the capture opened is ended again, and the listener removed.
+    expect(calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(1);
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+
+  it("sends no attach when SAP cannot reach the debuggee's server, and says why in SAP's words", async () => {
+    const { calls } = installFakeSap({
+      ...elsewhere,
+      routingFails: 'No RFC authorization for function group SADT_REST',
+    });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
+
+    expect(json).toMatchObject({ hit: true, attached: false, debuggee: { server: 'appserver-rpsxx' } });
+    expect(json?.error).toContain(
+      "SAP could not reach the debuggee's application server appserver-rpsxx to attach there: No RFC authorization for function group SADT_REST.",
+    );
+    expect(json?.error).toContain('S_RFC');
+    expect(calls.some((c) => c.query.get('method') === 'attach')).toBe(false);
+    expect(json?.release).toBeUndefined();
+    expect(calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(1);
   });
 });
 
 describe('abap_debug — a debuggee SAP cannot attach', () => {
-  it('ends the session that waited for it', async () => {
+  it('opens no debugger session for it', async () => {
     const { calls } = installFakeSap({
       hit: true,
       attachImpossible: true,
       sessionUser: 'ADMIN',
       servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+      debuggeeServer: 'appserver-t4w2x',
     });
     const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
 
     expect(json).toMatchObject({ hit: true, attached: false, debuggee: { server: 'appserver-t4w2x' } });
     expect(json?.error).toContain('IS_ATTACH_IMPOSSIBLE');
     expect(calls.some((c) => c.query.get('method') === 'attach')).toBe(false);
-    // Both sessions opened ahead of the run end — the one waiting on the debuggee's server included.
-    expect(
-      calls
-        .filter((c) => c.sessionType === 'stateless')
-        .map((c) => c.server)
-        .sort(),
-    ).toEqual(['appserver-rpsxx', 'appserver-t4w2x']);
+    expect(calls.some((c) => c.stateful)).toBe(false);
   });
 });
 
@@ -1527,11 +1580,8 @@ describe('abap_debug — whose run is caught', () => {
     const { calls } = installFakeSap({ hit: false });
     const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
     expect(json?.user).toBe('ADMIN');
-    // The stateless "who am I" finds no resource; so does the one probe ahead of the run, which then stops.
-    expect(named(calls, 'GET', '/sap/bc/adt/core/http/systeminformation').map((c) => c.stateful)).toEqual([
-      false,
-      true,
-    ]);
+    // The stateless "who am I" finds no resource — and nothing else asks: no session is probed ahead of the run.
+    expect(named(calls, 'GET', '/sap/bc/adt/core/http/systeminformation').map((c) => c.stateful)).toEqual([false]);
   });
 });
 

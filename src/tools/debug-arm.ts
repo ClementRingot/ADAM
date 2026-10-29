@@ -214,7 +214,7 @@ export interface ArmedBreakpoints {
   inRun: RunEvent[];
   /** The breakpoints as armed for the user: what `rearmFrom` sends again. */
   specs: DebugBreakpointSpec[];
-  /** With an `ArmRoute` or `rearmFrom`: the session whose sync armed them last — `disarm` removes them from it. */
+  /** With an `ArmFrom` or `rearmFrom`: the session whose sync armed them last — `disarm` removes them from it. */
   armedFrom?: AdtHttpClient;
 }
 
@@ -308,16 +308,10 @@ function acceptedLine(
   return undefined;
 }
 
-/** A session on an application server, to arm the breakpoints from (`openArmingSessions`). */
-export interface ArmingSession {
+/** A session SAP routes to an application server (`openRoutedSession`), to arm the breakpoints there. */
+export interface ArmFrom {
   server: string;
   http: AdtHttpClient;
-}
-
-/** Where the breakpoints are armed from: every session of `before`, then `last` — the user's SAP GUI server. */
-export interface ArmRoute {
-  before: readonly ArmingSession[];
-  last: ArmingSession;
 }
 
 /**
@@ -333,9 +327,9 @@ export interface ArmRoute {
  * and are set in that run only (`armInRun`); without one, exception and message breakpoints are the
  * only way in and go external.
  *
- * With a `route`, the second sync runs from each of its sessions in turn, `route.last` (the user's
- * SAP GUI server) last: a SAP GUI run stops reliably only on the server that armed the breakpoints
- * last. A sync that fails there costs a warning, not the capture.
+ * With `from`, the second sync runs there — on the user's SAP GUI server: a SAP GUI run stops reliably
+ * only on the server that armed the breakpoints last. A sync that fails there costs a warning, not the
+ * capture.
  */
 export async function armBreakpoints(
   conn: SapConnection,
@@ -343,7 +337,7 @@ export async function armBreakpoints(
   targets: readonly StopTarget[],
   events: readonly EventLocation[],
   armedIds: string[],
-  route?: ArmRoute,
+  from?: ArmFrom,
   warnings: string[] = [],
 ): Promise<ArmedBreakpoints> {
   const inRun = targets.length > 0;
@@ -383,16 +377,14 @@ export async function armBreakpoints(
     ...eventSpecs,
   ];
   let armedFrom: AdtHttpClient | undefined;
-  if (route && probe.some((state) => state.id)) {
-    for (const { server, http } of [...route.before, route.last]) {
-      try {
-        states = remember(await syncBreakpoints(http, identity, finalSpecs()));
-        armedFrom = http;
-      } catch (err) {
-        warnings.push(
-          `Could not arm the breakpoints from application server ${server} (${debuggerErrorText(err)}): a SAP GUI run there may not stop.`,
-        );
-      }
+  if (from && probe.some((state) => state.id)) {
+    try {
+      states = remember(await syncBreakpoints(from.http, identity, finalSpecs()));
+      armedFrom = from.http;
+    } catch (err) {
+      warnings.push(
+        `Could not arm the breakpoints on application server ${from.server} (${debuggerErrorText(err)}): a SAP GUI run there may not stop.`,
+      );
     }
   }
   // The probe may have armed several candidate lines per target — keep exactly one each, with its condition.
@@ -514,10 +506,10 @@ export async function armBreakpoints(
 }
 
 /**
- * Arm the same breakpoints again from `http`, a session on another application server — for a SAP
- * GUI logon that appeared while the capture waits. SAP may renumber them: an old id stays an alias,
- * and `armedIds` (the cleanup list) takes the new ones; `armed.armedFrom` becomes `http`. Returns the
- * labels of the breakpoints SAP did not keep this time.
+ * Arm the same breakpoints again from `http`, a session routed to another application server — for a
+ * SAP GUI logon that appeared while the capture waits. SAP may renumber them: an old id stays an
+ * alias, and `armedIds` (the cleanup list) takes the new ones; `armed.armedFrom` becomes `http`.
+ * Returns the labels of the breakpoints SAP did not keep this time.
  */
 export async function rearmFrom(
   http: AdtHttpClient,

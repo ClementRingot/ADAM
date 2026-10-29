@@ -7,9 +7,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  answeringServer,
   buildBreakpointsXml,
   buildChildVariablesXml,
   buildVariablesXml,
+  checkRoute,
   contextServer,
   createDebugIdentity,
   DebuggerSession,
@@ -17,12 +19,10 @@ import {
   deleteBreakpoint,
   endSession,
   findListenerConflict,
+  isRoutingError,
   listDebugStatements,
   listenForDebuggee,
-  openArmingSessionOn,
-  openArmingSessions,
-  openSessionOnServer,
-  openSessionsAhead,
+  openRoutedSession,
   parseAttachResponse,
   parseBreakpointsResponse,
   parseChildVariablesResponse,
@@ -312,32 +312,10 @@ describe('listener', () => {
 
 describe("the debuggee's application server", () => {
   const contextOn = (server: string) => `SID%3aANON%3a${server}%3aKX9qZ-NEW`;
-
-  /** New stateful sessions land on `landings` in turn; a session learns its context from its first answer. */
-  function balancedSap(landings: Array<string | undefined>, probe?: ReturnType<typeof vi.fn>) {
-    type FakeSession = {
-      get: ReturnType<typeof vi.fn>;
-      endStatefulSession: ReturnType<typeof vi.fn>;
-      sessionContextId?: string;
-    };
-    const sessions: FakeSession[] = [];
-    const http = {
-      openStatefulSession: vi.fn(() => {
-        const landing = landings[sessions.length % landings.length];
-        const session: FakeSession = { get: vi.fn(), endStatefulSession: vi.fn().mockResolvedValue(true) };
-        session.get =
-          probe ??
-          vi.fn(async () => {
-            session.sessionContextId ??= landing && contextOn(landing);
-            return ok('{}');
-          });
-        sessions.push(session);
-        return session;
-      }),
-    } as unknown as AdtHttpClient;
-    const ended = () => sessions.filter((session) => session.endStatefulSession.mock.calls.length > 0);
-    return { http, sessions, ended };
-  }
+  const answer = (headers: Record<string, string> = {}) => ({ statusCode: 200, headers, body: '{}' });
+  /** CX_ADT_REST_ROUTING as SAP's ADT handler answers a request it could not forward (DI2, SAP_BASIS 8.16). */
+  const routingException = (subType: string, message: string) =>
+    `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><namespace id="com.sap.adt"/><type id="ExceptionRequestRooting"/><message lang="EN">${message}</message><localizedMessage lang="EN">${message}</localizedMessage><properties><entry key="com.sap.adt.communicationFramework.subType">${subType}</entry></properties></exc:exception>`;
 
   it('reads the server out of a sap-contextid, and nothing out of other shapes', () => {
     expect(contextServer(contextOn('appserver-t4w2x'))).toBe('appserver-t4w2x');
@@ -347,199 +325,88 @@ describe("the debuggee's application server", () => {
     expect(contextServer('%E0%A4%A')).toBeUndefined();
   });
 
-  it("opens sessions until one lands on the debuggee's server and ends the others", async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-t4w2x', 'appserver-rpsxx']);
-    const pinned = await openSessionOnServer(http, 'APPSERVER-RPSXX');
-    expect(pinned).toMatchObject({ instance: 'appserver-rpsxx', probes: 3 });
-    expect(pinned.http).toBe(sessions[2]);
-    expect(sessions[0]!.get).toHaveBeenNthCalledWith(
-      1,
+  it('opens a session routed to the server, or a plain stateful one without a server', () => {
+    const openStatefulSession = vi.fn().mockReturnValue('session');
+    const http = { openStatefulSession } as unknown as AdtHttpClient;
+    expect(openRoutedSession(http, 'sapaas_S4D_01')).toBe('session');
+    expect(openStatefulSession).toHaveBeenLastCalledWith({ server: 'sapaas_S4D_01' });
+    openRoutedSession(http, undefined);
+    expect(openStatefulSession).toHaveBeenLastCalledWith({});
+  });
+
+  it('tells a request SAP forwarded from one it ran itself, with one harmless request', async () => {
+    const forwarded = mockHttp({ get: vi.fn().mockResolvedValue(answer()) });
+    expect(await checkRoute(forwarded, 'sapaas_S4D_01', { deadline: 42 })).toEqual({ status: 'forwarded' });
+    expect(forwarded.get).toHaveBeenCalledWith(
       '/sap/bc/adt/core/http/systeminformation',
       { Accept: 'application/vnd.sap.adt.core.http.systeminformation.v1+json' },
+      { deadline: 42 },
+    );
+    // Run by the server that received it: on the routed server itself ...
+    const local = mockHttp({ get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': 'SAPAAS_S4D_01' })) });
+    expect(await checkRoute(local, 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    // ... which an MD5-encoded name cannot show, but SAP runs a routed request itself only there ...
+    const encoded = mockHttp({
+      get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': '0cc175b9c0f1b6a831c399e269772661' })),
+    });
+    expect(await checkRoute(encoded, 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    // ... or elsewhere: SAP ignored the route.
+    const ignored = mockHttp({ get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': 'sappas_S4D_00' })) });
+    expect(await checkRoute(ignored, 'sapaas_S4D_01')).toEqual({ status: 'ignored', ranOn: 'sappas_S4D_00' });
+  });
+
+  it('tells by the server a session landed on where the release names none (SAP_BASIS 7.50)', async () => {
+    const landedOn = (server: string | undefined, get: ReturnType<typeof vi.fn>) =>
+      Object.assign(mockHttp({ get }), { sessionContextId: server && contextOn(server) });
+    const absent = () => vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x'));
+    // No such resource, and no routing over HTTP either: the session's own server is where the request ran.
+    expect(await checkRoute(landedOn('sapaas_S4D_01', absent()), 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    expect(await checkRoute(landedOn('sappas_S4D_00', absent()), 'sapaas_S4D_01')).toEqual({
+      status: 'ignored',
+      ranOn: 'sappas_S4D_00',
+    });
+    expect(await checkRoute(landedOn(undefined, absent()), 'sapaas_S4D_01')).toEqual({ status: 'unknown' });
+    // A release that answers without naming the server: on the routed one already, or forwarded there.
+    const unnamed = () => vi.fn().mockResolvedValue(answer());
+    expect(await checkRoute(landedOn('sapaas_S4D_01', unnamed()), 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    expect(await checkRoute(landedOn('sappas_S4D_00', unnamed()), 'sapaas_S4D_01')).toEqual({ status: 'forwarded' });
+  });
+
+  it('reports a request SAP could not forward in its own words, and lets any other failure through', async () => {
+    const failing = mockHttp({
+      get: vi
+        .fn()
+        .mockRejectedValue(
+          new AdtApiError(
+            'x',
+            502,
+            '/x',
+            routingException('ExceptionOnTargetServer', 'No RFC authorization for function group SADT_REST'),
+          ),
+        ),
+    });
+    expect(await checkRoute(failing, 'sapaas_S4D_01')).toEqual({
+      status: 'failed',
+      error: 'No RFC authorization for function group SADT_REST',
+    });
+    const broken = mockHttp({ get: vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')) });
+    await expect(checkRoute(broken, 'sapaas_S4D_01')).rejects.toThrow(AdtApiError);
+    expect(isRoutingError(new AdtApiError('x', 403, '/x', routingException('NoAuthorization', 'no')))).toBe(true);
+    expect(isRoutingError(new AdtApiError('x', 500, '/x', debuggerException('invalidDebuggee')))).toBe(false);
+    expect(isRoutingError(new Error('plain'))).toBe(false);
+  });
+
+  it('names the server that answers a request, and nothing where SAP does not say', async () => {
+    const http = mockHttp({ get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': 'appserver-t4w2x' })) });
+    expect(await answeringServer(http)).toBe('appserver-t4w2x');
+    expect(http.get).toHaveBeenCalledWith(
+      '/sap/bc/adt/core/http/systeminformation',
+      { Accept: 'application/vnd.sap.adt.core.http.systeminformation.v1+json', 'sap-adt-saplb': 'fetch' },
       { suppressNotFoundLog: true },
     );
-    expect(sessions[0]!.get).toHaveBeenCalledTimes(1);
-    expect(sessions[0]!.endStatefulSession).toHaveBeenCalledWith({});
-    expect(ended()).toEqual([sessions[0], sessions[1]]);
-  });
-
-  it('opens sessions ahead of the run until two share a server', async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-rpsxx', 'appserver-t4w2x']);
-    const ahead = await openSessionsAhead(http);
-    expect([...ahead.byServer.entries()]).toEqual([
-      ['APPSERVER-T4W2X', sessions[0]],
-      ['APPSERVER-RPSXX', sessions[1]],
-    ]);
-    expect(ahead.trigger).toBe(sessions[2]);
-    expect(ended()).toEqual([]);
-  });
-
-  it('opens nothing to pin when SAP names no server, and stops at maxProbes distinct servers', async () => {
-    const unnamed = balancedSap([undefined]);
-    expect(await openSessionsAhead(unnamed.http)).toEqual({ byServer: new Map() });
-    expect(unnamed.sessions).toHaveLength(1);
-    const absent = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')));
-    expect(await openSessionsAhead(absent.http)).toEqual({ byServer: new Map() });
-
-    const many = balancedSap(['appserver-a', 'appserver-b', 'appserver-c']);
-    const ahead = await openSessionsAhead(many.http, { maxProbes: 3 });
-    expect([...ahead.byServer.keys()]).toEqual(['APPSERVER-A', 'APPSERVER-B', 'APPSERVER-C']);
-    expect(ahead.trigger).toBeUndefined();
-
-    const broken = balancedSap(['appserver-a'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
-    await expect(openSessionsAhead(broken.http)).rejects.toThrow(AdtApiError);
-  });
-
-  it('ends the sessions it already opened when a later probe fails', async () => {
-    const first = {
-      get: vi.fn().mockResolvedValue(ok('{}')),
-      endStatefulSession: vi.fn().mockResolvedValue(true),
-      sessionContextId: contextOn('appserver-a'),
-    };
-    const second = {
-      get: vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')),
-      endStatefulSession: vi.fn().mockResolvedValue(undefined),
-      sessionContextId: undefined,
-    };
-    const http = {
-      openStatefulSession: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
-    } as unknown as AdtHttpClient;
-    await expect(openSessionsAhead(http)).rejects.toThrow(AdtApiError);
-    expect(first.endStatefulSession).toHaveBeenCalledTimes(1);
-    expect(second.get).toHaveBeenCalledTimes(1);
-  });
-
-  it("opens one more session per server to arm from, taking over the pair's second one", async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-rpsxx']);
-    const ahead = await openSessionsAhead(http);
-    expect(ahead.trigger).toBe(sessions[2]);
-    const armers = await openArmingSessions(http, ahead, 'Appserver-RPSXX');
-    expect([...armers.entries()]).toEqual([
-      ['APPSERVER-T4W2X', sessions[2]],
-      ['APPSERVER-RPSXX', sessions[3]],
-    ]);
-    // The attach sessions stay as they were; the pair's second session is the arming one now.
-    expect([...ahead.byServer.values()]).toEqual([sessions[0], sessions[1]]);
-    expect(ahead.trigger).toBeUndefined();
-    expect(sessions).toHaveLength(4);
-    expect(ended()).toEqual([]);
-  });
-
-  it('finds the wanted server the sessions ahead missed, gives it an attach session too, and ends the extra ones', async () => {
-    const { http, sessions, ended } = balancedSap([
-      'appserver-t4w2x',
-      'appserver-t4w2x',
-      'appserver-rpsxx',
-      'appserver-t4w2x',
-      'appserver-rpsxx',
-    ]);
-    const ahead = await openSessionsAhead(http);
-    expect([...ahead.byServer.keys()]).toEqual(['APPSERVER-T4W2X']);
-    const armers = await openArmingSessions(http, ahead, 'appserver-rpsxx');
-    expect([...armers.entries()]).toEqual([
-      ['APPSERVER-T4W2X', sessions[1]],
-      ['APPSERVER-RPSXX', sessions[4]],
-    ]);
-    expect([...ahead.byServer.entries()]).toEqual([
-      ['APPSERVER-T4W2X', sessions[0]],
-      ['APPSERVER-RPSXX', sessions[2]],
-    ]);
-    expect(ended()).toEqual([sessions[3]]);
-  });
-
-  it('stops when SAP names no server or after maxProbes, and ends a pair session it cannot place', async () => {
-    const trigger = { endStatefulSession: vi.fn().mockResolvedValue(true), sessionContextId: undefined };
-    const unnamed = balancedSap([undefined]);
-    const known = new Map([['APPSERVER-A', {} as AdtHttpClient]]);
-    const ahead = { byServer: known, trigger: trigger as unknown as AdtHttpClient };
-    expect((await openArmingSessions(unnamed.http, ahead, 'appserver-a')).size).toBe(0);
-    expect(trigger.endStatefulSession).toHaveBeenCalledTimes(1);
-    expect(ahead.trigger).toBeUndefined();
-    expect(unnamed.ended()).toEqual([unnamed.sessions[0]]);
-
-    const elsewhere = balancedSap(['appserver-a']);
-    const armers = await openArmingSessions(elsewhere.http, { byServer: new Map(known) }, 'appserver-b', {
-      maxProbes: 3,
-    });
-    expect([...armers.entries()]).toEqual([['APPSERVER-A', elsewhere.sessions[0]]]);
-    expect(elsewhere.ended()).toEqual([elsewhere.sessions[1], elsewhere.sessions[2]]);
-  });
-
-  it('ends its arming sessions when a probe fails', async () => {
-    const trigger = {
-      endStatefulSession: vi.fn().mockResolvedValue(true),
-      sessionContextId: contextOn('appserver-a'),
-    };
-    const broken = balancedSap(['appserver-b'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
-    const ahead = {
-      byServer: new Map([['APPSERVER-A', {} as AdtHttpClient]]),
-      trigger: trigger as unknown as AdtHttpClient,
-    };
-    await expect(openArmingSessions(broken.http, ahead, 'appserver-b')).rejects.toThrow(AdtApiError);
-    expect(trigger.endStatefulSession).toHaveBeenCalledTimes(1);
-    expect(ahead.trigger).toBeUndefined();
-  });
-
-  it('opens an arming session on the server a SAP GUI logon appeared on, an attach session first there', async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-a', 'appserver-b']);
-    const ahead = { byServer: new Map([['APPSERVER-A', {} as AdtHttpClient]]) };
-    const armers = new Map<string, AdtHttpClient>();
-    const session = await openArmingSessionOn(http, ahead, 'Appserver-B', armers);
-    expect(session).toBe(sessions[3]);
-    // B was new: its first session is its attach session, its second the arming one; the others end.
-    expect([...ahead.byServer.entries()]).toEqual([
-      ['APPSERVER-A', {}],
-      ['APPSERVER-B', sessions[1]],
-    ]);
-    expect([...armers.entries()]).toEqual([['APPSERVER-B', sessions[3]]]);
-    expect(ended()).toEqual([sessions[0], sessions[2]]);
-    // Asked again: the same session, nothing probed.
-    expect(await openArmingSessionOn(http, ahead, 'appserver-b', armers)).toBe(sessions[3]);
-    expect(sessions).toHaveLength(4);
-  });
-
-  it('opens no arming session after maxProbes elsewhere, or when SAP names no server', async () => {
-    const elsewhere = balancedSap(['appserver-a']);
-    const ahead = { byServer: new Map([['APPSERVER-A', {} as AdtHttpClient]]) };
-    expect(await openArmingSessionOn(elsewhere.http, ahead, 'appserver-b', new Map(), { maxProbes: 2 })).toBe(
-      undefined,
-    );
-    expect(elsewhere.ended()).toEqual(elsewhere.sessions);
-    expect(elsewhere.sessions).toHaveLength(2);
-
-    const unnamed = balancedSap([undefined]);
-    expect(await openArmingSessionOn(unnamed.http, { byServer: new Map() }, 'appserver-b', new Map())).toBe(undefined);
-    expect(unnamed.ended()).toEqual([unnamed.sessions[0]]);
-  });
-
-  it('takes the first session as is when the debuggee names no server', async () => {
-    const { http, sessions } = balancedSap(['appserver-t4w2x']);
-    expect(await openSessionOnServer(http, undefined)).toEqual({ http: sessions[0], probes: 0 });
-    expect(sessions[0]!.get).not.toHaveBeenCalled();
-  });
-
-  it('takes the probed session when SAP does not say where it landed', async () => {
-    const { http, sessions, ended } = balancedSap([undefined]);
-    expect(await openSessionOnServer(http, 'appserver-rpsxx')).toEqual({ http: sessions[0], probes: 1 });
-    expect(ended()).toEqual([]);
-  });
-
-  it('takes the session as is when the release has no resource to probe with', async () => {
-    const absent = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')));
-    expect(await openSessionOnServer(absent.http, 'appserver-rpsxx')).toEqual({
-      http: absent.sessions[0],
-      probes: 1,
-    });
-    const broken = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
-    await expect(openSessionOnServer(broken.http, 'appserver-rpsxx')).rejects.toThrow(AdtApiError);
-  });
-
-  it('returns the last session after maxProbes misses, saying where it landed', async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x']);
-    const pinned = await openSessionOnServer(http, 'appserver-rpsxx', { maxProbes: 3 });
-    expect(pinned).toMatchObject({ instance: 'appserver-t4w2x', probes: 3 });
-    expect(pinned.http).toBe(sessions[2]);
-    expect(ended()).toEqual([sessions[0], sessions[1]]);
+    expect(await answeringServer(mockHttp({ get: vi.fn().mockResolvedValue(answer()) }))).toBeUndefined();
+    const absent = mockHttp({ get: vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')) });
+    expect(await answeringServer(absent)).toBeUndefined();
   });
 
   it("ends a session through the transport's own close (the Eclipse close-session request)", async () => {

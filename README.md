@@ -40,7 +40,9 @@ Claude:  abap_source  {type: "CLAS", name: "ZCL_ORDER", method: "get_total"}
 
 You need Node.js 22.12+ and git, an SAP system with ADT (on-premise SAP_BASIS 7.50 or later, or the
 SAP BTP ABAP Environment), and an SAP user with ADT access (`S_ADT_RES`) and debug authorization
-(`S_DEVELOP` with `OBJTYPE = DEBUG`, `ACTVT = 03`).
+(`S_DEVELOP` with `OBJTYPE = DEBUG`, `ACTVT = 03`). With several application servers, SAP runs the
+debugger's requests on the program's server over RFC, as the same user: `S_RFC` for function group
+`SADT_REST`, which Eclipse ADT needs too.
 
 **Claude Code**
 
@@ -195,8 +197,9 @@ connector: attaching across application servers, several stops in one run, steps
 step runs, statement kinds and an interactive session. On an S/4HANA system, experiments with its
 modules showed where a run started from SAP GUI stops across application servers. The newest parts —
 answers that outlast a call, watchpoints, the removal of leftovers, the wider search, the SAP GUI
-route — are tested against a simulated SAP so far, like every on-premise release (7.50, 7.58, 8.16):
-see the [roadmap](docs/roadmap.md).
+route, and reaching the program's application server through SAP's own request routing (read in SAP's
+source, not yet run live) — are tested against a simulated SAP so far, like every on-premise release
+(7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
 
 ## Development
 

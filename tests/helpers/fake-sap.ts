@@ -126,9 +126,17 @@ export interface Call {
   stateful: boolean;
   /** `X-sap-adt-sessiontype` as sent (stateful / stateless / undefined). */
   sessionType?: string;
-  /** Multi-server fake: the application server the request's session is pinned to. */
+  /** Multi-server fake: the application server the request ran on — its session's, or the one SAP forwarded it to. */
   server?: string;
+  /** Multi-server fake: the application server the request's session is pinned to. */
+  landed?: string;
+  /** `X-sap-adt-server-instance` as sent: the server the request asked to run on. */
+  routedTo?: string;
 }
+
+/** CX_ADT_REST_ROUTING as SAP's ADT handler answers a request it could not forward (DI2, SAP_BASIS 8.16). */
+export const routingFailure = (message: string) =>
+  `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><namespace id="com.sap.adt"/><type id="ExceptionRequestRooting"/><message lang="EN">${message}</message><localizedMessage lang="EN">${message}</localizedMessage><properties><entry key="com.sap.adt.communicationFramework.subType">ExceptionOnTargetServer</entry></properties></exc:exception>`;
 
 /** What the ADT data preview answers for USR41: the user's SAP GUI logons, or an HTTP status. */
 export type Usr41Answer = Array<{ server: string; date?: string; time?: string }> | number;
@@ -150,9 +158,17 @@ export interface FakeSapOptions {
   /** Multi-server system: each new stateful session lands on the next of these (named in sap-contextid);
    *  while a debuggee waits, new sessions avoid its server — SAP's balancer prefers the least-loaded one. */
   servers?: string[];
-  /** With servers: where a run the capture did not pin stops (INSTANCE_NAME) — a stateless trigger or the user's
-   *  own run. An attach from any other server is refused and spoils the debuggee for every later one. */
+  /** With servers: where a run stops that no session placed (INSTANCE_NAME) — a stateless trigger or the user's
+   *  own run. An attach run on any other server is refused and spoils the debuggee for every later one. */
   debuggeeServer?: string;
+  /** With servers: SAP's ADT handler runs a request that names another of them in X-sap-adt-server-instance there,
+   *  forwarded over RFC (SAP_BASIS 8.16, the BTP ABAP Environment). false: it ignores the header (older releases). */
+  routing?: boolean;
+  /** Forwarding a request to another server fails: SAP's routing exception with this sentence (no S_RFC, say). */
+  routingFails?: string;
+  /** With servers: the load balancer puts a new session on the server its first request names in `saplb`, as the
+   *  BTP ABAP Environment's does for Eclipse. */
+  balancerRoutes?: boolean;
   /** trigger="none": the user's own run reaches the breakpoint. */
   runByUser?: boolean;
   /** The user's SAP GUI logons (USR41, read through the ADT data preview); a number: the preview answers that
@@ -317,8 +333,22 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
       // A stateful request without a context opens a session on the next server (load balancing).
       const unloaded = options.servers?.filter((server) => server !== stoppedOn);
       const balanced = unloaded?.length ? unloaded : options.servers;
-      const opened =
-        balanced && sessionType === 'stateful' && !context ? balanced[sessionsOpened++ % balanced.length] : undefined;
+      let opened: string | undefined;
+      if (balanced && sessionType === 'stateful' && !context) {
+        const wanted = headers.saplb;
+        const placed = options.balancerRoutes && wanted !== undefined && options.servers?.includes(wanted);
+        opened = placed ? wanted : balanced[sessionsOpened % balanced.length];
+        sessionsOpened++;
+      }
+      const landed = context ?? opened;
+      // SAP's ADT handler forwards a request that names another server of the system to that server, over RFC.
+      const routedTo = headers['X-sap-adt-server-instance'];
+      const forwarded =
+        routedTo !== undefined &&
+        options.routing !== false &&
+        routedTo !== landed &&
+        (options.servers?.includes(routedTo) ?? false);
+      const ranOn = forwarded ? routedTo : landed;
       const call: Call = {
         method,
         path: parsed.pathname,
@@ -326,15 +356,25 @@ export function installFakeSap(mockFetch: Mock, options: FakeSapOptions = {}) {
         body,
         stateful: sessionType === 'stateful',
         ...(sessionType ? { sessionType } : {}),
-        ...((context ?? opened) ? { server: context ?? opened } : {}),
+        ...(ranOn ? { server: ranOn } : {}),
+        ...(landed ? { landed } : {}),
+        ...(routedTo ? { routedTo } : {}),
       };
       calls.push(call);
-      const response = await answer(call, method, body, init);
+      const response =
+        forwarded && options.routingFails
+          ? mockResponse(502, routingFailure(options.routingFails))
+          : await answer(call, method, body, init);
       if (opened)
         response.headers.append(
           'set-cookie',
           `sap-contextid=SID%3aANON%3a${opened}%3aCTX${sessionsOpened}-NEW; path=/`,
         );
+      // The handler that runs a request itself names its server when asked; a forwarded one comes back without it.
+      const answeredBy = landed ?? balanced?.[0];
+      if (headers['sap-adt-saplb'] === 'fetch' && !forwarded && answeredBy) {
+        response.headers.set('sap-adt-saplb', answeredBy);
+      }
       return response;
     },
   );

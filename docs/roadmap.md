@@ -23,15 +23,19 @@ statement kinds and an interactive session ([what was seen](adt-debugger-protoco
 On-premise, only SAP GUI runs on one S/4HANA system were tried, with experiment scripts rather than
 this server ([SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs)). The later additions were observed
 nowhere: answers that outlast a call (`wait`), the release on a non-exclusive attach, the removal of
-leftovers (`abap_breakpoints`), the wider search and source types, and the SAP GUI route itself.
+leftovers (`abap_breakpoints`), the wider search and source types, the SAP GUI route itself, and the
+debugger session routed to the program's application server (`X-sap-adt-server-instance`, read in
+SAP's source only).
 
-**Resume with.** On the BTP trial after a redeploy: a capture with `trigger: "none"` that waits past
-50 seconds and is picked up with `wait`; `abap_breakpoints` `list` during a capture and `delete` after a
-killed one; `abap_search` on a service binding's name; `abap_source` from `SRVB` to the behavior pool.
+**Resume with.** On the BTP trial the redeploy of 29 October 2026 ran routing, interactive sessions,
+`http`, conditions, event breakpoints, `SRVB` → behavior pool, `wait`, `abap_breakpoints` and
+watchpoints ([§8](adt-debugger-protocol.md#8-observed-live)); left there: a process killed outright
+(not stopped) mid-capture, and a message breakpoint on code that issues a `MESSAGE`.
 Then Basic authentication on an on-premise system — one class with unit tests, one loop, one RAP
-behavior pool with `trigger: "none"`; on S/4HANA, a capture caught from SAP GUI on each server, and
-what stays switched on on the other servers after the removal
-([live checks 21-23](adt-debugger-protocol.md#9-live-checks-still-owed)). Record SAP's answers as test
+behavior pool with `trigger: "none"`; on S/4HANA with several servers, a program stopped on another
+server than the debugger session's — attached, stepped and released there through the routed session
+— and a capture caught from SAP GUI on each server, armed there
+([live checks 21-24](adt-debugger-protocol.md#9-live-checks-still-owed)). Record SAP's answers as test
 fixtures.
 
 <a id="live-2"></a>
@@ -108,8 +112,10 @@ on the attached session) and tested against simulated answers only.
 value that changed — as are its refusals and how a watchpoint on a local behaves across frames
 ([live check 20](adt-debugger-protocol.md#9-live-checks-still-owed)).
 
-**Resume with.** A loop that changes a local and an attribute: watch both from the loop's first line,
-with and without a condition, once with a variable not yet visible; record SAP's answers as fixtures.
+**Resume with.** Seen on the BTP trial (29 October 2026): a watchpoint on a local stopping at each
+change with from and to, and SAP's refusal of a variable not visible
+([§8](adt-debugger-protocol.md#8-observed-live)). Left: an attribute, a condition, the one-shot
+`watch` parameter, and SAP's answers recorded as fixtures.
 
 <a id="trace-1"></a>
 ## TRACE-1 — From an OData URL or a Fiori app to the handlers, in one call
