@@ -24,8 +24,9 @@ killed may still be armed: `abap_breakpoints` with `action: "list"` shows them, 
 **A run started from SAP GUI does not stop, while the same code run from a Fiori app does.** On some
 systems a session opened from SAP Logon or SAP Business Client (SM04: type `GUI`) never stops at
 external breakpoints — Eclipse's neither. A session opened through transaction SM51 (SM04: type `RFC`)
-does: once the capture waits, select the application server in SM51, then *Remote Logon* (or
-double-click it), and run the code in the new session. Prefer `trigger: "unittest"` or `"http"` where
+does: once the capture waits, select the application server in SM51, then *Goto → Remote Logon →
+Normal* (or double-click it), and run the code in the new session — a session opened before the
+capture started does not stop either. Prefer `trigger: "unittest"` or `"http"` where
 the code allows. Why GUI sessions ignore them is a question for the system's Basis team or SAP (kernel
 patch, profile parameters): see [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
 

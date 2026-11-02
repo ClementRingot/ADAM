@@ -340,7 +340,8 @@ describe('abap_debug — a hit', () => {
     expect(json?.hint).toContain(
       'a session opened from SAP Logon or SAP Business Client never stops at external breakpoints',
     );
-    expect(json?.hint).toContain('open a new session with SM51');
+    expect(json?.hint).toContain('nor one opened before the capture started');
+    expect(json?.hint).toContain('Goto → Remote Logon → Normal');
   });
 
   it('says what conflicts when SAP ends the wait at once (SAP GUI external breakpoints, ED702)', async () => {
@@ -1538,6 +1539,7 @@ describe('abap_debug — captures that outlast their call', () => {
     // While nothing stopped, the answer says how to run the code: from SAP GUI, through SM51.
     expect(first.json?.hint).toContain('Tell the user now: run the code as SAP user ADMIN');
     expect(first.json?.hint).toContain('SM51');
+    expect(first.json?.hint).toContain('a session opened before the capture started');
     expect((await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).text).toBe(
       'Your debug capture S1 is still running: abap_debug_session action="wait" returns its result, action="end" stops it.',
     );

@@ -507,11 +507,11 @@ type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
  * one opened through SM51 stops. See docs/adt-debugger-protocol.md ("SAP GUI runs").
  */
 const SAP_GUI_HINT =
-  ' Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse\'s), while one opened through transaction SM51 does — once the capture waits, open a new session with SM51 (select the application server, then "Remote Logon", or double-click it) and run the code there.';
+  " Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse's), nor one opened before the capture started, while a new one opened through transaction SM51 once the capture waits does — SM51, select the application server, Goto → Remote Logon → Normal (or double-click it), and run the code there.";
 
 /** While a capture with trigger "none" waits: what to tell the user, before nothing stops. */
 function runItYourselfHint(user: string): string {
-  return `Tell the user now: run the code as SAP user ${user} while the capture waits. From SAP GUI, in a new session opened through transaction SM51 (select the application server, then "Remote Logon", or double-click it) — on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints. A Fiori app or another HTTP call stops as it is.`;
+  return `Tell the user now: run the code as SAP user ${user} while the capture waits. From SAP GUI, in a NEW session opened now — SM51, select the application server, Goto → Remote Logon → Normal (or double-click the server): on some systems a session opened before the capture started, or from SAP Logon or SAP Business Client, never stops at external breakpoints. A Fiori app or another HTTP call stops as it is.`;
 }
 
 function notHitHint(

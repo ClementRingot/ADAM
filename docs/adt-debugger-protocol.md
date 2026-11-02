@@ -244,7 +244,8 @@ server (G, S/4HANA SAP_BASIS 8.16, two application servers; Eclipse ADT behaves 
 - **A session of type RFC stops**: one opened through transaction SM51 once the breakpoints are armed
   — select the server, then *Remote Logon*, or double-click it (SM04: `RFC`, `R=1 T=S S=<server>`) —
   on either server, whichever server armed them. HTTP runs (a Fiori app's requests, a REST client's)
-  stop as well. A Remote Logon opened before the arming did not stop (one observation).
+  stop as well. A Remote Logon opened before the arming did not stop (two observations, the second
+  with a capture by this server; a new Remote Logon opened during that same capture stopped).
 - **External breakpoints set from SAP GUI** (ABAP Editor, *Utilities → Breakpoints*) do stop a GUI
   session, in the SAP GUI debugger of the frontend that set them. They are another mechanism (R,
   `HTTP_DEBUG_UPDATE`): stored in `ABDBG_BPS`, activated with the setter's SAP GUI connection key
@@ -455,8 +456,8 @@ debugger session was routed to the program's server ([§5](#5-reaching-the-debug
     watchpoint on a local stops in other frames, and the condition's semantics (after the change).
 21. **SAP GUI sessions**: why a session of type GUI ignores ADT's external breakpoints on one S/4HANA
     system ([SAP GUI runs](#sap-gui-runs)) — the kernel patch, profile parameters, SAP notes — and
-    whether other systems and releases behave alike; whether a Remote Logon opened before the arming
-    stops.
+    whether other systems and releases behave alike; why a Remote Logon opened before the arming
+    does not stop.
 22. **SM51 sessions end to end**: a capture with `interactive: true` holding a run from a session
     opened through SM51 on the other server than the debugger session's — attached, stepped and
     released there through the routed session.

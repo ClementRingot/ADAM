@@ -103,9 +103,11 @@ Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP
 
 **Runs started from SAP GUI.** On some systems a session opened from SAP Logon or SAP Business Client
 (a session of type GUI) never stops at external breakpoints — Eclipse's neither — while a session
-opened through transaction SM51 does, as do HTTP runs such as a Fiori app's requests. Once the capture
-waits, open a new session with SM51 (select the application server, then *Remote Logon*, or
-double-click it) and run the code there. With `trigger: "none"` the capture says so while it waits —
+opened through transaction SM51 once the capture waits does, as do HTTP runs such as a Fiori app's
+requests; a session opened before the capture started does not. Once the capture waits, open a new
+session — SM51, select the application server, *Goto → Remote Logon → Normal*, or double-click it —
+and run the code there. With `trigger: "none"` the agent asks before the call whether the code runs
+from SAP GUI and says so; the capture repeats it while it waits —
 its progress messages, and the `hint` of an answer `running: true` — and so does the hint of a capture
 where nothing stopped.
 External breakpoints set in SAP GUI itself (ABAP Editor) exclude the capture's for the same user (SAP
