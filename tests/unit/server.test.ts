@@ -107,19 +107,25 @@ describe('tools/list', () => {
     const debugDescription = (sapGui?: boolean) => listTools(sapGui)[0]?.description ?? '';
     for (const text of [serverInstructions(true), debugDescription(true)]) {
       expect(text).toContain('SM51 (select the application server, Goto → Remote Logon → Normal)');
-      expect(text).toContain('Relay hint to the user step by step');
+      expect(text).toContain('END YOUR TURN');
       expect(text).not.toContain('S/4HANA Cloud Public Edition');
+      expect(text).not.toContain('double-click');
     }
+    expect(debugDescription(true)).toMatch(/^RULE: trigger "none" needs a human action/);
+    expect(debugDescription(true)).toContain('Pass runFrom "http" for a Fiori app');
     for (const text of [serverInstructions(false), debugDescription(false)]) {
       expect(text).toContain('this system has no SAP GUI');
       expect(text).not.toContain('Remote Logon');
+      expect(text).not.toContain('RULE');
     }
+    expect(debugDescription(false)).toMatch(/^Debug ABAP code/);
     // Not known yet (a destination resolved on the first call): the rule for both.
     for (const text of [serverInstructions(), debugDescription()]) {
       expect(text).toContain('On an on-premise or private cloud system');
       expect(text).toContain('never ask about it or mention SM51');
     }
-    expect(debugDescription()).not.toContain('{trigger-none}');
+    expect(debugDescription()).toMatch(/^RULE on an on-premise or private cloud system: /);
+    expect(debugDescription()).not.toContain('{trigger-none');
   });
 });
 

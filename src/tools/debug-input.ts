@@ -167,6 +167,12 @@ export const DEBUG_INPUT_SHAPE = {
     .describe(
       'What runs the code. unittest (default): the harmless ABAP Unit tests of triggerName, else of type + name, else of the first breakpoint object (FUNC: its function group). http: a GET of url. none: the capture only waits timeoutSeconds while you run the code yourself (Fiori app, a report, Postman) as the SAME SAP user — the tool description says what to tell the user first.',
     ),
+  runFrom: z
+    .enum(['sapgui', 'http'])
+    .optional()
+    .describe(
+      'trigger=none: where the user runs the code, when their request says so. http: a Fiori app, a browser, Postman or any HTTP call — no SM51 steps; the call answers once the breakpoints are armed so the user opens the app. sapgui: a report, a transaction, a screen — the SM51 steps. Leave it out when unsure: the steps cover both.',
+    ),
   triggerName: z
     .string()
     .max(40)
@@ -236,7 +242,9 @@ export const DEBUG_INPUT_SHAPE = {
     .min(1, 'timeoutSeconds must be 1-900.')
     .max(900, 'timeoutSeconds must be 1-900.')
     .optional()
-    .describe('How long to wait for the first stop (1-900, default 60).'),
+    .describe(
+      'How long to wait for the first stop (1-900; default 60, 300 with trigger=none: the user reads the steps and opens their session first). The capture stops listening then.',
+    ),
 };
 
 type DebugBreakpointInput = z.infer<typeof DebugBreakpointSchema>;
@@ -341,6 +349,13 @@ export const DebugInputSchema = z
         code: 'custom',
         path: ['url'],
         message: 'trigger="http" needs url (a host-relative OData path).',
+      });
+    }
+    if (input.runFrom && input.trigger !== 'none') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['runFrom'],
+        message: 'runFrom says where the user runs the code: only with trigger="none".',
       });
     }
   });

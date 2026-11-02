@@ -49,6 +49,7 @@ The protocol behind each step is described in [the ADT debugger protocol](adt-de
 | `trigger` | `unittest` (default), `http` or `none` — see [Triggers](#triggers) |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint's object |
 | `url` | `trigger: "http"`: a host-relative OData path, `/sap/opu/odata4/…` or `/sap/opu/odata/sap/<SRV>/…` |
+| `runFrom` | `trigger: "none"`: `http` when the user runs the code from a Fiori app or another HTTP call (no SM51 steps), `sapgui` from SAP GUI — see [Runs started from SAP GUI](#triggers) |
 | `variables` | Up to 20 expressions read at every stop and after every step: `LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `LT_ITEMS[3]`, `ME->MV_STATE`, `SY-SUBRC`. Default: every variable of the stopped frame (up to 60) |
 | `steps` | Steps after each stop: 0 (default) to 10,000, as far as the budgets allow. Up to 20 come back one entry each; more as a [compact trace](#long-step-runs) |
 | `stepMode` | `over` (default), `into` (follow calls) or `out` (return to the caller) |
@@ -56,7 +57,7 @@ The protocol behind each step is described in [the ADT debugger protocol](adt-de
 | `maxSeconds` | Time budget once the program stopped (default 120; ceiling `ABAP_DEBUGGER_MAX_SECONDS`, default 600). A step costs two or three requests to SAP |
 | `maxResultKB` | Size budget of the result, in KB of JSON (default 40, about 10k tokens; ceiling `ABAP_DEBUGGER_MAX_RESULT_KB`, default 200) |
 | `interactive` | `true`: return at the first stop and keep the program waiting there for [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) |
-| `timeoutSeconds` | How long to wait for the first stop (1-900, default 60) |
+| `timeoutSeconds` | How long to wait for the first stop (1-900; default 60, 300 with `trigger: "none"`, where the user reads the steps and opens their session first) |
 
 ### Breakpoints
 
@@ -105,11 +106,21 @@ Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP
 (a session of type GUI) never stops at external breakpoints — Eclipse's neither — while a session
 opened through transaction SM51 once the capture waits does, as do HTTP runs such as a Fiori app's
 requests; a session opened before the capture started does not. Once the capture waits, open a new
-session — SM51, select the application server, *Goto → Remote Logon → Normal*, or double-click it —
-and run the code there. With `trigger: "none"` the call answers right after arming the breakpoints,
-with `running: true` and these steps as its `hint`: the agent relays them to the user, then waits for
-the stop with `abap_debug_session` action `wait`. Its progress messages repeat them while it waits,
-and so does the hint of a capture where nothing stopped. On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
+session — SM51, select the application server, *Goto → Remote Logon → Normal* — and run the code
+there. With `trigger: "none"` the user must act before anything stops, so right after arming the
+breakpoints:
+
+- where the client supports MCP elicitation (stdio only), it shows the user these steps in a dialog:
+  accept goes on waiting for the stop, decline stops the capture. The dialog's text is in English;
+- otherwise, the call answers at once with `running: true`, `userMessage` (the steps, ready to show
+  to the user) and `agentInstructions` (for the agent: show `userMessage`, end its turn, and wait for
+  the stop with `abap_debug_session` action `wait` once the user ran the code).
+
+The tool description puts this rule first. The progress messages repeat the steps while the capture
+waits, and so does the hint of a capture where nothing stopped. When the user runs the code from a
+Fiori app or another HTTP call, the agent passes `runFrom: "http"`: no SM51 steps nor dialog, and the
+call answers at once with a `userMessage` telling the user to open the app (`runFrom: "sapgui"`, or
+none, keeps the steps). On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
 Edition: a service key or an Internet destination, or `ABAP_DEBUGGER_SAP_GUI=false`) none of this is
 said, and the call waits as usual.
 External breakpoints set in SAP GUI itself (ABAP Editor) exclude the capture's for the same user (SAP

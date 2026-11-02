@@ -89,6 +89,7 @@ async function main(argv: string[]): Promise<void> {
   const server = createMcpServer({
     ...(connection ? { connection } : {}),
     problems,
+    elicitation: true,
     ...(config ? { sapGui: config.sapGui } : {}),
   });
   await server.connect(new StdioServerTransport());

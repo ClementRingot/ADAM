@@ -20,13 +20,18 @@ export class BackgroundWork implements DebugEntry {
   outcome: ToolResult | undefined;
   /** A call has received the answer. */
   delivered = false;
-  /** What the user must do now for the work to go on (trigger "none": run the code). */
+  /** What the user must do now for the work to go on (trigger "none": run the code), shown as userMessage. */
   hint: string | undefined;
+  /** The user was shown the hint in a dialog of the client (MCP elicitation). */
+  shownInDialog = false;
   readonly done: Promise<ToolResult>;
   private readonly abort = new AbortController();
   private waiterProgress: ((message: string) => void) | undefined;
+  private waiterConfirm: ToolContext['confirm'];
   /** The work asked its call to answer now (answerNow), and no call has done so yet. */
   private answerNowPending = false;
+  /** answerNow: the next answer brings the hint first, and the agent stops for the user. */
+  private stopForUser = false;
   private wakeWaiter: (() => void) | undefined;
 
   constructor(
@@ -50,7 +55,20 @@ export class BackgroundWork implements DebugEntry {
       },
       answerNow: () => {
         this.answerNowPending = true;
+        this.stopForUser = true;
         this.wakeWaiter?.();
+      },
+      // The dialog closes once the work is done; declining it stops the work.
+      confirm: async (message) => {
+        const ask = this.waiterConfirm;
+        if (!ask) return undefined;
+        const closed = new AbortController();
+        void this.done.then(() => closed.abort());
+        this.shownInDialog = true;
+        const answer = await ask(message, closed.signal);
+        if (answer === undefined) this.shownInDialog = false;
+        else if (answer !== 'accept') this.cancel();
+        return answer;
       },
       owner,
     };
@@ -86,6 +104,7 @@ export class BackgroundWork implements DebugEntry {
     if (context.signal?.aborted) this.cancel();
     context.signal?.addEventListener('abort', onAbort, { once: true });
     this.waiterProgress = context.progress;
+    this.waiterConfirm = context.confirm;
     const answerNow = new Promise<typeof ANSWER_NOW>((resolve) => {
       // A cancelled work answers with what it cleaned up, not with steps for the user.
       this.wakeWaiter = () => {
@@ -105,8 +124,16 @@ export class BackgroundWork implements DebugEntry {
     } finally {
       this.wakeWaiter = undefined;
       if (this.waiterProgress === context.progress) this.waiterProgress = undefined;
+      if (this.waiterConfirm === context.confirm) this.waiterConfirm = undefined;
       context.signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  /** Whether this answer is the first since answerNow: the agent must stop for the user. */
+  takeStopForUser(): boolean {
+    const stop = this.stopForUser;
+    this.stopForUser = false;
+    return stop;
   }
 
   describe(): Record<string, unknown> {
@@ -122,14 +149,19 @@ export class BackgroundWork implements DebugEntry {
 
 /** The answer of a call that must return before its work is done. */
 export function stillRunning(work: BackgroundWork, limits: DebugLimits): ToolResult {
-  return textResult(
-    toolJson({
-      session: work.id,
-      running: true,
-      doing: work.doing,
-      seconds: Math.round((Date.now() - work.startedAt) / 1000),
-      ...(work.hint ? { hint: work.hint } : {}),
-      next: `${work.hint ? 'First relay hint to the user, step by step. ' : ''}It goes on in the background. Call abap_debug_session with action "wait" for its answer (each call waits up to ${limits.callSeconds} s: ABAP_DEBUGGER_CALL_SECONDS), or action "end" to stop it.`,
-    }),
-  );
+  const wait = `abap_debug_session with action "wait" for its answer (each call waits up to ${limits.callSeconds} s: ABAP_DEBUGGER_CALL_SECONDS), or action "end" to stop it.`;
+  const status = {
+    session: work.id,
+    running: true,
+    doing: work.doing,
+    seconds: Math.round((Date.now() - work.startedAt) / 1000),
+  };
+  if (!work.hint) return textResult(toolJson({ ...status, next: `It goes on in the background. Call ${wait}` }));
+  // For the user, as it is; for the agent, apart: what to do with it.
+  const agentInstructions = work.takeStopForUser()
+    ? 'END YOUR TURN NOW: show userMessage to the user, in their language, keeping its numbered steps. Do not call abap_debug_session until they reply; then call action "wait" for the stop (action "end" stops the capture).'
+    : work.shownInDialog
+      ? `The user sees userMessage in a dialog of the client. It goes on in the background: call ${wait}`
+      : `Still waiting for the stop. If the user has not seen userMessage yet, show it to them, in their language, and end your turn; once they ran the code, call ${wait}`;
+  return textResult(toolJson({ ...status, userMessage: work.hint, agentInstructions }));
 }

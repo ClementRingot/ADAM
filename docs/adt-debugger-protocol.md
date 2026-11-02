@@ -242,7 +242,7 @@ server (G, S/4HANA SAP_BASIS 8.16, two application servers; Eclipse ADT behaves 
   opened before or after the breakpoints were armed, with user or terminal-id breakpoints, whatever
   server they were armed from. Neither did one of Eclipse's.
 - **A session of type RFC stops**: one opened through transaction SM51 once the breakpoints are armed
-  — select the server, then *Remote Logon*, or double-click it (SM04: `RFC`, `R=1 T=S S=<server>`) —
+  — select the server, then *Remote Logon* (SM04: `RFC`, `R=1 T=S S=<server>`) —
   on either server, whichever server armed them. HTTP runs (a Fiori app's requests, a REST client's)
   stop as well. A Remote Logon opened before the arming did not stop (two observations, the second
   with a capture by this server; a new Remote Logon opened during that same capture stopped).

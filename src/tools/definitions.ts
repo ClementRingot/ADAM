@@ -24,6 +24,7 @@ export interface ToolDefinition {
 }
 
 const DEBUG_DESCRIPTION = [
+  '{trigger-none-rule}',
   'Debug ABAP code on the connected SAP system in ONE call: arm breakpoints (lines or class methods in CLAS, PROG or FUNC objects, optionally with an ABAP condition; or where a message is issued, a statement kind runs, an exception is raised; watchpoints, set at the first stop, then stop wherever a variable changes), run the code (its harmless ABAP Unit tests, an OData GET, or wait while you run it yourself as the same SAP user), and at every stop of that one run record the position, the call stack, the variables and optional steps — then release the program and remove the breakpoints.',
   'The program runs once, however many stops you ask for: a breakpoint in a loop with hits 5 shows five iterations of the same run. Nothing stays stopped after the call returns, so name every variable you need up front; to look again, run another capture — or start an interactive session (interactive: true) and decide each move with abap_debug_session.',
   'Lines are numbered as abap_source shows the ACTIVE source. Per capture: at most 20 breakpoints and 50 stops, and as many steps as the budgets allow — the run is followed until its result size (maxResultKB, default 40 KB) or inspection time (maxSeconds, default 120 s) runs out, then goes on without stopping. Past 20 steps from one stop, the steps come back as a compact trace; until ends them at a line or once a variable changed.',
@@ -34,7 +35,16 @@ const DEBUG_DESCRIPTION = [
 ].join('\n');
 
 const SM51_ADVICE =
-  'the call answers right after arming the breakpoints, with running: true and hint: the steps to run the code — from SAP GUI in a NEW session opened through SM51 (select the application server, Goto → Remote Logon → Normal), as a session opened before, or from SAP Logon or SAP Business Client, never stopped at external breakpoints on some systems. Relay hint to the user step by step, in their language, then call abap_debug_session action "wait".';
+  'from SAP GUI, only a NEW session opened through SM51 (select the application server, Goto → Remote Logon → Normal) once the breakpoints are armed stops at them — on some systems, a session opened before, or from SAP Logon or SAP Business Client, never does. When the user says they run it from a Fiori app or another HTTP call, pass runFrom "http": no SM51 steps. Otherwise, right after arming, the client shows the user these steps in a dialog where it can (MCP elicitation: accept goes on waiting, decline stops the capture); else the call answers at once with running: true, userMessage (the steps, for the user) and agentInstructions (for you): show userMessage to the user in their language, keeping its numbered steps, END YOUR TURN, and call abap_debug_session action "wait" once they ran the code. runFrom "http" answers at once the same way, telling the user to open the app.';
+
+const SM51_RULE =
+  'trigger "none" needs a human action: relay the steps of the answer (userMessage) to the user and end your turn before calling wait. Pass runFrom "http" for a Fiori app (no SM51 steps).';
+
+/** The rule put first in the description, where it is not missed: none on a system without SAP GUI. */
+export function triggerNoneRule(sapGui: boolean | undefined): string {
+  if (sapGui === false) return '';
+  return sapGui ? `RULE: ${SM51_RULE}` : `RULE on an on-premise or private cloud system: ${SM51_RULE}`;
+}
 
 /**
  * What to tell the user about a run they start themselves (trigger "none"): how to run it from SAP
@@ -43,7 +53,7 @@ const SM51_ADVICE =
  */
 export function triggerNoneAdvice(sapGui: boolean | undefined): string {
   if (sapGui === false) {
-    return 'trigger "none": this system has no SAP GUI (BTP ABAP Environment or S/4HANA Cloud Public Edition) — never ask about it or mention SM51: the user runs the code from a Fiori app or another HTTP call while the capture waits. An answer running: true says so as hint: relay it.';
+    return 'trigger "none": this system has no SAP GUI (BTP ABAP Environment or S/4HANA Cloud Public Edition) — never ask about it or mention SM51: the user runs the code from a Fiori app or another HTTP call while the capture waits. An answer running: true says so as userMessage: show it to the user.';
   }
   if (sapGui) return `trigger "none": ${SM51_ADVICE}`;
   return `trigger "none": on the BTP ABAP Environment or S/4HANA Cloud Public Edition, which have no SAP GUI, never ask about it or mention SM51. On an on-premise or private cloud system, ${SM51_ADVICE}`;
@@ -124,7 +134,10 @@ export function listTools(sapGui?: boolean) {
   return TOOLS.map((tool) => ({
     name: tool.name,
     title: tool.title,
-    description: tool.description.replace('{trigger-none}', triggerNoneAdvice(sapGui)),
+    description: tool.description
+      .replace('{trigger-none-rule}', triggerNoneRule(sapGui))
+      .replace('{trigger-none}', triggerNoneAdvice(sapGui))
+      .replace(/^\n/, ''),
     inputSchema: clean(z.toJSONSchema(tool.schema, { io: 'input' })) as { type: 'object'; [key: string]: unknown },
     annotations: tool.annotations,
   }));
