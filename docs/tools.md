@@ -49,6 +49,7 @@ The protocol behind each step is described in [the ADT debugger protocol](adt-de
 | `trigger` | `unittest` (default), `http` or `none` — see [Triggers](#triggers) |
 | `triggerName` | The class, program or function group whose unit tests run the code, when it is not the breakpoint's object |
 | `url` | `trigger: "http"`: a host-relative OData path, `/sap/opu/odata4/…` or `/sap/opu/odata/sap/<SRV>/…` |
+| `runFrom` | `trigger: "none"`: `http` when the user runs the code from a Fiori app or another HTTP call (no SM51 steps), `sapgui` from SAP GUI — see [Runs started from SAP GUI](#triggers) |
 | `variables` | Up to 20 expressions read at every stop and after every step: `LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `LT_ITEMS[3]`, `ME->MV_STATE`, `SY-SUBRC`. Default: every variable of the stopped frame (up to 60) |
 | `steps` | Steps after each stop: 0 (default) to 10,000, as far as the budgets allow. Up to 20 come back one entry each; more as a [compact trace](#long-step-runs) |
 | `stepMode` | `over` (default), `into` (follow calls) or `out` (return to the caller) |
@@ -116,7 +117,10 @@ breakpoints:
   the stop with `abap_debug_session` action `wait` once the user ran the code).
 
 The tool description puts this rule first. The progress messages repeat the steps while the capture
-waits, and so does the hint of a capture where nothing stopped. On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
+waits, and so does the hint of a capture where nothing stopped. When the user runs the code from a
+Fiori app or another HTTP call, the agent passes `runFrom: "http"`: no SM51 steps nor dialog, and the
+call answers at once with a `userMessage` telling the user to open the app (`runFrom: "sapgui"`, or
+none, keeps the steps). On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
 Edition: a service key or an Internet destination, or `ABAP_DEBUGGER_SAP_GUI=false`) none of this is
 said, and the call waits as usual.
 External breakpoints set in SAP GUI itself (ABAP Editor) exclude the capture's for the same user (SAP

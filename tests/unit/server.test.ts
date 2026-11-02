@@ -111,7 +111,8 @@ describe('tools/list', () => {
       expect(text).not.toContain('S/4HANA Cloud Public Edition');
       expect(text).not.toContain('double-click');
     }
-    expect(debugDescription(true)).toMatch(/^RULE: trigger "none" from SAP GUI needs a human action/);
+    expect(debugDescription(true)).toMatch(/^RULE: trigger "none" needs a human action/);
+    expect(debugDescription(true)).toContain('Pass runFrom "http" for a Fiori app');
     for (const text of [serverInstructions(false), debugDescription(false)]) {
       expect(text).toContain('this system has no SAP GUI');
       expect(text).not.toContain('Remote Logon');

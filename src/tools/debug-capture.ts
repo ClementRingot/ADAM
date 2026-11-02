@@ -103,6 +103,8 @@ export interface DebugRequest {
   /** The event breakpoints of `breakpoints`, then the top-level `exceptionClass`. */
   events: EventLocation[];
   trigger: DebugTrigger;
+  /** trigger "none": where the user runs the code — from SAP GUI (the SM51 steps) or over HTTP (Fiori). */
+  runFrom?: 'sapgui' | 'http';
   triggerName?: string;
   url?: string;
   variables: string[];
@@ -208,6 +210,7 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
     locations,
     events,
     trigger: (str('trigger') as DebugTrigger | undefined) ?? 'unittest',
+    ...(str('runFrom') ? { runFrom: str('runFrom') as 'sapgui' | 'http' } : {}),
     ...(str('triggerName') ? { triggerName: str('triggerName')?.toUpperCase() } : {}),
     ...(str('url') ? { url: str('url') } : {}),
     variables: [...new Set(variables)],
@@ -708,7 +711,8 @@ export class CaptureRun {
         })
       : undefined;
     const waitStart = Date.now();
-    const sapGui = conn.sapGui !== false;
+    // The SM51 steps only where the user may run it from SAP GUI: not over HTTP (runFrom "http").
+    const sapGui = conn.sapGui !== false && req.runFrom !== 'http';
     const waiting =
       plan.kind !== 'none'
         ? 'waiting for the run to stop at a breakpoint'
@@ -718,8 +722,10 @@ export class CaptureRun {
     if (plan.kind === 'none') context.hint?.(runItYourselfHint(user, sapGui));
     context.progress?.(`${waiting} (0 of ${req.timeoutSeconds} s)`);
     // From SAP GUI the user must open their session now: the client shows the steps in a dialog
-    // where it can, else the call answers at once with them.
-    if (plan.kind === 'none' && sapGui) {
+    // where it can, else the call answers at once with them. Over HTTP it answers at once too:
+    // the user opens the app once the breakpoints are armed.
+    if (plan.kind === 'none' && req.runFrom === 'http') context.answerNow?.();
+    else if (plan.kind === 'none' && sapGui) {
       const asking = context.confirm?.(runItYourselfHint(user, sapGui) + DIALOG_BUTTONS);
       if (!asking) context.answerNow?.();
       else

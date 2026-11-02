@@ -35,10 +35,10 @@ const DEBUG_DESCRIPTION = [
 ].join('\n');
 
 const SM51_ADVICE =
-  'from SAP GUI, only a NEW session opened through SM51 (select the application server, Goto → Remote Logon → Normal) once the breakpoints are armed stops at them — on some systems, a session opened before, or from SAP Logon or SAP Business Client, never does. Right after arming, the client shows the user these steps in a dialog where it can (MCP elicitation: accept goes on waiting, decline stops the capture); otherwise the call answers at once with running: true, userMessage (the steps, for the user) and agentInstructions (for you): show userMessage to the user in their language, keeping its numbered steps, END YOUR TURN, and call abap_debug_session action "wait" once they ran the code.';
+  'from SAP GUI, only a NEW session opened through SM51 (select the application server, Goto → Remote Logon → Normal) once the breakpoints are armed stops at them — on some systems, a session opened before, or from SAP Logon or SAP Business Client, never does. When the user says they run it from a Fiori app or another HTTP call, pass runFrom "http": no SM51 steps. Otherwise, right after arming, the client shows the user these steps in a dialog where it can (MCP elicitation: accept goes on waiting, decline stops the capture); else the call answers at once with running: true, userMessage (the steps, for the user) and agentInstructions (for you): show userMessage to the user in their language, keeping its numbered steps, END YOUR TURN, and call abap_debug_session action "wait" once they ran the code. runFrom "http" answers at once the same way, telling the user to open the app.';
 
 const SM51_RULE =
-  'trigger "none" from SAP GUI needs a human action: relay the steps of the answer (userMessage) to the user and end your turn before calling wait.';
+  'trigger "none" needs a human action: relay the steps of the answer (userMessage) to the user and end your turn before calling wait. Pass runFrom "http" for a Fiori app (no SM51 steps).';
 
 /** The rule put first in the description, where it is not missed: none on a system without SAP GUI. */
 export function triggerNoneRule(sapGui: boolean | undefined): string {

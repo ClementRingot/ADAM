@@ -317,6 +317,18 @@ describe('abap_debug — interactive sessions', () => {
 });
 
 describe('abap_debug — interactive, a run by the user on another application server', () => {
+  it('asks a Fiori run of an on-premise system without SM51 steps (runFrom "http")', async () => {
+    installFakeSap({ hit: true, runByUser: true, sessionUser: 'ADMIN' });
+    const started = await start({ line: 9, trigger: 'none', runFrom: 'http' });
+    expect(started.json).toMatchObject({ session: 'S1', running: true });
+    expect(started.json?.userMessage).toBe(
+      'The breakpoints are armed: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
+    );
+    expect(started.json?.agentInstructions).toMatch(/^END YOUR TURN NOW/);
+    expect((await move({ action: 'wait' })).json).toMatchObject({ hit: true, session: 'S1' });
+    await move({ action: 'end' });
+  });
+
   it('holds the run where it stopped and makes every move there, through a session SAP routes to its server', async () => {
     const { calls } = installFakeSap({
       hit: true,

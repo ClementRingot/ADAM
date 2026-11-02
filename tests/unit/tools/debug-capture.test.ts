@@ -1660,6 +1660,40 @@ describe('abap_debug — captures that outlast their call', () => {
     }
   });
 
+  it('asks a Fiori run without SM51 steps nor dialog (runFrom "http"), at once', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    let asked = false;
+    const first = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', runFrom: 'http' },
+      {
+        confirm: async () => {
+          asked = true;
+          return 'accept';
+        },
+      },
+    );
+    const json = JSON.parse(textOf(first));
+    expect(json).toMatchObject({
+      session: 'S1',
+      running: true,
+      doing: 'waiting for SAP user ADMIN to run the code (0 of 60 s)',
+    });
+    expect(json.userMessage).toBe(
+      'The breakpoints are armed: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
+    );
+    expect(json.agentInstructions).toMatch(/^END YOUR TURN NOW/);
+    expect(asked).toBe(false);
+    expect((await session({ action: 'wait' })).json).toMatchObject({ hit: true, release: { released: true } });
+  });
+
+  it('refuses runFrom without trigger "none"', async () => {
+    const { result, text } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, runFrom: 'http' });
+    expect(result.isError).toBe(true);
+    expect(text).toContain('runFrom says where the user runs the code: only with trigger="none".');
+  });
+
   it('closes the dialog once the capture is done', async () => {
     installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
     let closed = false;
