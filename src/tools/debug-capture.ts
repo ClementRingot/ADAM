@@ -510,7 +510,10 @@ const SAP_GUI_HINT =
   " Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse's), nor one opened before the capture started, while a new one opened through transaction SM51 once the capture waits does — SM51, select the application server, Goto → Remote Logon → Normal (or double-click it), and run the code there.";
 
 /** While a capture with trigger "none" waits: what to tell the user, before nothing stops. */
-function runItYourselfHint(user: string): string {
+function runItYourselfHint(user: string, sapGui: boolean): string {
+  if (!sapGui) {
+    return `Tell the user now: run the code as SAP user ${user} while the capture waits — e.g. open the Fiori app.`;
+  }
   return `Tell the user now: run the code as SAP user ${user} while the capture waits. From SAP GUI, in a NEW session opened now — SM51, select the application server, Goto → Remote Logon → Normal (or double-click the server): on some systems a session opened before the capture started, or from SAP Logon or SAP Business Client, never stops at external breakpoints. A Fiori app or another HTTP call stops as it is.`;
 }
 
@@ -520,6 +523,7 @@ function notHitHint(
   triggerFinished: boolean,
   triggerFailed: boolean,
   conflict = false,
+  sapGui = true,
 ): string {
   if (conflict) {
     return `SAP ended the wait at once: another debugger activation of SAP user ${user} conflicts with the capture's. Most often, external breakpoints set from SAP GUI (ABAP Editor, SE80 — message ED702 "Debugging hindered by external development environment"): SAP GUI's and ADT's external breakpoints of one user exclude each other. Delete them in SAP GUI (Utilities → Breakpoints → Delete, Ctrl+Shift+F12 in the ABAP Editor), or stop the other IDE's debugger, and retry.`;
@@ -535,6 +539,9 @@ function notHitHint(
     return `The unit tests finished without reaching the breakpoint — check that a harmless test covers this code (ABAP Unit coverage in ADT shows which methods the tests reach), or use trigger="http" / trigger="none".${race}`;
   }
   if (triggerFinished) return `The trigger finished without reaching the breakpoint.${race}`;
+  if (!sapGui) {
+    return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app — and retry.`;
+  }
   return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${req.trigger === 'none' ? SAP_GUI_HINT : ''}`;
 }
 
@@ -690,11 +697,14 @@ export class CaptureRun {
         })
       : undefined;
     const waitStart = Date.now();
+    const sapGui = conn.sapGui !== false;
     const waiting =
-      plan.kind === 'none'
-        ? `waiting for SAP user ${user} to run the code — from SAP GUI, in a session opened through SM51`
-        : 'waiting for the run to stop at a breakpoint';
-    if (plan.kind === 'none') context.hint?.(runItYourselfHint(user));
+      plan.kind !== 'none'
+        ? 'waiting for the run to stop at a breakpoint'
+        : sapGui
+          ? `waiting for SAP user ${user} to run the code — from SAP GUI, in a session opened through SM51`
+          : `waiting for SAP user ${user} to run the code`;
+    if (plan.kind === 'none') context.hint?.(runItYourselfHint(user, sapGui));
     context.progress?.(`${waiting} (0 of ${req.timeoutSeconds} s)`);
     const ticker = context.progress
       ? setInterval(
@@ -755,7 +765,14 @@ export class CaptureRun {
             ...base,
             trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
             ...(warnings.length > 0 ? { warnings } : {}),
-            hint: notHitHint(req, user, triggerFinished, triggerFailure !== undefined, outcome.status === 'conflict'),
+            hint: notHitHint(
+              req,
+              user,
+              triggerFinished,
+              triggerFailure !== undefined,
+              outcome.status === 'conflict',
+              sapGui,
+            ),
           }),
         ),
       };

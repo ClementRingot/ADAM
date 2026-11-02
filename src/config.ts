@@ -30,6 +30,8 @@ export interface Config {
   abapRelease?: string;
   /** Ceilings for debugging: time, result size, interactive sessions. */
   limits: DebugLimits;
+  /** Whether users run code from SAP GUI: ABAP_DEBUGGER_SAP_GUI, else not behind a BTP service key. */
+  sapGui: boolean;
 }
 
 export interface ConfigResult {
@@ -47,6 +49,21 @@ function value(env: NodeJS.ProcessEnv, key: string): string | undefined {
 
 function flag(env: NodeJS.ProcessEnv, key: string): boolean {
   return TRUE_VALUES.has((value(env, key) ?? '').toLowerCase());
+}
+
+const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+/**
+ * ABAP_DEBUGGER_SAP_GUI: whether the system has SAP GUI (on-premise, private cloud) or not (BTP
+ * ABAP Environment, S/4HANA Cloud Public Edition); undefined when unset, to be detected.
+ */
+function readSapGui(env: NodeJS.ProcessEnv, problems: string[]): boolean | undefined {
+  const text = value(env, 'ABAP_DEBUGGER_SAP_GUI');
+  if (text === undefined) return undefined;
+  if (TRUE_VALUES.has(text.toLowerCase())) return true;
+  if (FALSE_VALUES.has(text.toLowerCase())) return false;
+  problems.push(`ABAP_DEBUGGER_SAP_GUI must be true or false (got "${text}").`);
+  return undefined;
 }
 
 /** The debugging ceilings: each variable a whole number within its bounds, else a problem. */
@@ -149,6 +166,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
   }
 
   const limits = readLimits(env, problems);
+  // A service key logs on to the BTP ABAP Environment, which has no SAP GUI.
+  const sapGui = readSapGui(env, problems) ?? !wantsBtp;
 
   if (problems.length > 0 || !url || !auth) return { problems };
   return {
@@ -169,6 +188,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ConfigResult {
       disableSaml: flag(env, 'SAP_DISABLE_SAML'),
       ...(value(env, 'SAP_ABAP_RELEASE') ? { abapRelease: value(env, 'SAP_ABAP_RELEASE') } : {}),
       limits,
+      sapGui,
     },
   };
 }
@@ -205,6 +225,7 @@ export function createConnection(config: Config): SapConnection {
     ...(config.auth !== 'btp' && config.username ? { logonUser: config.username } : {}),
     ...(config.abapRelease ? { abapRelease: config.abapRelease } : {}),
     limits: config.limits,
+    ...(config.sapGui ? {} : { sapGui: false }),
   };
 }
 
@@ -277,14 +298,20 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): { http?: H
 
 /** What every SAP connection takes from the environment, whichever way it logs on. */
 export function loadConnectionSettings(env: NodeJS.ProcessEnv = process.env): {
-  settings: { language: string; limits: DebugLimits; abapRelease?: string };
+  settings: { language: string; limits: DebugLimits; abapRelease?: string; sapGui?: boolean };
   problems: string[];
 } {
   const problems: string[] = [];
   const limits = readLimits(env, problems);
   const abapRelease = value(env, 'SAP_ABAP_RELEASE');
+  const sapGui = readSapGui(env, problems);
   return {
     problems,
-    settings: { language: value(env, 'SAP_LANGUAGE') ?? 'EN', limits, ...(abapRelease ? { abapRelease } : {}) },
+    settings: {
+      language: value(env, 'SAP_LANGUAGE') ?? 'EN',
+      limits,
+      ...(abapRelease ? { abapRelease } : {}),
+      ...(sapGui !== undefined ? { sapGui } : {}),
+    },
   };
 }

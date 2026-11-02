@@ -7,7 +7,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { SapConnection, ToolContext } from './tools/connection.js';
 import { throttledProgress } from './tools/debug-limits.js';
-import { listTools, TOOLS } from './tools/definitions.js';
+import { listTools, TOOLS, triggerNoneAdvice } from './tools/definitions.js';
 import { describeError, errorResult, formatIssues, type ToolResult } from './tools/result.js';
 import { VERSION } from './version.js';
 
@@ -19,16 +19,22 @@ export interface ServerState {
   owner?: string;
   /** Why there is no connection (configuration problems), reported by every tool call. */
   problems: string[];
+  /** Whether users run code from SAP GUI on this system; undefined: not known before the first call. */
+  sapGui?: boolean;
 }
 
-export const SERVER_INSTRUCTIONS = [
-  'ABAP debugger for the connected SAP system. Workflow: find the object (abap_search), read its active source with line numbers (abap_source; a class method with method=…), then capture one run with abap_debug — breakpoints, the trigger that runs the code, and every variable you want to see, all in the same call.',
-  'A capture follows one run of the program and releases it before returning: nothing can be inspected afterwards, so ask for all variables, steps and stops up front, and run another capture to look again.',
-  'Triggers: unittest runs the harmless ABAP Unit tests (of triggerName or the breakpoint object); http GETs an OData path; none waits while the user runs the code themselves as the same SAP user (a Fiori app, a report). With none, unless the code runs over HTTP, ask the user before the call whether they will run it from SAP GUI; if so, they open a NEW session once the capture waits — SM51, Goto → Remote Logon → Normal — and run it there: a session opened before the capture, or from SAP Logon, may never stop.',
-  'Not sure where the code runs? Stop on what it does instead of a line: the message it issues, the exception it raises, a statement kind such as COMMIT WORK — or, from a first stop, wherever a variable changes (watch).',
-  'Two modes: one-shot (default) records the whole run in one call — stops, variables, and as many steps as maxSeconds/maxResultKB allow (past 20 steps a compact trace). Interactive (interactive: true) holds the program at its first stop: then abap_debug_session step / continue / inspect / end, one move per call, until you end it — end it when done, the program holds a work process meanwhile.',
-  'A call that would outlast its time (default 50 s) answers running: true with a session id, and the work goes on: call abap_debug_session action wait for its answer.',
-].join('\n');
+/** The workflow the model reads first, the advice on runs the user starts fitted to the system. */
+export function serverInstructions(sapGui?: boolean): string {
+  return [
+    'ABAP debugger for the connected SAP system. Workflow: find the object (abap_search), read its active source with line numbers (abap_source; a class method with method=…), then capture one run with abap_debug — breakpoints, the trigger that runs the code, and every variable you want to see, all in the same call.',
+    'A capture follows one run of the program and releases it before returning: nothing can be inspected afterwards, so ask for all variables, steps and stops up front, and run another capture to look again.',
+    'Triggers: unittest runs the harmless ABAP Unit tests (of triggerName or the breakpoint object); http GETs an OData path; none waits while the user runs the code themselves as the same SAP user (a Fiori app, a report).',
+    triggerNoneAdvice(sapGui),
+    'Not sure where the code runs? Stop on what it does instead of a line: the message it issues, the exception it raises, a statement kind such as COMMIT WORK — or, from a first stop, wherever a variable changes (watch).',
+    'Two modes: one-shot (default) records the whole run in one call — stops, variables, and as many steps as maxSeconds/maxResultKB allow (past 20 steps a compact trace). Interactive (interactive: true) holds the program at its first stop: then abap_debug_session step / continue / inspect / end, one move per call, until you end it — end it when done, the program holds a work process meanwhile.',
+    'A call that would outlast its time (default 50 s) answers running: true with a session id, and the work goes on: call abap_debug_session action wait for its answer.',
+  ].join('\n');
+}
 
 /** One tool call: validate, then run on the connection, never letting an exception escape. */
 export async function callTool(
@@ -67,9 +73,9 @@ export async function callTool(
 export function createMcpServer(state: ServerState): Server {
   const server = new Server(
     { name: 'abap-debugger', version: VERSION },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+    { capabilities: { tools: {} }, instructions: serverInstructions(state.sapGui) },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools() }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools(state.sapGui) }));
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     // Progress only when the client asked for it (a progressToken); a cancelled call ends early.
     const progressToken = request.params._meta?.progressToken;

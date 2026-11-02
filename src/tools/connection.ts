@@ -15,6 +15,11 @@ export interface SapConnection {
   abapRelease?: string;
   /** The server's ceilings for debugging (time, result size, interactive sessions); defaults apply when unset. */
   limits?: DebugLimits;
+  /**
+   * false: no SAP GUI on this system (BTP ABAP Environment, S/4HANA Cloud Public Edition), so no
+   * SM51 advice for runs the user starts. Unset: on-premise or private cloud, where there is one.
+   */
+  sapGui?: boolean;
 }
 
 /** One tool call's link back to the client. */

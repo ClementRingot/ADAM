@@ -183,6 +183,7 @@ override a property, never remove one).
 | `SAP_BTP_DESTINATION` | — (required) | The destination of the SAP system |
 | `SAP_LANGUAGE` | `EN` | Logon language |
 | `ABAP_DEBUGGER_ALLOW_SHARED_USER` | `false` | Accept one SAP identity for every MCP user (Basic destination) |
+| `ABAP_DEBUGGER_SAP_GUI` | `true` behind an on-premise destination, else `false` | Whether users run code from SAP GUI, so the agent explains how to run it through SM51 |
 | `ABAP_DEBUGGER_MAX_SECONDS`, `ABAP_DEBUGGER_MAX_RESULT_KB` | `600`, `200` | Ceilings of a call's time and result size |
 | `ABAP_DEBUGGER_IDLE_SECONDS`, `ABAP_DEBUGGER_SESSION_SECONDS` | `120`, `900` | Interactive session limits |
 | `ABAP_DEBUGGER_CALL_SECONDS` | `50` | A call answers within this time; longer work goes on in the background |

@@ -145,6 +145,8 @@ export interface ConnectionSettings {
   language: string;
   limits: DebugLimits;
   abapRelease?: string;
+  /** ABAP_DEBUGGER_SAP_GUI; unset: SAP GUI only behind an on-premise destination (Cloud Connector). */
+  sapGui?: boolean;
 }
 
 /**
@@ -189,11 +191,14 @@ export class BtpConnections {
   }
 
   private connection(http: AdtHttpClient, logonUser?: string): SapConnection {
+    // An Internet destination reaches the BTP ABAP Environment or S/4HANA Cloud: no SAP GUI there.
+    const sapGui = this.settings.sapGui ?? this.target.destination.ProxyType === 'OnPremise';
     return {
       http,
       ...(logonUser ? { logonUser } : {}),
       ...(this.settings.abapRelease ? { abapRelease: this.settings.abapRelease } : {}),
       limits: this.settings.limits,
+      ...(sapGui ? {} : { sapGui: false }),
     };
   }
 

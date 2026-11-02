@@ -344,6 +344,19 @@ describe('abap_debug — a hit', () => {
     expect(json?.hint).toContain('Goto → Remote Logon → Normal');
   });
 
+  it('says nothing of SAP GUI on a system without it (BTP ABAP Environment, S/4HANA Cloud)', async () => {
+    installFakeSap({ hit: false, listenerTimesOut: true, sessionUser: 'ADMIN' });
+    const cloud = { ...createConnection({}, 'admin'), sapGui: false };
+    const { json } = await debug(
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 },
+      cloud,
+    );
+
+    expect(json).toMatchObject({ hit: false, reason: 'timeout' });
+    expect(json?.hint).toContain('run the code as SAP user ADMIN');
+    expect(json?.hint).not.toMatch(/SAP GUI|SM51/);
+  });
+
   it('says what conflicts when SAP ends the wait at once (SAP GUI external breakpoints, ED702)', async () => {
     const { calls } = installFakeSap({ pollConflict: true, sessionUser: 'ADMIN' });
     const { json } = await debug({ type: 'PROG', name: 'ZREPORT', line: 30, trigger: 'none', timeoutSeconds: 300 });
@@ -1546,6 +1559,22 @@ describe('abap_debug — captures that outlast their call', () => {
     const end = await session({ action: 'end' });
     expect(end.json).toMatchObject({ hit: false, reason: 'cancelled' });
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+
+  it('asks for the run without SAP GUI advice where there is no SAP GUI', async () => {
+    installFakeSap({ hit: false });
+    const first = await debug(
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      { ...quick(), sapGui: false },
+    );
+    expect(first.json).toMatchObject({
+      running: true,
+      doing: 'waiting for SAP user ADMIN to run the code (0 of 60 s)',
+    });
+    expect(first.json?.hint).toBe(
+      'Tell the user now: run the code as SAP user ADMIN while the capture waits — e.g. open the Fiori app.',
+    );
+    expect((await session({ action: 'end' })).json).toMatchObject({ hit: false, reason: 'cancelled' });
   });
 
   it('caps the captures running at once, and keeps one capture per SAP user across MCP users', async () => {
