@@ -38,11 +38,80 @@ Claude:  abap_source  {type: "CLAS", name: "ZCL_ORDER", method: "get_total"}
 
 ## Quick start
 
-You need Node.js 22.12+ and git, an SAP system with ADT (on-premise SAP_BASIS 7.50 or later, or the
-SAP BTP ABAP Environment), and an SAP user with ADT access (`S_ADT_RES`) and debug authorization
-(`S_DEVELOP` with `OBJTYPE = DEBUG`, `ACTVT = 03`). With several application servers, SAP runs the
-debugger's requests on the program's server over RFC, as the same user: `S_RFC` for function group
-`SADT_REST`, which Eclipse ADT needs too.
+You need an SAP system with ADT (on-premise SAP_BASIS 7.50 or later, or the SAP BTP ABAP
+Environment), and an SAP user with ADT access (`S_ADT_RES`) and debug authorization (`S_DEVELOP` with
+`OBJTYPE = DEBUG`, `ACTVT = 03`). With several application servers, SAP runs the debugger's requests
+on the program's server over RFC, as the same user: `S_RFC` for function group `SADT_REST`, which
+Eclipse ADT needs too.
+
+Three ways to run it, from the most shared to the most hands-on:
+
+1. [On SAP BTP](#1-on-sap-btp): one server for the whole team; each user signs in and debugs as their
+   own SAP user.
+2. [The Windows executable](#2-the-windows-executable): one file next to the assistant, no Node.js.
+3. [With Node.js](#3-with-nodejs): `npx` fetches and builds the server from GitHub.
+
+Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every other setting of the
+local options: [Configuration](docs/configuration.md).
+
+Then ask, for instance: *"Debug ZCL_ORDER=>GET_TOTAL with its unit tests and show me LV_TOTAL at
+line 42."*
+
+### 1. On SAP BTP
+
+Deploy the MTA on Cloud Foundry (`mbt build`, `cf deploy`), point it at a destination, assign the role
+collection, and connect the clients to `https://<route>/mcp`. They sign in through XSUAA in the
+browser, and each user debugs as their own SAP user: principal propagation through the Cloud
+Connector for an on-premise system, a user token for the BTP ABAP Environment. See the
+[deployment guide](docs/btp-deployment.md).
+
+| Client | How |
+|---|---|
+| Claude Code | `claude mcp add --transport http adam https://<route>/mcp` |
+| Claude Desktop, claude.ai | Settings → Connectors → Add custom connector → `https://<route>/mcp` |
+| VS Code (`.vscode/mcp.json`) | `{ "servers": { "adam": { "type": "http", "url": "https://<route>/mcp" } } }` |
+| Cursor (`.cursor/mcp.json`) | `{ "mcpServers": { "adam": { "url": "https://<route>/mcp" } } }` |
+
+### 2. The Windows executable
+
+Download `abap-debugger-mcp.exe` from the
+[latest release](https://github.com/ClementRingot/ADAM/releases/latest), copy it anywhere and register
+it as the command — `claude_desktop_config.json`, `.cursor/mcp.json` or `.vscode/mcp.json` (in VS Code
+the top-level key is `servers`):
+
+```json
+{
+  "mcpServers": {
+    "adam": {
+      "command": "C:\\tools\\abap-debugger-mcp.exe",
+      "env": {
+        "SAP_URL": "https://my-sap-host:44300",
+        "SAP_CLIENT": "100",
+        "SAP_USER": "DEVELOPER",
+        "SAP_PASSWORD": "secret"
+      }
+    }
+  }
+}
+```
+
+Instead of the `env` block, the server can read a file: `"args": ["--env-file", "C:\\tools\\sap.env"]`
+(see [.env.example](.env.example)).
+
+<details>
+<summary>Notes on the executable</summary>
+
+- It carries Node.js (about 100 MB): nothing else to install. Every tag `v*` builds it.
+- It is not code-signed: Windows SmartScreen or an antivirus may hold it back until it is signed or
+  allowed.
+- For another platform, run `npm run build:exe` in a clone: it builds `build/abap-debugger-mcp`
+  for the platform it runs on.
+
+</details>
+
+### 3. With Node.js
+
+You need Node.js 22.12+ and git.
 
 **Claude Code**
 
@@ -73,12 +142,6 @@ claude mcp add adam \
 }
 ```
 
-Then ask, for instance: *"Debug ZCL_ORDER=>GET_TOTAL with its unit tests and show me LV_TOTAL at
-line 42."*
-
-Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every other setting:
-[Configuration](docs/configuration.md).
-
 <details>
 <summary>Installation notes</summary>
 
@@ -94,13 +157,6 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
   builds), and register `node /path/to/ADAM/dist/index.js` as the command.
 - Instead of an `env` block, the server can read a file: add `"--env-file", "/path/to/.env"` to `args`
   (see [.env.example](.env.example)).
-- **Without Node.js**: download `abap-debugger-mcp.exe` from the
-  [latest release](https://github.com/ClementRingot/ADAM/releases/latest) (Windows; every tag `v*` builds
-  it), or run `npm run build:exe` in a clone to build one executable,
-  `build/abap-debugger-mcp.exe` (about 100 MB: it carries Node.js), for the platform it runs on. Copy it
-  anywhere and register it as the command: `"command": "C:\\tools\\abap-debugger-mcp.exe"`, with the
-  `env` block or `"args": ["--env-file", "C:\\tools\\sap.env"]`. It is not code-signed: Windows
-  SmartScreen or an antivirus may hold it back until it is signed or allowed.
 
 </details>
 
@@ -174,14 +230,6 @@ on real systems.
 - **Fits the client's patience**: a call answers within 50 s (many clients give up after 60); longer
   work goes on in the background, and `abap_debug_session` `wait` picks up its answer.
 
-## On SAP BTP
-
-Deploy the MTA on Cloud Foundry (`mbt build`, `cf deploy`), point it at a destination, assign the role
-collection, and connect the clients to `https://<route>/mcp`. They sign in through XSUAA in the
-browser, and each user debugs as their own SAP user: principal propagation through the Cloud
-Connector for an on-premise system, a user token for the BTP ABAP Environment. See the
-[deployment guide](docs/btp-deployment.md).
-
 ## Documentation
 
 | Page | Contents |
@@ -195,15 +243,19 @@ Connector for an on-premise system, a user token for the BTP ABAP Environment. S
 
 ## Status
 
-Version 0.1. On the SAP BTP ABAP Environment, the server has run live — over HTTP, as a remote
-connector: attaching across application servers, several stops in one run, steps, conditions, long
-step runs, statement kinds and an interactive session. On an S/4HANA system, experiments showed that
-runs from SAP GUI sessions opened through SM51 stop, while sessions opened from SAP Logon never do —
-Eclipse's breakpoints included. The newest parts —
-answers that outlast a call, watchpoints, the removal of leftovers, the wider search, and reaching the
-program's application server through SAP's own request routing (read in SAP's
-source, not yet run live) — are tested against a simulated SAP so far, like every on-premise release
-(7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
+Early releases (`v0.0.x`). What has run live:
+
+- **SAP BTP ABAP Environment**, over HTTP as a remote connector: attaching across application
+  servers, several stops in one run, steps, conditions, long step runs, statement kinds, interactive
+  sessions, answers that outlast a call (`wait`) and the removal of leftovers.
+- **On-premise ECC (SAP_BASIS 7.50) and S/4HANA (8.16)**, both with two application servers, run
+  locally next to the assistant: search, source, captures through unit tests, runs started by the
+  user, and interactive sessions. SAP GUI sessions opened through SM51 stop, whichever server they
+  run on, while sessions opened from SAP Logon never do — Eclipse's breakpoints included. The SM51
+  steps show in the client's dialog (MCP elicitation) in GitHub Copilot.
+
+Not run live yet: the server deployed on SAP BTP Cloud Foundry (XSUAA, destinations, principal
+propagation), an on-premise 7.58 system, and the other checks of the [roadmap](docs/roadmap.md).
 
 ## Development
 
