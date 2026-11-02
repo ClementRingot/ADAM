@@ -94,7 +94,9 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
   builds), and register `node /path/to/ADAM/dist/index.js` as the command.
 - Instead of an `env` block, the server can read a file: add `"--env-file", "/path/to/.env"` to `args`
   (see [.env.example](.env.example)).
-- **Without Node.js**: `npm run build:exe` in a clone builds one executable,
+- **Without Node.js**: download `abap-debugger-mcp.exe` from the
+  [latest release](https://github.com/ClementRingot/ADAM/releases/latest) (Windows; every tag `v*` builds
+  it), or run `npm run build:exe` in a clone to build one executable,
   `build/abap-debugger-mcp.exe` (about 100 MB: it carries Node.js), for the platform it runs on. Copy it
   anywhere and register it as the command: `"command": "C:\\tools\\abap-debugger-mcp.exe"`, with the
   `env` block or `"args": ["--env-file", "C:\\tools\\sap.env"]`. It is not code-signed: Windows
