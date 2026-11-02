@@ -5,8 +5,11 @@
  * The SAP answers are REFERENCE-DERIVED (abap-adt-api / vibing-steampunk shapes, see
  * docs/adt-debugger-protocol.md), not live captures.
  */
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { callTool } from '../../../src/server.js';
+import { callTool, createMcpServer } from '../../../src/server.js';
 import { setDebugTimingsForTests, setResultBudgetForTests } from '../../../src/tools/debug-capture.js';
 import { DEFAULT_LIMITS } from '../../../src/tools/debug-limits.js';
 import { resetDebuggingForTests } from '../../../src/tools/debug-registry.js';
@@ -41,7 +44,7 @@ async function debug(args: Record<string, unknown>, conn = createConnection(), r
   };
   const first = parse(await callTool({ connection: conn, problems: [] }, 'abap_debug', args));
   // With SAP GUI, trigger "none" answers once armed with the steps for the user; the agent then waits.
-  if (!relay || !first.json?.running || !String(first.json.hint ?? '').includes('SM51')) return first;
+  if (!relay || !first.json?.running || !String(first.json.userMessage ?? '').includes('SM51')) return first;
   return parse(await callTool({ connection: conn, problems: [] }, 'abap_debug_session', { action: 'wait' }));
 }
 
@@ -1534,6 +1537,7 @@ describe('abap_debug — captures that outlast their call', () => {
       doing: 'waiting for the run to stop at a breakpoint (0 of 60 s)',
     });
     expect(first.json?.hint).toBeUndefined();
+    expect(first.json?.userMessage).toBeUndefined();
     expect((await session({ action: 'step' })).text).toContain('S1 is a one-shot capture');
     const done = await session({ action: 'wait', session: 's1' });
     expect(done.json).toMatchObject({
@@ -1556,10 +1560,12 @@ describe('abap_debug — captures that outlast their call', () => {
         'waiting for SAP user ADMIN to run the code — from SAP GUI: in a NEW session, SM51 → select the server → Goto → Remote Logon → Normal (0 of 60 s)',
     });
     // While nothing stopped, the answer says how to run the code: from SAP GUI, through SM51.
-    expect(first.json?.hint).toContain('Tell the user now, as these steps');
-    expect(first.json?.hint).toContain('1. in SAP GUI, open transaction SM51');
-    expect(first.json?.hint).toContain('4. in that new window, run the code as SAP user ADMIN');
-    expect(first.json?.hint).toContain('or one opened before now');
+    expect(first.json?.userMessage).toContain('The breakpoints are armed: run the code now as SAP user ADMIN.');
+    expect(first.json?.userMessage).toContain('\n1. Open transaction SM51.\n2. Select the application server.\n');
+    expect(first.json?.userMessage).toContain('\n4. In that new window, run the code.\n');
+    expect(first.json?.userMessage).toContain('or opened before now');
+    expect(first.json?.userMessage).not.toContain('double-click');
+    expect(first.json?.agentInstructions).toMatch(/^END YOUR TURN NOW: show userMessage to the user/);
     expect((await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).text).toBe(
       'Your debug capture S1 is still running: abap_debug_session action="wait" returns its result, action="end" stops it.',
     );
@@ -1575,10 +1581,105 @@ describe('abap_debug — captures that outlast their call', () => {
     // It does not wait for the stop, nor for the call's budget (50 s): the user needs the steps first.
     expect(Date.now() - startedAt).toBeLessThan(250);
     expect(first.json).toMatchObject({ session: 'S1', running: true });
-    expect(first.json?.hint).toContain('3. menu Goto → Remote Logon → Normal');
-    expect(first.json?.next).toMatch(/^First relay hint to the user, step by step\. /);
+    expect(first.json?.userMessage).toContain('3. Menu Goto → Remote Logon → Normal: a new SAP GUI window opens.');
+    expect(first.json?.agentInstructions).toContain('Do not call abap_debug_session until they reply');
+    expect(first.json?.next).toBeUndefined();
     // Once: wait then waits for the stop as usual.
     expect((await session({ action: 'wait' })).json).toMatchObject({ hit: true, release: { released: true } });
+  });
+
+  it('shows the SM51 steps in a dialog of the client where it can, and waits for the stop', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    const asked: string[] = [];
+    const first = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      {
+        confirm: async (message) => {
+          asked.push(message);
+          return 'accept';
+        },
+      },
+    );
+    // No early answer: the user saw the steps, the call waits for the stop.
+    expect(JSON.parse(textOf(first))).toMatchObject({ hit: true, release: { released: true } });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('1. Open transaction SM51.');
+    expect(asked[0]).toContain('Accept to go on waiting for the stop; decline to stop the capture.');
+  });
+
+  it('stops the capture when the user declines the dialog', async () => {
+    const { calls } = installFakeSap({ hit: false });
+    const first = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      { confirm: async () => 'decline' },
+    );
+    expect(JSON.parse(textOf(first))).toMatchObject({ hit: false, reason: 'cancelled' });
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+
+  it('answers at once with the steps when the dialog cannot be shown', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    const first = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      { confirm: async () => undefined },
+    );
+    const json = JSON.parse(textOf(first));
+    expect(json).toMatchObject({ session: 'S1', running: true });
+    expect(json.userMessage).toContain('1. Open transaction SM51.');
+    expect(json.agentInstructions).toMatch(/^END YOUR TURN NOW/);
+    expect((await session({ action: 'wait' })).json).toMatchObject({ hit: true, release: { released: true } });
+  });
+
+  it('asks an MCP client that supports elicitation, over stdio', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    const server = createMcpServer({ connection: createConnection(), problems: [], elicitation: true });
+    const client = new Client({ name: 'test', version: '0' }, { capabilities: { elicitation: {} } });
+    const asked: string[] = [];
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      asked.push(request.params.message);
+      return { action: 'accept', content: {} };
+    });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+    try {
+      const result = await client.callTool({
+        name: 'abap_debug',
+        arguments: { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      });
+      expect(JSON.parse(textOf(result as { content: Array<{ text: string }> }))).toMatchObject({ hit: true });
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toContain('3. Menu Goto → Remote Logon → Normal');
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('closes the dialog once the capture is done', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    let closed = false;
+    const first = await callTool(
+      { connection: createConnection(), problems: [] },
+      'abap_debug',
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      {
+        confirm: (_message, signal) =>
+          new Promise((resolve) =>
+            signal?.addEventListener('abort', () => {
+              closed = true;
+              resolve(undefined);
+            }),
+          ),
+      },
+    );
+    expect(JSON.parse(textOf(first))).toMatchObject({ hit: true, release: { released: true } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(closed).toBe(true);
   });
 
   it('waits for the stop within its call where there is no SAP GUI', async () => {
@@ -1601,9 +1702,10 @@ describe('abap_debug — captures that outlast their call', () => {
       running: true,
       doing: 'waiting for SAP user ADMIN to run the code (0 of 60 s)',
     });
-    expect(first.json?.hint).toBe(
-      'Tell the user now: run the code as SAP user ADMIN while the capture waits — e.g. open the Fiori app.',
+    expect(first.json?.userMessage).toBe(
+      'The breakpoints are armed: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
     );
+    expect(first.json?.agentInstructions).toMatch(/^Still waiting for the stop\./);
     expect((await session({ action: 'end' })).json).toMatchObject({ hit: false, reason: 'cancelled' });
   });
 

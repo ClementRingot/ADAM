@@ -507,15 +507,26 @@ type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
  * one opened through SM51 stops. See docs/adt-debugger-protocol.md ("SAP GUI runs").
  */
 const SAP_GUI_HINT =
-  " Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse's), nor one opened before the capture started, while a new one opened through transaction SM51 once the capture waits does — SM51, select the application server, Goto → Remote Logon → Normal (or double-click it), and run the code there.";
+  " Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse's), nor one opened before the capture started, while a new one opened through transaction SM51 once the capture waits does — SM51, select the application server, Goto → Remote Logon → Normal, and run the code there.";
 
-/** While a capture with trigger "none" waits: what to tell the user, before nothing stops. */
+/** While a capture with trigger "none" waits: what the user must do (userMessage, or the client's dialog). */
 function runItYourselfHint(user: string, sapGui: boolean): string {
   if (!sapGui) {
-    return `Tell the user now: run the code as SAP user ${user} while the capture waits — e.g. open the Fiori app.`;
+    return `The breakpoints are armed: run the code now as SAP user ${user}, e.g. open the Fiori app.`;
   }
-  return `Tell the user now, as these steps: the breakpoints are armed. From a Fiori app or another HTTP call, run the code as it is. From SAP GUI (a report, a transaction, a screen), a session from SAP Logon or SAP Business Client, or one opened before now, never stops at the breakpoints on some systems — so: 1. in SAP GUI, open transaction SM51; 2. select the application server; 3. menu Goto → Remote Logon → Normal (or double-click the server): a NEW SAP GUI window opens; 4. in that new window, run the code as SAP user ${user}.`;
+  return [
+    `The breakpoints are armed: run the code now as SAP user ${user}.`,
+    'From SAP GUI (a report, a transaction, a screen), in a new session:',
+    '1. Open transaction SM51.',
+    '2. Select the application server.',
+    '3. Menu Goto → Remote Logon → Normal: a new SAP GUI window opens.',
+    '4. In that new window, run the code.',
+    'A session opened from SAP Logon or SAP Business Client, or opened before now, does not stop at the breakpoints. From a Fiori app or another HTTP call, run the code as usual.',
+  ].join('\n');
 }
+
+/** The client's dialog: the steps, and what its buttons do. */
+const DIALOG_BUTTONS = '\n\nAccept to go on waiting for the stop; decline to stop the capture.';
 
 function notHitHint(
   req: DebugRequest,
@@ -706,8 +717,16 @@ export class CaptureRun {
           : `waiting for SAP user ${user} to run the code`;
     if (plan.kind === 'none') context.hint?.(runItYourselfHint(user, sapGui));
     context.progress?.(`${waiting} (0 of ${req.timeoutSeconds} s)`);
-    // From SAP GUI the user must open their session now: the call answers at once with the steps.
-    if (plan.kind === 'none' && sapGui) context.answerNow?.();
+    // From SAP GUI the user must open their session now: the client shows the steps in a dialog
+    // where it can, else the call answers at once with them.
+    if (plan.kind === 'none' && sapGui) {
+      const asking = context.confirm?.(runItYourselfHint(user, sapGui) + DIALOG_BUTTONS);
+      if (!asking) context.answerNow?.();
+      else
+        void asking.then((answer) => {
+          if (answer === undefined) context.answerNow?.();
+        });
+    }
     const ticker = context.progress
       ? setInterval(
           () =>

@@ -21,6 +21,11 @@ export interface ServerState {
   problems: string[];
   /** Whether users run code from SAP GUI on this system; undefined: not known before the first call. */
   sapGui?: boolean;
+  /**
+   * The client's answers to the server's own requests reach this server (stdio): it may show the
+   * user a dialog (MCP elicitation). Not over stateless HTTP, where they would reach another one.
+   */
+  elicitation?: boolean;
 }
 
 /** The workflow the model reads first, the advice on runs the user starts fitted to the system. */
@@ -92,9 +97,22 @@ export function createMcpServer(state: ServerState): Server {
               })
               .catch(() => {});
           });
+    const canConfirm = state.elicitation && server.getClientCapabilities()?.elicitation?.form !== undefined;
+    const confirm: ToolContext['confirm'] = async (message, signal) => {
+      try {
+        const answer = await server.elicitInput(
+          { mode: 'form', message, requestedSchema: { type: 'object', properties: {} } },
+          { relatedRequestId: extra.requestId, ...(signal ? { signal } : {}), timeout: 3_600_000 },
+        );
+        return answer.action;
+      } catch {
+        return undefined;
+      }
+    };
     return callTool(state, request.params.name, request.params.arguments, {
       signal: extra.signal,
       ...(progress ? { progress } : {}),
+      ...(canConfirm ? { confirm } : {}),
     });
   });
   return server;

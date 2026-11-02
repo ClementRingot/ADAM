@@ -22,6 +22,9 @@ export interface SapConnection {
   sapGui?: boolean;
 }
 
+/** An answer to a dialog of the client (MCP elicitation). */
+export type ConfirmAnswer = 'accept' | 'decline' | 'cancel';
+
 /** One tool call's link back to the client. */
 export interface ToolContext {
   /** The client cancelled the call. */
@@ -32,6 +35,11 @@ export interface ToolContext {
   hint?: (text: string | undefined) => void;
   /** The user must act before the work can go on: the call waiting for it answers running: true now, once. */
   answerNow?: () => void;
+  /**
+   * Show the user a message in a dialog of the client (MCP elicitation), with accept and decline;
+   * only where the client can. Undefined: the dialog could not be shown, or was closed by `signal`.
+   */
+  confirm?: (message: string, signal?: AbortSignal) => Promise<ConfirmAnswer | undefined>;
   /**
    * Who calls: the MCP user over HTTP (their sessions are theirs alone); unset over stdio, where
    * the one local user calls.

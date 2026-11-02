@@ -328,7 +328,7 @@ describe('abap_debug — interactive, a run by the user on another application s
     const started = await start({ line: 9, trigger: 'none' });
     // A system with SAP GUI: the call answers once armed, with the steps to run the code through SM51.
     expect(started.json).toMatchObject({ session: 'S1', running: true });
-    expect(started.json?.hint).toContain('Goto → Remote Logon → Normal');
+    expect(started.json?.userMessage).toContain('Goto → Remote Logon → Normal');
     expect((await move({ action: 'wait' })).json).toMatchObject({
       hit: true,
       session: 'S1',
