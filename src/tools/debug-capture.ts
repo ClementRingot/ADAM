@@ -519,12 +519,16 @@ function runItYourselfHint(user: string, sapGui: boolean): string {
   }
   return [
     `The breakpoints are armed: run the code now as SAP user ${user}.`,
+    '',
+    'From a Fiori app (or another HTTP call): just run it as usual, no new session needed.',
+    '',
     'From SAP GUI (a report, a transaction, a screen), in a new session:',
     '1. Open transaction SM51.',
     '2. Select the application server.',
     '3. Menu Goto → Remote Logon → Normal: a new SAP GUI window opens.',
     '4. In that new window, run the code.',
-    'A session opened from SAP Logon or SAP Business Client, or opened before now, does not stop at the breakpoints. From a Fiori app or another HTTP call, run the code as usual.',
+    '',
+    'A SAP GUI session opened from SAP Logon or SAP Business Client, or opened before now, does not stop at the breakpoints.',
   ].join('\n');
 }
 

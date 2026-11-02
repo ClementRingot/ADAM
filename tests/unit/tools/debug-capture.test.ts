@@ -1564,6 +1564,9 @@ describe('abap_debug — captures that outlast their call', () => {
     expect(first.json?.userMessage).toContain('\n1. Open transaction SM51.\n2. Select the application server.\n');
     expect(first.json?.userMessage).toContain('\n4. In that new window, run the code.\n');
     expect(first.json?.userMessage).toContain('or opened before now');
+    expect(first.json?.userMessage).toContain(
+      '\n\nFrom a Fiori app (or another HTTP call): just run it as usual, no new session needed.\n\n',
+    );
     expect(first.json?.userMessage).not.toContain('double-click');
     expect(first.json?.agentInstructions).toMatch(/^END YOUR TURN NOW: show userMessage to the user/);
     expect((await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).text).toBe(
