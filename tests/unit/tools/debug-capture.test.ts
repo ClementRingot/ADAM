@@ -1514,6 +1514,7 @@ describe('abap_debug — captures that outlast their call', () => {
       running: true,
       doing: 'waiting for the run to stop at a breakpoint (0 of 60 s)',
     });
+    expect(first.json?.hint).toBeUndefined();
     expect((await session({ action: 'step' })).text).toContain('S1 is a one-shot capture');
     const done = await session({ action: 'wait', session: 's1' });
     expect(done.json).toMatchObject({
@@ -1529,7 +1530,14 @@ describe('abap_debug — captures that outlast their call', () => {
   it('stops a capture still waiting for its stop on end, and cleans up', async () => {
     const { calls } = installFakeSap({ hit: false });
     const first = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' }, quick());
-    expect(first.json).toMatchObject({ session: 'S1', running: true });
+    expect(first.json).toMatchObject({
+      session: 'S1',
+      running: true,
+      doing: 'waiting for SAP user ADMIN to run the code — from SAP GUI, in a session opened through SM51 (0 of 60 s)',
+    });
+    // While nothing stopped, the answer says how to run the code: from SAP GUI, through SM51.
+    expect(first.json?.hint).toContain('Tell the user now: run the code as SAP user ADMIN');
+    expect(first.json?.hint).toContain('SM51');
     expect((await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).text).toBe(
       'Your debug capture S1 is still running: abap_debug_session action="wait" returns its result, action="end" stops it.',
     );

@@ -18,6 +18,8 @@ export class BackgroundWork implements DebugEntry {
   outcome: ToolResult | undefined;
   /** A call has received the answer. */
   delivered = false;
+  /** What the user must do now for the work to go on (trigger "none": run the code). */
+  hint: string | undefined;
   readonly done: Promise<ToolResult>;
   private readonly abort = new AbortController();
   private waiterProgress: ((message: string) => void) | undefined;
@@ -37,6 +39,9 @@ export class BackgroundWork implements DebugEntry {
       progress: (message) => {
         this.doing = message;
         this.waiterProgress?.(message);
+      },
+      hint: (text) => {
+        this.hint = text;
       },
       owner,
     };
@@ -101,6 +106,7 @@ export function stillRunning(work: BackgroundWork, limits: DebugLimits): ToolRes
       running: true,
       doing: work.doing,
       seconds: Math.round((Date.now() - work.startedAt) / 1000),
+      ...(work.hint ? { hint: work.hint } : {}),
       next: `It goes on in the background. Call abap_debug_session with action "wait" for its answer (each call waits up to ${limits.callSeconds} s: ABAP_DEBUGGER_CALL_SECONDS), or action "end" to stop it.`,
     }),
   );

@@ -23,6 +23,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** A progress notification, when the client asked for them (some clients keep a long call alive on them). */
   progress?: (message: string) => void;
+  /** What the user must do now for the work to go on, shown by an answer running: true; undefined clears it. */
+  hint?: (text: string | undefined) => void;
   /**
    * Who calls: the MCP user over HTTP (their sessions are theirs alone); unset over stdio, where
    * the one local user calls.

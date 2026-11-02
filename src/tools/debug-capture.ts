@@ -509,6 +509,11 @@ type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 const SAP_GUI_HINT =
   ' Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse\'s), while one opened through transaction SM51 does — once the capture waits, open a new session with SM51 (select the application server, then "Remote Logon", or double-click it) and run the code there.';
 
+/** While a capture with trigger "none" waits: what to tell the user, before nothing stops. */
+function runItYourselfHint(user: string): string {
+  return `Tell the user now: run the code as SAP user ${user} while the capture waits. From SAP GUI, in a new session opened through transaction SM51 (select the application server, then "Remote Logon", or double-click it) — on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints. A Fiori app or another HTTP call stops as it is.`;
+}
+
 function notHitHint(
   req: DebugRequest,
   user: string,
@@ -685,12 +690,17 @@ export class CaptureRun {
         })
       : undefined;
     const waitStart = Date.now();
-    context.progress?.(`waiting for the run to stop at a breakpoint (0 of ${req.timeoutSeconds} s)`);
+    const waiting =
+      plan.kind === 'none'
+        ? `waiting for SAP user ${user} to run the code — from SAP GUI, in a session opened through SM51`
+        : 'waiting for the run to stop at a breakpoint';
+    if (plan.kind === 'none') context.hint?.(runItYourselfHint(user));
+    context.progress?.(`${waiting} (0 of ${req.timeoutSeconds} s)`);
     const ticker = context.progress
       ? setInterval(
           () =>
             context.progress?.(
-              `waiting for the run to stop at a breakpoint (${Math.round((Date.now() - waitStart) / 1000)} of ${req.timeoutSeconds} s)`,
+              `${waiting} (${Math.round((Date.now() - waitStart) / 1000)} of ${req.timeoutSeconds} s)`,
             ),
           timings.waitTickMs,
         )
@@ -707,6 +717,7 @@ export class CaptureRun {
       ]);
     } finally {
       if (ticker) clearInterval(ticker);
+      context.hint?.(undefined);
     }
     // A suspended run cannot finish: a trigger that settles first ran without stopping — end the poll.
     const triggerFinished = first.source === 'trigger';
