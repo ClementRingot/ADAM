@@ -350,6 +350,8 @@ describe('abap_debug — a hit', () => {
     );
     expect(json?.hint).toContain('nor one opened before the capture started');
     expect(json?.hint).toContain('Goto → Remote Logon → Normal');
+    // Too late to run it now: the agent must start a new capture first.
+    expect(json?.hint).toContain('The capture no longer listens: a run started now does not stop.');
   });
 
   it('says nothing of SAP GUI on a system without it (BTP ABAP Environment, S/4HANA Cloud)', async () => {
@@ -1557,10 +1559,12 @@ describe('abap_debug — captures that outlast their call', () => {
       session: 'S1',
       running: true,
       doing:
-        'waiting for SAP user ADMIN to run the code — from SAP GUI: in a NEW session, SM51 → select the server → Goto → Remote Logon → Normal (0 of 60 s)',
+        'waiting for SAP user ADMIN to run the code — from SAP GUI: in a NEW session, SM51 → select the server → Goto → Remote Logon → Normal (0 of 300 s)',
     });
     // While nothing stopped, the answer says how to run the code: from SAP GUI, through SM51.
-    expect(first.json?.userMessage).toContain('The breakpoints are armed: run the code now as SAP user ADMIN.');
+    expect(first.json?.userMessage).toContain(
+      'The breakpoints are armed for 5 minutes: run the code now as SAP user ADMIN.',
+    );
     expect(first.json?.userMessage).toContain('\n1. Open transaction SM51.\n2. Select the application server.\n');
     expect(first.json?.userMessage).toContain('\n4. In that new window, run the code.\n');
     expect(first.json?.userMessage).toContain('or opened before now');
@@ -1681,10 +1685,10 @@ describe('abap_debug — captures that outlast their call', () => {
     expect(json).toMatchObject({
       session: 'S1',
       running: true,
-      doing: 'waiting for SAP user ADMIN to run the code (0 of 60 s)',
+      doing: 'waiting for SAP user ADMIN to run the code (0 of 300 s)',
     });
     expect(json.userMessage).toBe(
-      'The breakpoints are armed: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
+      'The breakpoints are armed for 5 minutes: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
     );
     expect(json.agentInstructions).toMatch(/^END YOUR TURN NOW/);
     expect(asked).toBe(false);
@@ -1737,10 +1741,10 @@ describe('abap_debug — captures that outlast their call', () => {
     );
     expect(first.json).toMatchObject({
       running: true,
-      doing: 'waiting for SAP user ADMIN to run the code (0 of 60 s)',
+      doing: 'waiting for SAP user ADMIN to run the code (0 of 300 s)',
     });
     expect(first.json?.userMessage).toBe(
-      'The breakpoints are armed: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
+      'The breakpoints are armed for 5 minutes: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
     );
     expect(first.json?.agentInstructions).toMatch(/^Still waiting for the stop\./);
     expect((await session({ action: 'end' })).json).toMatchObject({ hit: false, reason: 'cancelled' });

@@ -322,7 +322,7 @@ describe('abap_debug — interactive, a run by the user on another application s
     const started = await start({ line: 9, trigger: 'none', runFrom: 'http' });
     expect(started.json).toMatchObject({ session: 'S1', running: true });
     expect(started.json?.userMessage).toBe(
-      'The breakpoints are armed: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
+      'The breakpoints are armed for 5 minutes: run the code now as SAP user ADMIN, e.g. open the Fiori app.',
     );
     expect(started.json?.agentInstructions).toMatch(/^END YOUR TURN NOW/);
     expect((await move({ action: 'wait' })).json).toMatchObject({ hit: true, session: 'S1' });

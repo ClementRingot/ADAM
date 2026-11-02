@@ -92,6 +92,8 @@ export type { SapConnection } from './connection.js';
 export { setDebugTimingsForTests, setResultBudgetForTests } from './debug-limits.js';
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
+/** trigger "none": the user reads the steps and opens their session first. */
+const DEFAULT_RUN_YOURSELF_SECONDS = 300;
 
 type DebugTrigger = 'unittest' | 'http' | 'none';
 
@@ -219,7 +221,12 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
     stepMode: (str('stepMode') as StepMode | undefined) ?? 'over',
     ...(until ? { until } : {}),
     watch: readWatch(args.watch),
-    timeoutSeconds: typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : DEFAULT_TIMEOUT_SECONDS,
+    timeoutSeconds:
+      typeof args.timeoutSeconds === 'number'
+        ? args.timeoutSeconds
+        : str('trigger') === 'none'
+          ? DEFAULT_RUN_YOURSELF_SECONDS
+          : DEFAULT_TIMEOUT_SECONDS,
     ...(typeof args.maxSeconds === 'number' ? { maxSeconds: args.maxSeconds } : {}),
     ...(typeof args.maxResultKB === 'number' ? { maxResultKB: args.maxResultKB } : {}),
   };
@@ -513,12 +520,11 @@ const SAP_GUI_HINT =
   " Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse's), nor one opened before the capture started, while a new one opened through transaction SM51 once the capture waits does — SM51, select the application server, Goto → Remote Logon → Normal, and run the code there.";
 
 /** While a capture with trigger "none" waits: what the user must do (userMessage, or the client's dialog). */
-function runItYourselfHint(user: string, sapGui: boolean): string {
-  if (!sapGui) {
-    return `The breakpoints are armed: run the code now as SAP user ${user}, e.g. open the Fiori app.`;
-  }
+function runItYourselfHint(user: string, sapGui: boolean, seconds: number): string {
+  const armed = `The breakpoints are armed for ${listening(seconds)}: run the code now as SAP user ${user}`;
+  if (!sapGui) return `${armed}, e.g. open the Fiori app.`;
   return [
-    `The breakpoints are armed: run the code now as SAP user ${user}.`,
+    `${armed}.`,
     '',
     'From a Fiori app (or another HTTP call): just run it as usual, no new session needed.',
     '',
@@ -530,6 +536,11 @@ function runItYourselfHint(user: string, sapGui: boolean): string {
     '',
     'A SAP GUI session opened from SAP Logon or SAP Business Client, or opened before now, does not stop at the breakpoints.',
   ].join('\n');
+}
+
+/** How long the capture listens, as the user reads it: 5 minutes, 90 seconds. */
+function listening(seconds: number): string {
+  return seconds % 60 === 0 ? `${seconds / 60} minute${seconds === 60 ? '' : 's'}` : `${seconds} seconds`;
 }
 
 /** The client's dialog: the steps, and what its buttons do. */
@@ -557,10 +568,14 @@ function notHitHint(
     return `The unit tests finished without reaching the breakpoint — check that a harmless test covers this code (ABAP Unit coverage in ADT shows which methods the tests reach), or use trigger="http" / trigger="none".${race}`;
   }
   if (triggerFinished) return `The trigger finished without reaching the breakpoint.${race}`;
+  const over =
+    req.trigger === 'none'
+      ? ' The capture no longer listens: a run started now does not stop. Start a new capture first (timeoutSeconds sets how long it listens, up to 900), then run the code.'
+      : '';
   if (!sapGui) {
-    return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app — and retry.`;
+    return `Nothing stopped within ${req.timeoutSeconds}s.${over} With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app — and retry.`;
   }
-  return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${req.trigger === 'none' ? SAP_GUI_HINT : ''}`;
+  return `Nothing stopped within ${req.timeoutSeconds}s.${over} With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${req.trigger === 'none' ? SAP_GUI_HINT : ''}`;
 }
 
 /** The parts of every capture result: the user, the breakpoints, the trigger. */
@@ -723,14 +738,14 @@ export class CaptureRun {
         : sapGui
           ? `waiting for SAP user ${user} to run the code — from SAP GUI: in a NEW session, SM51 → select the server → Goto → Remote Logon → Normal`
           : `waiting for SAP user ${user} to run the code`;
-    if (plan.kind === 'none') context.hint?.(runItYourselfHint(user, sapGui));
+    if (plan.kind === 'none') context.hint?.(runItYourselfHint(user, sapGui, req.timeoutSeconds));
     context.progress?.(`${waiting} (0 of ${req.timeoutSeconds} s)`);
     // From SAP GUI the user must open their session now: the client shows the steps in a dialog
     // where it can, else the call answers at once with them. Over HTTP it answers at once too:
     // the user opens the app once the breakpoints are armed.
     if (plan.kind === 'none' && req.runFrom === 'http') context.answerNow?.();
     else if (plan.kind === 'none' && sapGui) {
-      const asking = context.confirm?.(runItYourselfHint(user, sapGui) + DIALOG_BUTTONS);
+      const asking = context.confirm?.(runItYourselfHint(user, sapGui, req.timeoutSeconds) + DIALOG_BUTTONS);
       if (!asking) context.answerNow?.();
       else
         void asking.then((answer) => {

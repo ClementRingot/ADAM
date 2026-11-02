@@ -57,7 +57,7 @@ The protocol behind each step is described in [the ADT debugger protocol](adt-de
 | `maxSeconds` | Time budget once the program stopped (default 120; ceiling `ABAP_DEBUGGER_MAX_SECONDS`, default 600). A step costs two or three requests to SAP |
 | `maxResultKB` | Size budget of the result, in KB of JSON (default 40, about 10k tokens; ceiling `ABAP_DEBUGGER_MAX_RESULT_KB`, default 200) |
 | `interactive` | `true`: return at the first stop and keep the program waiting there for [`abap_debug_session`](#abap_debug_session--drive-an-interactive-session) |
-| `timeoutSeconds` | How long to wait for the first stop (1-900, default 60) |
+| `timeoutSeconds` | How long to wait for the first stop (1-900; default 60, 300 with `trigger: "none"`, where the user reads the steps and opens their session first) |
 
 ### Breakpoints
 

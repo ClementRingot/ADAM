@@ -242,7 +242,9 @@ export const DEBUG_INPUT_SHAPE = {
     .min(1, 'timeoutSeconds must be 1-900.')
     .max(900, 'timeoutSeconds must be 1-900.')
     .optional()
-    .describe('How long to wait for the first stop (1-900, default 60).'),
+    .describe(
+      'How long to wait for the first stop (1-900; default 60, 300 with trigger=none: the user reads the steps and opens their session first). The capture stops listening then.',
+    ),
 };
 
 type DebugBreakpointInput = z.infer<typeof DebugBreakpointSchema>;
