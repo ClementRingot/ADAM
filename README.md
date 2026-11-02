@@ -40,7 +40,9 @@ Claude:  abap_source  {type: "CLAS", name: "ZCL_ORDER", method: "get_total"}
 
 You need Node.js 22.12+ and git, an SAP system with ADT (on-premise SAP_BASIS 7.50 or later, or the
 SAP BTP ABAP Environment), and an SAP user with ADT access (`S_ADT_RES`) and debug authorization
-(`S_DEVELOP` with `OBJTYPE = DEBUG`, `ACTVT = 03`).
+(`S_DEVELOP` with `OBJTYPE = DEBUG`, `ACTVT = 03`). With several application servers, SAP runs the
+debugger's requests on the program's server over RFC, as the same user: `S_RFC` for function group
+`SADT_REST`, which Eclipse ADT needs too.
 
 **Claude Code**
 
@@ -92,6 +94,11 @@ Single sign-on cookies, the BTP ABAP Environment, a corporate proxy and every ot
   builds), and register `node /path/to/ADAM/dist/index.js` as the command.
 - Instead of an `env` block, the server can read a file: add `"--env-file", "/path/to/.env"` to `args`
   (see [.env.example](.env.example)).
+- **Without Node.js**: `npm run build:exe` in a clone builds one executable,
+  `build/abap-debugger-mcp.exe` (about 100 MB: it carries Node.js), for the platform it runs on. Copy it
+  anywhere and register it as the command: `"command": "C:\\tools\\abap-debugger-mcp.exe"`, with the
+  `env` block or `"args": ["--env-file", "C:\\tools\\sap.env"]`. It is not code-signed: Windows
+  SmartScreen or an antivirus may hold it back until it is signed or allowed.
 
 </details>
 
@@ -188,9 +195,13 @@ Connector for an on-premise system, a user token for the BTP ABAP Environment. S
 
 Version 0.1. On the SAP BTP ABAP Environment, the server has run live — over HTTP, as a remote
 connector: attaching across application servers, several stops in one run, steps, conditions, long
-step runs, statement kinds and an interactive session. The newest parts — answers that outlast a call,
-watchpoints, the removal of leftovers, the wider search — are tested against a simulated SAP so far,
-like every on-premise release (7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
+step runs, statement kinds and an interactive session. On an S/4HANA system, experiments showed that
+runs from SAP GUI sessions opened through SM51 stop, while sessions opened from SAP Logon never do —
+Eclipse's breakpoints included. The newest parts —
+answers that outlast a call, watchpoints, the removal of leftovers, the wider search, and reaching the
+program's application server through SAP's own request routing (read in SAP's
+source, not yet run live) — are tested against a simulated SAP so far, like every on-premise release
+(7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
 
 ## Development
 
@@ -200,6 +211,7 @@ npm test            # unit tests (vitest)
 npm run typecheck   # tsc over sources and tests
 npm run lint        # biome
 npm run dev         # run from source (tsx)
+npm run build:exe   # one executable needing no Node.js, for this platform: build/abap-debugger-mcp(.exe)
 ```
 
 | Folder | Contents |

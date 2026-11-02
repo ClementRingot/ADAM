@@ -29,8 +29,25 @@ const DEBUG_DESCRIPTION = [
   'Lines are numbered as abap_source shows the ACTIVE source. Per capture: at most 20 breakpoints and 50 stops, and as many steps as the budgets allow — the run is followed until its result size (maxResultKB, default 40 KB) or inspection time (maxSeconds, default 120 s) runs out, then goes on without stopping. Past 20 steps from one stop, the steps come back as a compact trace; until ends them at a line or once a variable changed.',
   "Result: hit; breakpoints (set, with the hits they made, or refused with SAP's reason); debuggee; stops (at, stoppedAt, stack and variables on a breakpoint's first stop — its later stops carry only values, unchanged structures and tables marked so; steps, or a trace of a long run: path = the lines executed per frame, (9-12)×300 = a loop, changes = values where they changed); release; trigger; warnings. Without a stop: reason and hint.",
   'A call answers within ABAP_DEBUGGER_CALL_SECONDS (default 50 s). A capture still waiting for its stop or following its run then answers running: true with its session id, and goes on: abap_debug_session action wait picks up its result, action end stops it.',
+  '{trigger-none}',
   "It never changes variables or the program flow, never debugs system code, and only debugs the session's own SAP user; it refuses when Eclipse or VS Code already debugs that user.",
 ].join('\n');
+
+const SM51_ADVICE =
+  'the call answers right after arming the breakpoints, with running: true and hint: the steps to run the code — from SAP GUI in a NEW session opened through SM51 (select the application server, Goto → Remote Logon → Normal), as a session opened before, or from SAP Logon or SAP Business Client, never stopped at external breakpoints on some systems. Relay hint to the user step by step, in their language, then call abap_debug_session action "wait".';
+
+/**
+ * What to tell the user about a run they start themselves (trigger "none"): how to run it from SAP
+ * GUI (true: on-premise or private cloud), nothing of SAP GUI (false: BTP ABAP Environment, S/4HANA
+ * Cloud Public Edition), or the rule for both when the system is not known yet (undefined).
+ */
+export function triggerNoneAdvice(sapGui: boolean | undefined): string {
+  if (sapGui === false) {
+    return 'trigger "none": this system has no SAP GUI (BTP ABAP Environment or S/4HANA Cloud Public Edition) — never ask about it or mention SM51: the user runs the code from a Fiori app or another HTTP call while the capture waits. An answer running: true says so as hint: relay it.';
+  }
+  if (sapGui) return `trigger "none": ${SM51_ADVICE}`;
+  return `trigger "none": on the BTP ABAP Environment or S/4HANA Cloud Public Edition, which have no SAP GUI, never ask about it or mention SM51. On an on-premise or private cloud system, ${SM51_ADVICE}`;
+}
 
 const SESSION_DESCRIPTION = [
   'One move of the program an interactive capture holds (abap_debug with interactive: true), then where it stands — its position, the code around it, the watched variables — so you decide the next move from what you see.',
@@ -102,11 +119,12 @@ function clean(value: unknown): unknown {
   return out;
 }
 
-export function listTools() {
+/** The tools, the capture described for this system: with SAP GUI, without, or not known yet (undefined). */
+export function listTools(sapGui?: boolean) {
   return TOOLS.map((tool) => ({
     name: tool.name,
     title: tool.title,
-    description: tool.description,
+    description: tool.description.replace('{trigger-none}', triggerNoneAdvice(sapGui)),
     inputSchema: clean(z.toJSONSchema(tool.schema, { io: 'input' })) as { type: 'object'; [key: string]: unknown },
     annotations: tool.annotations,
   }));

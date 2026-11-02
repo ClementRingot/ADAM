@@ -50,6 +50,7 @@ reads it at startup, so not from `--env-file`) rather than turning `SAP_INSECURE
 | `SAP_INSECURE` | `true` skips TLS certificate checks — test systems only |
 | `SAP_DISABLE_SAML` | `true` asks SAP not to redirect to SAML single sign-on |
 | `SAP_ABAP_RELEASE` | SAP_BASIS release (e.g. `758`): the ABAP grammar used to locate methods in classic code |
+| `ABAP_DEBUGGER_SAP_GUI` | `true`: users run code from SAP GUI (on-premise, private cloud), so with `trigger: "none"` the agent explains how to run it through SM51; `false`: no SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public Edition), so it never mentions it. Default: `false` behind a BTP service key or an Internet destination, else `true` |
 | `ABAP_DEBUGGER_MAX_SECONDS` | Ceiling of a call's `maxSeconds` (10-3600, default 600) |
 | `ABAP_DEBUGGER_MAX_RESULT_KB` | Ceiling of a call's `maxResultKB` (5-1000, default 200) |
 | `ABAP_DEBUGGER_IDLE_SECONDS` | An interactive session is released after this long without a call (10-3600, default 120) |

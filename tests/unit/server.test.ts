@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { AdtApiError, AdtNetworkError } from '../../src/adt/errors.js';
 import type { AdtHttpClient } from '../../src/adt/http.js';
-import { callTool, createMcpServer, SERVER_INSTRUCTIONS } from '../../src/server.js';
+import { callTool, createMcpServer, serverInstructions } from '../../src/server.js';
 import { listTools } from '../../src/tools/definitions.js';
 import { VERSION } from '../../src/version.js';
 
@@ -99,8 +99,27 @@ describe('tools/list', () => {
       version: string;
     };
     expect(VERSION).toBe(pkg.version);
-    expect(SERVER_INSTRUCTIONS).toContain('abap_source');
+    expect(serverInstructions()).toContain('abap_source');
     expect(createMcpServer({ problems: [] })).toBeDefined();
+  });
+
+  it('fits the advice on runs the user starts to the system: SM51 with SAP GUI, nothing of it in the cloud', () => {
+    const debugDescription = (sapGui?: boolean) => listTools(sapGui)[0]?.description ?? '';
+    for (const text of [serverInstructions(true), debugDescription(true)]) {
+      expect(text).toContain('SM51 (select the application server, Goto → Remote Logon → Normal)');
+      expect(text).toContain('Relay hint to the user step by step');
+      expect(text).not.toContain('S/4HANA Cloud Public Edition');
+    }
+    for (const text of [serverInstructions(false), debugDescription(false)]) {
+      expect(text).toContain('this system has no SAP GUI');
+      expect(text).not.toContain('Remote Logon');
+    }
+    // Not known yet (a destination resolved on the first call): the rule for both.
+    for (const text of [serverInstructions(), debugDescription()]) {
+      expect(text).toContain('On an on-premise or private cloud system');
+      expect(text).toContain('never ask about it or mention SM51');
+    }
+    expect(debugDescription()).not.toContain('{trigger-none}');
   });
 });
 

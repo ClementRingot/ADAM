@@ -316,6 +316,46 @@ describe('abap_debug — interactive sessions', () => {
   });
 });
 
+describe('abap_debug — interactive, a run by the user on another application server', () => {
+  it('holds the run where it stopped and makes every move there, through a session SAP routes to its server', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      runByUser: true,
+      sessionUser: 'ADMIN',
+      servers: ['sappas_S4D_00', 'sapaas_S4D_01'],
+      debuggeeServer: 'sapaas_S4D_01',
+    });
+    const started = await start({ line: 9, trigger: 'none' });
+    // A system with SAP GUI: the call answers once armed, with the steps to run the code through SM51.
+    expect(started.json).toMatchObject({ session: 'S1', running: true });
+    expect(started.json?.hint).toContain('Goto → Remote Logon → Normal');
+    expect((await move({ action: 'wait' })).json).toMatchObject({
+      hit: true,
+      session: 'S1',
+      debuggee: { server: 'sapaas_S4D_01' },
+      trigger: { kind: 'none' },
+    });
+
+    expect((await move({ action: 'step' })).json).toMatchObject({ position: { line: 10 } });
+    expect((await move({ action: 'inspect', variables: ['lv_total'] })).json).toMatchObject({
+      variables: [{ name: 'LV_TOTAL', value: '40' }],
+    });
+    expect((await move({ action: 'end' })).json).toMatchObject({ ended: true, release: { released: true } });
+
+    // The debugger's session sits on the other server, and SAP ran each of its requests on the debuggee's: the
+    // attach, every move, the release.
+    const routed = calls.filter((c) => c.stateful);
+    expect(new Set(routed.map((c) => c.landed))).toEqual(new Set(['sappas_S4D_00']));
+    expect(routed.every((c) => c.routedTo === 'sapaas_S4D_01' && c.server === 'sapaas_S4D_01')).toBe(true);
+    expect(stepCalls(calls).map((c) => c.server)).toEqual(['sapaas_S4D_01']);
+    expect(stepCalls(calls, 'stepContinue').map((c) => c.server)).toEqual(['sapaas_S4D_01']);
+    // The session ends where it is.
+    const closes = calls.filter((c) => c.sessionType === 'stateless');
+    expect(closes).toHaveLength(1);
+    expect(closes.every((c) => c.routedTo === undefined && c.server === 'sappas_S4D_00')).toBe(true);
+  });
+});
+
 describe('abap_debug_session — work that outlasts its call', () => {
   it('answers a start still waiting for its stop with the session id; wait gives the first stop', async () => {
     installFakeSap({ hit: true, stopAfterMs: 900 });

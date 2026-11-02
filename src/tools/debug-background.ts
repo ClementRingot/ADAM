@@ -12,15 +12,22 @@ import { type DebugLimits, settleBy } from './debug-limits.js';
 import type { DebugEntry } from './debug-registry.js';
 import { describeError, errorResult, type ToolResult, textResult, toolJson } from './result.js';
 
+const ANSWER_NOW = Symbol('answer now');
+
 export class BackgroundWork implements DebugEntry {
   readonly startedAt = Date.now();
   /** Its answer, once it is done. */
   outcome: ToolResult | undefined;
   /** A call has received the answer. */
   delivered = false;
+  /** What the user must do now for the work to go on (trigger "none": run the code). */
+  hint: string | undefined;
   readonly done: Promise<ToolResult>;
   private readonly abort = new AbortController();
   private waiterProgress: ((message: string) => void) | undefined;
+  /** The work asked its call to answer now (answerNow), and no call has done so yet. */
+  private answerNowPending = false;
+  private wakeWaiter: (() => void) | undefined;
 
   constructor(
     readonly id: string,
@@ -37,6 +44,13 @@ export class BackgroundWork implements DebugEntry {
       progress: (message) => {
         this.doing = message;
         this.waiterProgress?.(message);
+      },
+      hint: (text) => {
+        this.hint = text;
+      },
+      answerNow: () => {
+        this.answerNowPending = true;
+        this.wakeWaiter?.();
       },
       owner,
     };
@@ -64,19 +78,32 @@ export class BackgroundWork implements DebugEntry {
 
   /**
    * Wait for the work up to `deadline` on behalf of a call: the call gets its progress, and the
-   * call's cancellation stops the work. Undefined: the call must answer first, the work goes on.
+   * call's cancellation stops the work. Undefined: the call must answer first (its budget ran out,
+   * or the work needs the user to act now), the work goes on.
    */
   async waitFor(context: ToolContext, deadline: number): Promise<ToolResult | undefined> {
     const onAbort = () => this.cancel();
     if (context.signal?.aborted) this.cancel();
     context.signal?.addEventListener('abort', onAbort, { once: true });
     this.waiterProgress = context.progress;
+    const answerNow = new Promise<typeof ANSWER_NOW>((resolve) => {
+      // A cancelled work answers with what it cleaned up, not with steps for the user.
+      this.wakeWaiter = () => {
+        if (this.active && !this.abort.signal.aborted) resolve(ANSWER_NOW);
+      };
+      if (this.answerNowPending) this.wakeWaiter();
+    });
     try {
-      const settled = await settleBy(this.done, deadline);
+      const settled = await settleBy(Promise.race([this.done, answerNow]), deadline);
       if (!settled) return undefined;
+      if (settled.value === ANSWER_NOW) {
+        this.answerNowPending = false;
+        return undefined;
+      }
       this.delivered = true;
       return settled.value;
     } finally {
+      this.wakeWaiter = undefined;
       if (this.waiterProgress === context.progress) this.waiterProgress = undefined;
       context.signal?.removeEventListener('abort', onAbort);
     }
@@ -101,7 +128,8 @@ export function stillRunning(work: BackgroundWork, limits: DebugLimits): ToolRes
       running: true,
       doing: work.doing,
       seconds: Math.round((Date.now() - work.startedAt) / 1000),
-      next: `It goes on in the background. Call abap_debug_session with action "wait" for its answer (each call waits up to ${limits.callSeconds} s: ABAP_DEBUGGER_CALL_SECONDS), or action "end" to stop it.`,
+      ...(work.hint ? { hint: work.hint } : {}),
+      next: `${work.hint ? 'First relay hint to the user, step by step. ' : ''}It goes on in the background. Call abap_debug_session with action "wait" for its answer (each call waits up to ${limits.callSeconds} s: ABAP_DEBUGGER_CALL_SECONDS), or action "end" to stop it.`,
     }),
   );
 }

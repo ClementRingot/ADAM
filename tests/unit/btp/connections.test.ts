@@ -153,6 +153,8 @@ describe('BtpConnections', () => {
     // The second call's token: an interactive session started earlier keeps the user's latest identity.
     expect(init.headers.Authorization).toBe('Bearer second');
     expect(first.logonUser).toBeUndefined();
+    // An Internet destination reaches the BTP ABAP Environment or S/4HANA Cloud: no SAP GUI to advise on.
+    expect(first.sapGui).toBe(false);
 
     await expect(
       connections.connect({ token: 'an-api-key-of-twenty-chars', clientId: 'k', scopes: [] } as AuthInfo, 'client:k'),
@@ -171,6 +173,12 @@ describe('BtpConnections', () => {
     const a = await connections.connect(undefined, 'client:a');
     expect(await connections.connect(undefined, 'client:b')).toBe(a);
     expect(a.logonUser).toBe('DEBUGGER');
+    // ABAP_DEBUGGER_SAP_GUI=true says this Internet-reachable system has SAP GUI after all.
+    const declared = new BtpConnections(
+      { btp, name: 'A4H', destination: basic, perUser: false },
+      { ...settings, sapGui: true },
+    );
+    expect((await declared.connect(undefined, 'client:a')).sapGui).toBeUndefined();
     mockFetch.mockResolvedValueOnce(mockResponse(200, 'ok'));
     await a.http.get('/sap/bc/adt/core/discovery');
     const [, init] = mockFetch.mock.calls[0] as [string, { headers: Record<string, string> }];

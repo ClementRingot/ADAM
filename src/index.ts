@@ -86,7 +86,11 @@ async function main(argv: string[]): Promise<void> {
     logger.warn(`Not configured; every tool call will say so:\n- ${problems.join('\n- ')}`);
   }
 
-  const server = createMcpServer({ ...(connection ? { connection } : {}), problems });
+  const server = createMcpServer({
+    ...(connection ? { connection } : {}),
+    problems,
+    ...(config ? { sapGui: config.sapGui } : {}),
+  });
   await server.connect(new StdioServerTransport());
   logger.info(`abap-debugger-mcp ${VERSION} ready (stdio)`);
 

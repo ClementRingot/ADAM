@@ -20,7 +20,7 @@ Lines are always numbered as `abap_source` shows the **active** source.
    of taking the session over.
 3. **Run.** The trigger runs the code: the object's harmless ABAP Unit tests, an OData `GET`, or
    nothing (`trigger: "none"`) while you run it yourself — a Fiori app, a report — as the same SAP user.
-4. **Follow.** When the program stops, the capture attaches from the application server the program
+4. **Follow.** When the program stops, the capture attaches on the application server the program
    waits on, records the stop (position, call stack, variables, steps), retires a breakpoint once it
    has made its `hits`, and continues to the next stop of the **same run**. If SAP can only attach in
    non-exclusive mode — every work process for exclusive debugging taken — each debugger step would
@@ -100,6 +100,21 @@ before the program is released.
 | `none` | Nothing: the capture waits `timeoutSeconds` while you run the code yourself, as the same SAP user |
 
 Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP trigger only reads.
+
+**Runs started from SAP GUI.** On some systems a session opened from SAP Logon or SAP Business Client
+(a session of type GUI) never stops at external breakpoints — Eclipse's neither — while a session
+opened through transaction SM51 once the capture waits does, as do HTTP runs such as a Fiori app's
+requests; a session opened before the capture started does not. Once the capture waits, open a new
+session — SM51, select the application server, *Goto → Remote Logon → Normal*, or double-click it —
+and run the code there. With `trigger: "none"` the call answers right after arming the breakpoints,
+with `running: true` and these steps as its `hint`: the agent relays them to the user, then waits for
+the stop with `abap_debug_session` action `wait`. Its progress messages repeat them while it waits,
+and so does the hint of a capture where nothing stopped. On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
+Edition: a service key or an Internet destination, or `ABAP_DEBUGGER_SAP_GUI=false`) none of this is
+said, and the call waits as usual.
+External breakpoints set in SAP GUI itself (ABAP Editor) exclude the capture's for the same user (SAP
+GUI shows *ED702*): SAP ends the wait at once, and the result's `reason` is a conflict, its hint naming
+them. Details in [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
 
 ### Result
 
@@ -364,8 +379,11 @@ abap_debug_session {action: "end"}
   call waits for the first stop or records stops and steps — some clients keep a long call alive on
   them.
 
-**Several application servers** (the BTP ABAP Environment and larger on-premise systems): SAP attaches
-only from the server the program stopped on. The capture opens sessions before the run until two land
-on the same server, and runs its unit tests on one of them, so the stop and the attach meet. With
-`trigger: "http"` or `"none"` it can attach only where it already has a session; when it cannot, the
-result says which server was missed — retry.
+**Several application servers** (the BTP ABAP Environment and larger on-premise systems): the attach
+must run on the server the program stopped on, whichever trigger ran it. The capture's debugger session
+names that server on each of its requests (`X-sap-adt-server-instance`), and SAP runs them there,
+forwarded over RFC from wherever the load balancer put the session — no server is searched for. One
+harmless request first shows that SAP does; where it does not (an older release, or SAP cannot reach
+the server — the RFC needs the `S_RFC` authorization for `SADT_REST` that Eclipse ADT needs too), the
+capture sends no attach, which would fail and leave the program unattachable, and says why. Details in
+[Reaching the debuggee's application server](adt-debugger-protocol.md#5-reaching-the-debuggees-application-server).

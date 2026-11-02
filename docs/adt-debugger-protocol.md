@@ -7,8 +7,9 @@ what has been observed on real systems. It is the reference behind
 
 **Evidence.** The contract below is corroborated by three independent clients that drive the same
 SAP resources, two of them with recorded live verification. **L** marks what was observed live on
-the SAP BTP ABAP Environment in October 2026, with the capture engine this server is built on.
-Everything else still has to be confirmed release by release: see [§9](#9-live-checks-still-owed).
+the SAP BTP ABAP Environment in October 2026, with the capture engine this server is built on, **G**
+what was observed with SAP GUI on an S/4HANA system, **R** what SAP's own ABAP source says. Everything
+else still has to be confirmed release by release: see [§9](#9-live-checks-still-owed).
 
 | | Source |
 |---|---|
@@ -16,12 +17,15 @@ Everything else still has to be confirmed release by release: see [§9](#9-live-
 | **V** | [vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) — `client/src/adt/debugger/` (`debugListener.ts`, `debugService.ts`, `breakpointManager.ts`, `variableManager.ts`) |
 | **S** | [vibing-steampunk](https://github.com/oisee/vibing-steampunk) — `pkg/adt/debugger.go`, `pkg/saprfc/adtdebug.go`, and the live notes of its README |
 | **L** | Live, SAP BTP ABAP Environment trial, October 2026 |
+| **G** | Live, S/4HANA on-premise (SAP_BASIS 8.16) with two application servers, October-November 2026: SAP GUI runs, with this server and experiment scripts on its modules (not kept), and Eclipse ADT |
+| **R** | SAP's ABAP source, read in October 2026 on an S/4HANA system (SAP_BASIS 8.16), the BTP ABAP Environment trial (9.20) and an ECC system (7.50): `CL_ABDBG_ACT_FOR_ATTACH__USER`, `CL_TPDAPI_SERVICE`, `CL_TPDA_ADT_RES_DEBUGGER`, `CL_ADT_WB_RES_APP`, `SADT_REST_RFC_ENDPOINT` |
 
 ## Nothing to install on SAP
 
 The debugger is driven over plain ADT REST, as Eclipse ADT drives it: no ABAP helper, no WebSocket,
-no RFC. What it needs is **one stateful ADT session (`sap-contextid`) that lives from the attach to
-the release, on the application server where the stopped program waits** ([§5](#5-reaching-the-debuggees-application-server)).
+no RFC of its own. What it needs is **one stateful ADT session (`sap-contextid`) that lives from the
+attach to the release, whose requests SAP runs on the application server where the stopped program
+waits** ([§5](#5-reaching-the-debuggees-application-server)).
 A client that gives the listener and the attach separate sessions never finds the program its
 listener caught — the reason an HTTP-only debugger once shipped disabled (S): *"listen and attach
 each got their own session, so the attach never found the debuggee the listen had caught. Nothing
@@ -34,7 +38,7 @@ about the resources was wrong — only the session under them."*
 2. listener     POST /sap/bc/adt/debugger/listeners     long poll, on the stateless client
 3. trigger      ABAP Unit, an OData GET, or the user's own run — as the same SAP user
 4. stop         the listener answers with the waiting program (STPDA_DEBUGGEE)
-5. attach       POST /sap/bc/adt/debugger?method=attach on a stateful session on that program's server
+5. attach       POST /sap/bc/adt/debugger?method=attach on a stateful session SAP routes to that program's server
 6. inspect      stack, variables, steps, session breakpoints — on the same session
 7. release      stepContinue until SAP reports the program ended
 8. clean up     delete the listener, clear the breakpoints, close the stateful sessions
@@ -109,9 +113,11 @@ location, and a final full sync keeps the first line SAP accepted for each, with
 
 The stopped program arrives as `<asx:abap><asx:values><DATA><STPDA_DEBUGGEE>` with `DEBUGGEE_ID`,
 `DEBUGGEE_USER`, `PRG_CURR`, `INCL_CURR`, `LINE_CURR`, `DBGEE_KIND` and `IS_ATTACH_IMPOSSIBLE`, on newer
-releases also `URI`, `TYPE` and `NAME` (A, S), and where it waits: `INSTANCE_NAME` (the server name
-the `sap-contextid` cookie carries), `IS_SAME_SERVER` (relative to the listener's server) and
-`CAN_ADT_CROSS_SERVER` (A, L). `LINE_CURR` counts within `INCL_CURR` (a method include such as
+releases also `URI`, `TYPE` and `NAME` (A, S), and where it waits (A, L, R): `INSTANCE_NAME` (the
+server as `TH_SERVER_LIST` names it — the name a `sap-contextid` cookie carries), `APPSERVER` (its host
+name, `SAPLOCALHOSTFULL`), `IS_SAME_SERVER` (that server answers the listener) and `CAN_ADT_CROSS_SERVER`
+— always `true`: the ADT handler hard-codes it, saying the back end routes requests between servers,
+nothing about the program ([§5](#5-reaching-the-debuggees-application-server)). `LINE_CURR` counts within `INCL_CURR` (a method include such as
 `…CM004`), while `URI` numbers the line in the source as `abap_source` shows it (L): the server takes
 the line from the URI, and reports `include` and `includeLine` when there is none.
 
@@ -126,7 +132,7 @@ Every call below runs on **one stateful session**, on the server where the progr
 
 | Operation | Request | Answer and notes |
 |---|---|---|
-| Attach | `POST /sap/bc/adt/debugger?method=attach&debuggeeId=…&dynproDebugging=true&debuggingMode=user&requestUser=…` | `<dbg:attach isSteppingPossible isPostMortem …>` with `<reachedBreakpoints><breakpoint id kind/>`. The program is attachable only while it waits: listen and attach back to back, else `invalidDebuggee` (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`) (S). Only from the program's own application server ([§5](#5-reaching-the-debuggees-application-server), L). |
+| Attach | `POST /sap/bc/adt/debugger?method=attach&debuggeeId=…&dynproDebugging=true&debuggingMode=user&requestUser=…` | `<dbg:attach isSteppingPossible isPostMortem …>` with `<reachedBreakpoints><breakpoint id kind/>`. The program is attachable only while it waits: listen and attach back to back, else `invalidDebuggee` (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`) (S). It must run on the program's own application server: the session is routed there ([§5](#5-reaching-the-debuggees-application-server), L, R). |
 | Stack | `GET /sap/bc/adt/debugger/stack?method=getStack&emode=_&semanticURIs=true` | `<dbg:stack>` of `<stackEntry stackPosition stackType stackUri programName includeName line eventType eventName sourceType systemProgram isVit uri/>`. SAP_BASIS 7.50 has no `/debugger/stack` (404): `POST /sap/bc/adt/debugger?method=getStack&emode=_&semanticURIs=true` instead (A gates it on discovery, S falls back on the 404 — live on 7.50). |
 | Variables | `POST /sap/bc/adt/debugger?method=getVariables`, body `<asx:abap><asx:values><DATA><STPDA_ADT_VARIABLE><ID>LV_X</ID></STPDA_ADT_VARIABLE>…`, `Content-Type: application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.Variables` | Rows `STPDA_ADT_VARIABLE`: `ID`, `NAME`, `DECLARED_TYPE_NAME`, `ACTUAL_TYPE_NAME`, `META_TYPE`, `VALUE`, `TECHNICAL_TYPE`, `LENGTH`, `TABLE_LINES`, `IS_VALUE_INCOMPLETE`, … Ids are expressions: `LS_S-COMP`, `LT_T[2]`, `ME->MV_A`, `SY-SUBRC` (V). |
 | Child variables | `POST /sap/bc/adt/debugger?method=getChildVariables`, body `<DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID>…`, `dataname=com.sap.adt.debugger.ChildVariables` | `HIERARCHIES` (`PARENT_ID`, `CHILD_ID`, `CHILD_NAME`) and `VARIABLES`. `@ROOT`'s children are the frame's scopes (V shows them as the Variables view's scopes) or, on some releases, the variables directly; a structure's children are its components. Several parents fit in one request. |
@@ -155,44 +161,109 @@ the server releases the program at once, reading and stepping nothing, and says 
 
 **Closing a session.** The server closes every stateful session it opens the way Eclipse ADT does:
 `GET /sap/bc/adt/core/http/sessions` with `sap-adt-purpose: close-session` on that session's context.
-Where that resource is missing (7.50), a stateless request on the context closes it.
+Where that resource is missing (7.50), a stateless request on the context closes it. A session routed
+to another server ([§5](#5-reaching-the-debuggees-application-server)) is closed without the routing
+header: where it is, and the ABAP session it opened on the routed server goes with it.
 
 ## 5. Reaching the debuggee's application server
 
-On a system with several application servers, the attach must come from **a session on the server the
-program waits on** (`INSTANCE_NAME`). Observed on the BTP ABAP Environment trial, with two servers (L):
+On a system with several application servers, the attach must **run on the server the program waits
+on** (`INSTANCE_NAME`). What SAP's source says (R), and what was seen on the BTP ABAP Environment
+trial with two servers (L):
 
-- From any other server SAP answers **500 `invalidDebuggee`** (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`, raised
-  in `CL_ABDBG_ACT_FOR_ATTACH__USER`), although the program reports `IS_ATTACH_IMPOSSIBLE=false` and
-  `CAN_ADT_CROSS_SERVER=true`. `dynproDebugging=true|false` makes no difference.
-- **The refused attempt spoils the stopped program**: every later attach fails the same way, from the
-  right server too. Retrying is useless; the first attach has to come from the right server.
-- Running the listener on a stateful session and attaching there does not help: the program waits on
-  whichever server ran the trigger, not on the listener's (`IS_SAME_SERVER=false`, `LISTENER_CTX_ID`
-  empty).
-- The first attach from a session on the program's server succeeds, and stack, variables and steps
-  follow on that session.
+- **Why.** The listener's answer comes from `ABDBG_ACTIVATION`, SAP's table of waiting programs. The
+  attach (`CL_ABDBG_ACT_FOR_ATTACH__USER`, method `ATTACH`) reads the program's row, **deletes it and
+  commits**, then attaches with the row's `DBGKEY` (C call `TPDA_ATTACH`), a key valid on the
+  program's own server only. Run on any other server, that call fails: SAP answers **500
+  `invalidDebuggee`** (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`), and with the row gone, **every later attach
+  fails too**, from the right server as well — the refused attempt spoils the stopped program (L).
+  `dynproDebugging=true|false` makes no difference (L). The handler's own subtype for this case,
+  `invalidServer` with the properties `currentServer` and `debuggeeServer`, is never reached: it needs
+  the row, already deleted.
+- **What the fields say.** `INSTANCE_NAME` names the program's server as `TH_SERVER_LIST` does
+  (`<host>_<SID>_<nr>` on-premise, `appserver-…` pods on BTP), `APPSERVER` its host; `IS_SAME_SERVER`
+  compares it with the server answering the listener; `CAN_ADT_CROSS_SERVER` is hard-coded `X`
+  (`CL_TPDA_ADT_RES_DEBUGGER`, `lcl_handler_get_dbgee_sessions`). The listener's registration,
+  `LISTENER_CTX_ID` (empty when the program stopped elsewhere, L) and the server the listener runs on
+  play no part in the attach.
+- **How SAP gets a request there.** SAP's ADT handler runs a request on the server that the request
+  header **`X-sap-adt-server-instance`** names: when it names another instance of `TH_SERVER_LIST`,
+  the server that received the request forwards it over RFC — `CALL FUNCTION 'SADT_REST_RFC_ENDPOINT'
+  DESTINATION '<instance>'` — and maps the answer back. Over HTTP that is `CL_ADT_WB_RES_APP`:
+  `get_debugger_destination` picks `lcl_rfc_request_proxy_dbg`, which checks the CSRF token itself,
+  drops the header (the target must not forward again) and adds `X-sap-adt-internal-server-instance:
+  true`; Eclipse's RFC connections reach the same function module, which routes the same way. SAP's
+  own unit test says what it is for: *"Via a special http header it is possible to route a request to
+  a specific app server instance"* (`LSADT_RESTT99`). The RFC connection belongs to the ABAP session
+  that opened it: in a stateful HTTP session it serves every later request, so the attach, the stack,
+  the variables and the steps all reach one ABAP session on the program's server.
+- **Failures.** A request SAP cannot forward answers `CX_ADT_REST_ROUTING` — type
+  `ExceptionRequestRooting` (sic), subtype `ExceptionOnTargetServer` (502: the RFC failed) or
+  `NoAuthorization` (403) — without having run on the target. A forwarded request runs there as the
+  same SAP user, over RFC: it takes the authorization `S_RFC` for function group `SADT_REST`, which
+  Eclipse ADT's RFC connections take too.
+- **Releases.** Both the HTTP handler and the RFC function module route in SAP_BASIS 8.16 (S/4HANA)
+  and in the BTP ABAP Environment (9.20). SAP_BASIS 7.50 routes in the RFC function module only; its
+  HTTP handler ignores the header. Releases in between: not read.
 
-Nothing addresses a server directly. A new stateful session is load-balanced, and SAP names where it
-landed in the `sap-contextid` cookie — `SID:ANON:<server>:<context id>`, `appserver-…` pods on BTP,
-`<host>_<SID>_<nr>` on classic systems — by which the load balancer then routes the session.
+So the server **opens no session ahead of the run and probes no server**. After the stop it opens one
+stateful session — wherever the load balancer puts it — and every request of it carries
+`X-sap-adt-server-instance: <INSTANCE_NAME>`, `sap-adt-saplb: fetch` and `saplb: <INSTANCE_NAME>`
+(below). Before the attach, one harmless request (`GET /sap/bc/adt/core/http/systeminformation`) shows
+where SAP runs them: the ADT handler answers `sap-adt-saplb` with its own server's name
+(`cl_icm_api=>get_encoded_instance_name`, MD5-encoded under `is/instname_encoding = md5`) only for a
+request it runs itself. Without the header, SAP forwarded the request; naming the program's server,
+the session is there already; naming another server, SAP ignored the route — and then **no attach is
+sent**, which would fail and spoil the program. On a release without that resource (7.50), which
+routes no HTTP request either, the server the session landed on (`sap-contextid`) decides the same
+way. A forwarding failure is reported in SAP's words, nothing attached. The session's close
+(`sap-adt-purpose: close-session`) goes without the routing headers: it ends the session where it is,
+and the ABAP session it opened on the program's server with it. A program without `INSTANCE_NAME`
+(one application server) gets a plain stateful session.
 
-**Find the server before the stop, not after.** The balancer prefers the least-loaded server, and a
-stopped program loads its own (it holds a work process). Once a program waits, new sessions avoid
-exactly its server: 16 of 16 probes landed on the other one, either way round, with fresh TCP
-connections too. Probing after the stop worked only when other users' load happened to tip the balance.
+`saplb` is for the BTP ABAP Environment's load balancer: Eclipse sends it there on the attach of a new
+stateful session, whose answer's `sap-contextid` then names that server — 10 attaches of 10, 5 across
+servers (mcp-abap-adt-clients, from Eclipse's Communication Log). A session placed there runs its
+requests itself, with nothing to forward. On-premise nothing is known to read it (SAP Web Dispatcher
+balances with `saplb_*` cookies, not this header); the ADT handler forwards instead.
 
-So the server opens its sessions **before the run** (`openSessionsAhead`): stateful sessions with one
-cheap `GET /sap/bc/adt/core/http/systeminformation` each, until two land on the same server (at most 6;
-a balanced pair takes 3). The unit-test trigger runs on the second session of that pair, so the program
-stops on its server, where the first one waits to attach. For a run the server does not place —
-`trigger: "http"` or `"none"` — the attach takes whichever waiting session is on the program's server;
-only when none is does it probe after the stop (`openSessionOnServer`, at most 8 sessions), usually in
-vain, and the result then names the server it missed. Without a server name (no `INSTANCE_NAME`,
-another cookie shape, no `systeminformation` on 7.50), the attach goes wherever it lands.
+Before that, the server looked for the program's server by opening sessions: a new stateful session
+is load-balanced, and once a program waits, new sessions avoid its server — 16 of 16 probes landed on
+the other one, either way round (L) — so it opened them before the run and ran its unit tests on one
+of them, and missed whenever another trigger ran the code.
 
-On BTP the servers are pods whose names change over time (`appserver-t4w2x` and `-rpsxx`, later
-`-w4krn`, L); the server discovers them at every run.
+### SAP GUI runs
+
+Whether a run started from SAP GUI stops depends on the kind of session it runs in, not on the
+server (G, S/4HANA SAP_BASIS 8.16, two application servers; Eclipse ADT behaves the same):
+
+- **A session of type GUI never stops at ADT's external breakpoints** — one opened from SAP Logon,
+  SAP Business Client or a `.sap` shortcut (SM04: *Type of User Session* `GUI`), on either server,
+  opened before or after the breakpoints were armed, with user or terminal-id breakpoints, whatever
+  server they were armed from. Neither did one of Eclipse's.
+- **A session of type RFC stops**: one opened through transaction SM51 once the breakpoints are armed
+  — select the server, then *Remote Logon*, or double-click it (SM04: `RFC`, `R=1 T=S S=<server>`) —
+  on either server, whichever server armed them. HTTP runs (a Fiori app's requests, a REST client's)
+  stop as well. A Remote Logon opened before the arming did not stop (two observations, the second
+  with a capture by this server; a new Remote Logon opened during that same capture stopped).
+- **External breakpoints set from SAP GUI** (ABAP Editor, *Utilities → Breakpoints*) do stop a GUI
+  session, in the SAP GUI debugger of the frontend that set them. They are another mechanism (R,
+  `HTTP_DEBUG_UPDATE`): stored in `ABDBG_BPS`, activated with the setter's SAP GUI connection key
+  (`TH_GET_REMOTE_DEBUG_KEY`, `ICFATTRIB` `K=<key>`), where ADT's are stored in `ABDBG_EXTDBPS` and
+  activated for attach (`K=0,A=X`), waiting for a listener. A client without SAP GUI has no such key,
+  and a stop there would open SAP GUI's debugger, not reach the listener.
+- **The two exclude each other for one user**: setting a SAP GUI external breakpoint while ADT's are
+  armed shows *ED702 "Debugging hindered by external development environment"*, and SAP ends the
+  listener's long poll with a `conflictNotification`. With both armed, a GUI session stopped at the SAP
+  GUI breakpoint only.
+
+So with `trigger: "none"` the capture arms as for any other run; when nothing stopped, its hint tells
+to run the code from a session opened through SM51, and a wait ended by a conflict says that SAP GUI
+external breakpoints are the usual cause. Why GUI sessions ignore ADT's breakpoints on that system —
+a kernel patch, a profile parameter — is not known ([live check 21](#9-live-checks-still-owed)). An
+earlier reading — that a SAP GUI run stops only on the server armed last, so that the capture armed
+there after looking the user's logons up in `USR41` — did not hold once the session's type was
+recorded: it was dropped.
 
 ## 6. Who is debugged
 
@@ -220,10 +291,11 @@ When SAP's answer and `SAP_USER` differ, SAP's answer wins: it is the user the d
 
 | Release | Notes |
 |---|---|
-| 7.50 | No `/debugger/stack` resource: the dispatcher's `getStack` instead (S, live). No `systeminformation`: `SAP_USER` names the user ([§6](#6-who-is-debugged)). No close-session resource: a stateless request on the context. |
+| 7.50 | No `/debugger/stack` resource: the dispatcher's `getStack` instead (S, live). No `systeminformation`: `SAP_USER` names the user ([§6](#6-who-is-debugged)). No close-session resource: a stateless request on the context. The ADT HTTP handler does not route requests to another application server (R): with several servers, the attach succeeds only where the session landed on the program's. |
 | 7.50 and older | ADT does not natively keep a stateful session (`X-sap-adt-sessiontype: stateful`) without the `abapfs_extensions` enhancement; expect `noSessionAttached` after the attach — to verify. |
 | 7.58 | `method=detach` is unknown; line, statement, exception and message breakpoints accepted (S, live). |
-| BTP ABAP Environment | The same resources as on-premise. Several application servers: attach from the program's ([§5](#5-reaching-the-debuggees-application-server)). `systeminformation` names the internal `CB99…` user (L). |
+| 8.16 | The ADT HTTP handler routes a request to the server `X-sap-adt-server-instance` names, and answers `sap-adt-saplb: fetch` (R). |
+| BTP ABAP Environment | The same resources as on-premise. Several application servers (pods): the debugger session is routed to the program's ([§5](#5-reaching-the-debuggees-application-server); the handler routes, R). `systeminformation` names the internal `CB99…` user (L). |
 
 ## 8. Observed live
 
@@ -280,7 +352,7 @@ With this server, deployed over HTTP and reached as a remote MCP connector, on t
 - **Statement breakpoints armed for the whole user stop this server's own requests.** `CLEAR` armed as
   an external breakpoint caught the server's ADT requests too, which then hung past the client's time
   limit. Statement breakpoints are therefore set in the debugged run only, once a line or method
-  breakpoint stopped it, and the server opens its sessions before arming anything.
+  breakpoint stopped it, and the server keeps its own requests after the arming as few as possible.
 - **Method breakpoints** land on the first statement where SAP refuses the `METHOD` line itself (this
   class), on the `METHOD` line where it accepts it (the behavior pool above). `until: { changed }`
   ended the steps at the change.
@@ -291,9 +363,51 @@ With this server, deployed over HTTP and reached as a remote MCP connector, on t
   captures waiting for their stop. Each call now answers within `ABAP_DEBUGGER_CALL_SECONDS` and the
   rest goes on in the background.
 
+With the debugger session routed to the program's server ([§5](#5-reaching-the-debuggees-application-server)),
+deployed on the same trial (29 October 2026; two pods, `appserver-n2nxt` and `appserver-w4krn`):
+
+- **Routing.** Every attach succeeded, with no session opened ahead and no server probed: 10 captures
+  and 3 interactive sessions, stopped on either pod, the unit tests run stateless. Whether the
+  trial's load balancer placed the session (`saplb`) or the ADT handler forwarded it was not visible.
+- **Interactive, a Fiori action.** *Accept Travel* clicked in the Fiori Elements preview of
+  `/DMO/UI_TRAVEL_D_D_O4` stopped in `lhc_travel~acceptTravel` under the OData V4 batch, held across
+  calls, stepped over and into (`MODIFY ENTITIES … IN LOCAL MODE` was stepped over: the managed
+  framework runs no handler there), then released by the idle timeout; the action completed.
+- **Interactive, unit tests.** A step, `continue` with `toLine`, `inspect` with the stack and the
+  whole frame, then `end` with `terminate: true`: this time ABAP Unit reported the whole run
+  `incomplete`, no test counted. A session held 120 s past a `DURATION SHORT` test let the run finish
+  with 3 of 6 tests skipped and 4 warnings.
+- **Breakpoints.** `hits: 1` on a loop line stopped the first pass only; a condition
+  (`ls_item-product = 'Ink'`) skipped the pass where it did not hold; an exception breakpoint armed
+  for the whole user (`CX_SY_ZERODIVIDE`, caught) stopped on the `CATCH` line; a `SORT` statement
+  breakpoint, set in the run after its line breakpoint, stopped at the statement.
+- **`trigger: "http"`.** A `GET` of the service's `Travel` set stopped three times in one run:
+  `get_global_authorizations`, `get_instance_authorizations` (two keys), `get_instance_features`.
+- **Steps.** 35 `stepInto`s, through the loop, two calls and back into the test, in 6 seconds for the
+  whole capture.
+- **Sources.** `abap_search` on a service binding's name, then `abap_source` from `SRVB` to `SRVD` to
+  `BDEF` and its behavior pools.
+- **A capture that outlasts its call.** `trigger: "none"` with 75 seconds answered after 49 with its
+  session id; `abap_breakpoints` `list` meanwhile named the capture and its listener; `wait` gave the
+  timeout result, with no warning.
+- **Watchpoints.** Set in an interactive session at a `LOOP` line on `RS_SUMMARY-TOTAL`, `hits: 2`:
+  each `continue` stopped on the statement after the change, `0 → 108` then `108 → 113`, the stop
+  named as the watchpoint's. A local of another method (`LV_SUBTOTAL`) was refused: *"Cannot create
+  watchpoint: Variable 'LV_SUBTOTAL' not found"*, the session going on.
+- **A server stopped mid-capture.** `cf restart` while a capture waited: Cloud Foundry stops the
+  process with SIGTERM, the server released what it held, and `abap_breakpoints` then found no
+  listener and no leftovers; the next capture ran at once. A process killed outright was not tried —
+  and on Cloud Foundry its records (`ABAP_DEBUGGER_STATE_DIR`, the container's temporary directory)
+  would not survive the restart, leaving the listener to its two-minute expiry and the breakpoints to
+  `abap_breakpoints` with `listener: true`.
+
+On an S/4HANA on-premise system with two application servers (October-November 2026), experiments
+established which sessions started from SAP GUI stop: see [SAP GUI runs](#sap-gui-runs).
+
 ## 9. Live checks still owed
 
-The runs above cover the BTP ABAP Environment only. Still to check
+The runs above cover the BTP ABAP Environment, and SAP GUI runs on one S/4HANA system — both before the
+debugger session was routed to the program's server ([§5](#5-reaching-the-debuggees-application-server)). Still to check
 ([LIVE-1](roadmap.md#live-1), [LIVE-2](roadmap.md#live-2), [WATCH-1](roadmap.md#watch-1)):
 
 1. **On-premise 7.58 and 8.16**: `trigger: "unittest"` on a class with a line breakpoint — a stop, the
@@ -340,6 +454,22 @@ The runs above cover the BTP ABAP Environment only. Still to check
 20. **Watchpoints**: the create answer's shape, the `kind` SAP names in `reachedBreakpoints` at a
     watchpoint's stop, how it refuses a variable not visible where the run stands, whether a
     watchpoint on a local stops in other frames, and the condition's semantics (after the change).
+21. **SAP GUI sessions**: why a session of type GUI ignores ADT's external breakpoints on one S/4HANA
+    system ([SAP GUI runs](#sap-gui-runs)) — the kernel patch, profile parameters, SAP notes — and
+    whether other systems and releases behave alike; why a Remote Logon opened before the arming
+    does not stop.
+22. **SM51 sessions end to end**: a capture with `interactive: true` holding a run from a session
+    opened through SM51 on the other server than the debugger session's — attached, stepped and
+    released there through the routed session.
+23. **SAP GUI for HTML**: whether a WebGUI session (a classic transaction opened from the Fiori
+    launchpad) runs as a GUI session or as an HTTP one, and so whether it stops.
+24. **Routing to the program's server** ([§5](#5-reaching-the-debuggees-application-server), read in
+    SAP's source only): on an on-premise system with several servers, a debuggee on another server than
+    the debugger session's — the route check answering without `sap-adt-saplb`, the attach, steps,
+    variables and the release all on the program's server, one ABAP session there throughout. SAP's
+    answer without `S_RFC` for `SADT_REST`; the answer under `is/instname_encoding = md5`; the same on
+    the BTP ABAP Environment, whose pods may not take RFC between them (Eclipse sends `saplb` there);
+    the first on-premise release whose HTTP handler routes (between 7.50 and 8.16).
 
 ## What the server deliberately leaves out
 

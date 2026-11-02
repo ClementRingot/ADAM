@@ -14,7 +14,7 @@ import type { AdtHttpClient } from './http.js';
 export const SYSTEM_INFORMATION_PATH = '/sap/bc/adt/core/http/systeminformation';
 export const SYSTEM_INFORMATION_ACCEPT = 'application/vnd.sap.adt.core.http.systeminformation.v1+json';
 /** Statuses that mean "this release has no such resource", as opposed to a failed request. */
-const ABSENT_STATUSES = new Set([404, 405, 406, 501]);
+export const ABSENT_STATUSES = new Set([404, 405, 406, 501]);
 
 /** A plausible SAP logon user (XUBNAME): 1-12 characters, no blanks, never an e-mail address. */
 export function isPlausibleSapUser(value: string): boolean {

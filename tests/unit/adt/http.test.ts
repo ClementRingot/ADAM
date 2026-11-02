@@ -248,6 +248,33 @@ describe('stateful sessions', () => {
     await expect(client().openStatefulSession().endStatefulSession()).resolves.toBeUndefined();
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it('routed to a server, name it on every request but the token fetch and the close', async () => {
+    const session = client().openStatefulSession({ server: 'sapaas_S4D_01' });
+    expect(session.routedTo).toBe('sapaas_S4D_01');
+    mockFetch
+      .mockResolvedValueOnce(token('T1', [contextCookie('sappas_S4D_00')]))
+      .mockResolvedValueOnce(mockResponse(200, '<dbg:attach/>'))
+      .mockResolvedValueOnce(mockResponse(200, ''));
+    await session.post('/sap/bc/adt/debugger?method=attach', undefined, undefined, { Accept: '*/*' });
+    await expect(session.endStatefulSession()).resolves.toBe(true);
+    const [fetchToken, attach, close] = sent();
+    // The token belongs to the session's own server, which checks it before it forwards anything.
+    expect(fetchToken?.headers).not.toHaveProperty('X-sap-adt-server-instance');
+    expect(attach?.headers).toMatchObject({
+      'X-sap-adt-server-instance': 'sapaas_S4D_01',
+      'sap-adt-saplb': 'fetch',
+      saplb: 'sapaas_S4D_01',
+      'X-sap-adt-sessiontype': 'stateful',
+      'X-CSRF-Token': 'T1',
+    });
+    // The close ends the session where it is; the ABAP session it opened on the routed server goes with it.
+    expect(close?.url.pathname).toBe('/sap/bc/adt/core/http/sessions');
+    expect(close?.headers).not.toHaveProperty('X-sap-adt-server-instance');
+    expect(close?.headers).not.toHaveProperty('sap-adt-saplb');
+    expect(close?.headers).not.toHaveProperty('saplb');
+    expect(client().openStatefulSession().routedTo).toBeUndefined();
+  });
 });
 
 describe('deadlines', () => {

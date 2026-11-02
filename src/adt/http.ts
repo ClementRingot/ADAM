@@ -1,7 +1,8 @@
 /**
  * Minimal ADT HTTP client — what the debugger needs and nothing more: CSRF tokens, cookies,
- * stateful sessions (`sap-contextid`) with SAP's close-session request, request deadlines, and
- * Basic, cookie or Bearer (BTP ABAP Environment) authentication.
+ * stateful sessions (`sap-contextid`) with SAP's close-session request, sessions SAP routes to one
+ * application server, request deadlines, and Basic, cookie or Bearer (BTP ABAP Environment)
+ * authentication.
  *
  * No transient replays (503, 429, a broken DB connection) and no content negotiation: a debugger
  * POST — a step, a continue — must never be sent twice. The only resends are of requests SAP refused
@@ -16,6 +17,7 @@ import { logger } from '../logger.js';
 import { VERSION } from '../version.js';
 import { resolveCookies } from './cookies.js';
 import { AdtApiError, AdtNetworkError } from './errors.js';
+import { LOAD_BALANCER_HEADER, SAPLB_HEADER, SERVER_INSTANCE_HEADER } from './routing-headers.js';
 
 export type SessionType = 'stateful' | 'stateless';
 
@@ -85,6 +87,12 @@ export interface AdtResponse {
   body: string;
 }
 
+/** The options of `openStatefulSession`. */
+export interface StatefulSessionOptions {
+  /** The application server SAP runs every request of the session on (`SERVER_INSTANCE_HEADER`). */
+  server?: string;
+}
+
 const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
 const MODIFYING = new Set(['POST', 'PUT', 'DELETE', 'PATCH']);
 const CORE_DISCOVERY = '/sap/bc/adt/core/discovery';
@@ -96,6 +104,8 @@ export class AdtHttpClient {
   private csrfToken = '';
   /** Cookies SAP set (session ids, `sap-contextid`); they win over the static ones on a name clash. */
   private cookieJar = new Map<string, string>();
+  /** A routed session: the application server every request names (`StatefulSessionOptions.server`). */
+  private route: string | undefined;
 
   constructor(config: AdtHttpConfig, dispatcher?: DispatcherSource) {
     this.config = { ...config };
@@ -130,13 +140,25 @@ export class AdtHttpClient {
    * A new stateful session: SAP pins it to one application context (`sap-contextid`) on one
    * application server. It shares this client's CSRF token and login cookies, never its context.
    * The caller owns it and ends it with `endStatefulSession()`.
+   *
+   * With `server`, every request names that application server (`SERVER_INSTANCE_HEADER`): wherever
+   * the load balancer puts the session, SAP runs its requests there, over one RFC connection that
+   * lives as long as the session — the ABAP session there stays the same from one request to the
+   * next. Each request also asks which server ran it (`SAPLB_HEADER`), and asks the load balancer to
+   * put the session there in the first place (`LOAD_BALANCER_HEADER`, the BTP ABAP Environment's).
    */
-  openStatefulSession(): AdtHttpClient {
+  openStatefulSession(options: StatefulSessionOptions = {}): AdtHttpClient {
     const session = new AdtHttpClient({ ...this.config, sessionType: 'stateful' }, this.dispatcher);
     session.csrfToken = this.csrfToken;
     session.cookieJar = new Map(this.cookieJar);
     session.cookieJar.delete('sap-contextid');
+    session.route = options.server?.trim() || undefined;
     return session;
+  }
+
+  /** The application server a routed session runs its requests on (`openStatefulSession({ server })`). */
+  get routedTo(): string | undefined {
+    return this.route;
   }
 
   /** The SAP system and client this client talks to — no credentials: tells records of systems apart. */
@@ -166,6 +188,9 @@ export class AdtHttpClient {
     if (!contextId || contextId === '0') return undefined;
     // Eclipse switches the context to stateless while it sends the close request.
     this.config.sessionType = 'stateless';
+    // The close is for the session itself, on the server that holds it: forwarded, it would reach the
+    // ABAP session it opened on the routed server instead — which ends with it.
+    this.route = undefined;
     try {
       try {
         await this.get(
@@ -225,6 +250,11 @@ export class AdtHttpClient {
     if (modifying && !this.csrfToken) await this.fetchCsrfToken(options);
 
     const headers: Record<string, string> = { Accept: '*/*', ...extraHeaders };
+    if (this.route) {
+      headers[SERVER_INSTANCE_HEADER] = this.route;
+      headers[SAPLB_HEADER] = 'fetch';
+      headers[LOAD_BALANCER_HEADER] = this.route;
+    }
     if (this.config.disableSaml) headers['X-SAP-SAML2'] = 'disabled';
     if (this.config.sessionType) headers['X-sap-adt-sessiontype'] = this.config.sessionType;
     if (contentType) headers['Content-Type'] = contentType;

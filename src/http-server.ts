@@ -27,6 +27,8 @@ export interface HttpSap {
   connect?: (authInfo: AuthInfo | undefined, owner: string) => Promise<SapConnection>;
   /** What is wrong with the configuration, reported by every tool call. */
   problems: string[];
+  /** Whether users run code from SAP GUI there; undefined: known only once a destination is resolved. */
+  sapGui?: boolean;
 }
 
 /** A connection source that retries a failed setup on the next call (the Destination Service may be down at startup). */
@@ -107,6 +109,7 @@ export function createHttpApp(
       ...(connect ? { connect: () => connect(authInfo, owner) } : {}),
       owner,
       problems: sap.problems,
+      ...(sap.sapGui !== undefined ? { sapGui: sap.sapGui } : {}),
     });
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
@@ -144,6 +147,7 @@ export function httpSap(http: HttpConfig, env: NodeJS.ProcessEnv = process.env):
     const name = http.btpDestination;
     return {
       problems: [],
+      ...(settings.sapGui !== undefined ? { sapGui: settings.sapGui } : {}),
       connect: lazyConnections(
         async () =>
           new BtpConnections(await resolveBtpTarget(name, { allowSharedUser: http.allowSharedUser }, env), settings),
@@ -167,5 +171,5 @@ export function httpSap(http: HttpConfig, env: NodeJS.ProcessEnv = process.env):
     };
   }
   const connection = createConnection(loaded.config);
-  return { problems: [], connect: async () => connection };
+  return { problems: [], sapGui: loaded.config.sapGui, connect: async () => connection };
 }

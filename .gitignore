@@ -7,6 +7,7 @@ coverage/
 # Credentials (never commit)
 .env
 .env.*
+*.env
 !.env.example
 cookies.txt
 cookie.txt
@@ -20,3 +21,6 @@ mta_archives/
 Makefile_*.mta
 .mta/
 default-env*.json
+
+# Single executable (npm run build:exe)
+build/

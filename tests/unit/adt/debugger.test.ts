@@ -10,6 +10,7 @@ import {
   buildBreakpointsXml,
   buildChildVariablesXml,
   buildVariablesXml,
+  checkRoute,
   contextServer,
   createDebugIdentity,
   DebuggerSession,
@@ -17,10 +18,10 @@ import {
   deleteBreakpoint,
   endSession,
   findListenerConflict,
+  isRoutingError,
   listDebugStatements,
   listenForDebuggee,
-  openSessionOnServer,
-  openSessionsAhead,
+  openRoutedSession,
   parseAttachResponse,
   parseBreakpointsResponse,
   parseChildVariablesResponse,
@@ -310,32 +311,10 @@ describe('listener', () => {
 
 describe("the debuggee's application server", () => {
   const contextOn = (server: string) => `SID%3aANON%3a${server}%3aKX9qZ-NEW`;
-
-  /** New stateful sessions land on `landings` in turn; a session learns its context from its first answer. */
-  function balancedSap(landings: Array<string | undefined>, probe?: ReturnType<typeof vi.fn>) {
-    type FakeSession = {
-      get: ReturnType<typeof vi.fn>;
-      endStatefulSession: ReturnType<typeof vi.fn>;
-      sessionContextId?: string;
-    };
-    const sessions: FakeSession[] = [];
-    const http = {
-      openStatefulSession: vi.fn(() => {
-        const landing = landings[sessions.length % landings.length];
-        const session: FakeSession = { get: vi.fn(), endStatefulSession: vi.fn().mockResolvedValue(true) };
-        session.get =
-          probe ??
-          vi.fn(async () => {
-            session.sessionContextId ??= landing && contextOn(landing);
-            return ok('{}');
-          });
-        sessions.push(session);
-        return session;
-      }),
-    } as unknown as AdtHttpClient;
-    const ended = () => sessions.filter((session) => session.endStatefulSession.mock.calls.length > 0);
-    return { http, sessions, ended };
-  }
+  const answer = (headers: Record<string, string> = {}) => ({ statusCode: 200, headers, body: '{}' });
+  /** CX_ADT_REST_ROUTING as SAP's ADT handler answers a request it could not forward (DI2, SAP_BASIS 8.16). */
+  const routingException = (subType: string, message: string) =>
+    `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><namespace id="com.sap.adt"/><type id="ExceptionRequestRooting"/><message lang="EN">${message}</message><localizedMessage lang="EN">${message}</localizedMessage><properties><entry key="com.sap.adt.communicationFramework.subType">${subType}</entry></properties></exc:exception>`;
 
   it('reads the server out of a sap-contextid, and nothing out of other shapes', () => {
     expect(contextServer(contextOn('appserver-t4w2x'))).toBe('appserver-t4w2x');
@@ -345,96 +324,75 @@ describe("the debuggee's application server", () => {
     expect(contextServer('%E0%A4%A')).toBeUndefined();
   });
 
-  it("opens sessions until one lands on the debuggee's server and ends the others", async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-t4w2x', 'appserver-rpsxx']);
-    const pinned = await openSessionOnServer(http, 'APPSERVER-RPSXX');
-    expect(pinned).toMatchObject({ instance: 'appserver-rpsxx', probes: 3 });
-    expect(pinned.http).toBe(sessions[2]);
-    expect(sessions[0]!.get).toHaveBeenNthCalledWith(
-      1,
+  it('opens a session routed to the server, or a plain stateful one without a server', () => {
+    const openStatefulSession = vi.fn().mockReturnValue('session');
+    const http = { openStatefulSession } as unknown as AdtHttpClient;
+    expect(openRoutedSession(http, 'sapaas_S4D_01')).toBe('session');
+    expect(openStatefulSession).toHaveBeenLastCalledWith({ server: 'sapaas_S4D_01' });
+    openRoutedSession(http, undefined);
+    expect(openStatefulSession).toHaveBeenLastCalledWith({});
+  });
+
+  it('tells a request SAP forwarded from one it ran itself, with one harmless request', async () => {
+    const forwarded = mockHttp({ get: vi.fn().mockResolvedValue(answer()) });
+    expect(await checkRoute(forwarded, 'sapaas_S4D_01', { deadline: 42 })).toEqual({ status: 'forwarded' });
+    expect(forwarded.get).toHaveBeenCalledWith(
       '/sap/bc/adt/core/http/systeminformation',
       { Accept: 'application/vnd.sap.adt.core.http.systeminformation.v1+json' },
-      { suppressNotFoundLog: true },
+      { deadline: 42 },
     );
-    expect(sessions[0]!.get).toHaveBeenCalledTimes(1);
-    expect(sessions[0]!.endStatefulSession).toHaveBeenCalledWith({});
-    expect(ended()).toEqual([sessions[0], sessions[1]]);
-  });
-
-  it('opens sessions ahead of the run until two share a server', async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-rpsxx', 'appserver-t4w2x']);
-    const ahead = await openSessionsAhead(http);
-    expect([...ahead.byServer.entries()]).toEqual([
-      ['APPSERVER-T4W2X', sessions[0]],
-      ['APPSERVER-RPSXX', sessions[1]],
-    ]);
-    expect(ahead.trigger).toBe(sessions[2]);
-    expect(ended()).toEqual([]);
-  });
-
-  it('opens nothing to pin when SAP names no server, and stops at maxProbes distinct servers', async () => {
-    const unnamed = balancedSap([undefined]);
-    expect(await openSessionsAhead(unnamed.http)).toEqual({ byServer: new Map() });
-    expect(unnamed.sessions).toHaveLength(1);
-    const absent = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')));
-    expect(await openSessionsAhead(absent.http)).toEqual({ byServer: new Map() });
-
-    const many = balancedSap(['appserver-a', 'appserver-b', 'appserver-c']);
-    const ahead = await openSessionsAhead(many.http, { maxProbes: 3 });
-    expect([...ahead.byServer.keys()]).toEqual(['APPSERVER-A', 'APPSERVER-B', 'APPSERVER-C']);
-    expect(ahead.trigger).toBeUndefined();
-
-    const broken = balancedSap(['appserver-a'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
-    await expect(openSessionsAhead(broken.http)).rejects.toThrow(AdtApiError);
-  });
-
-  it('ends the sessions it already opened when a later probe fails', async () => {
-    const first = {
-      get: vi.fn().mockResolvedValue(ok('{}')),
-      endStatefulSession: vi.fn().mockResolvedValue(true),
-      sessionContextId: contextOn('appserver-a'),
-    };
-    const second = {
-      get: vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')),
-      endStatefulSession: vi.fn().mockResolvedValue(undefined),
-      sessionContextId: undefined,
-    };
-    const http = {
-      openStatefulSession: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
-    } as unknown as AdtHttpClient;
-    await expect(openSessionsAhead(http)).rejects.toThrow(AdtApiError);
-    expect(first.endStatefulSession).toHaveBeenCalledTimes(1);
-    expect(second.get).toHaveBeenCalledTimes(1);
-  });
-
-  it('takes the first session as is when the debuggee names no server', async () => {
-    const { http, sessions } = balancedSap(['appserver-t4w2x']);
-    expect(await openSessionOnServer(http, undefined)).toEqual({ http: sessions[0], probes: 0 });
-    expect(sessions[0]!.get).not.toHaveBeenCalled();
-  });
-
-  it('takes the probed session when SAP does not say where it landed', async () => {
-    const { http, sessions, ended } = balancedSap([undefined]);
-    expect(await openSessionOnServer(http, 'appserver-rpsxx')).toEqual({ http: sessions[0], probes: 1 });
-    expect(ended()).toEqual([]);
-  });
-
-  it('takes the session as is when the release has no resource to probe with', async () => {
-    const absent = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')));
-    expect(await openSessionOnServer(absent.http, 'appserver-rpsxx')).toEqual({
-      http: absent.sessions[0],
-      probes: 1,
+    // Run by the server that received it: on the routed server itself ...
+    const local = mockHttp({ get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': 'SAPAAS_S4D_01' })) });
+    expect(await checkRoute(local, 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    // ... which an MD5-encoded name cannot show, but SAP runs a routed request itself only there ...
+    const encoded = mockHttp({
+      get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': '0cc175b9c0f1b6a831c399e269772661' })),
     });
-    const broken = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
-    await expect(openSessionOnServer(broken.http, 'appserver-rpsxx')).rejects.toThrow(AdtApiError);
+    expect(await checkRoute(encoded, 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    // ... or elsewhere: SAP ignored the route.
+    const ignored = mockHttp({ get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': 'sappas_S4D_00' })) });
+    expect(await checkRoute(ignored, 'sapaas_S4D_01')).toEqual({ status: 'ignored', ranOn: 'sappas_S4D_00' });
   });
 
-  it('returns the last session after maxProbes misses, saying where it landed', async () => {
-    const { http, sessions, ended } = balancedSap(['appserver-t4w2x']);
-    const pinned = await openSessionOnServer(http, 'appserver-rpsxx', { maxProbes: 3 });
-    expect(pinned).toMatchObject({ instance: 'appserver-t4w2x', probes: 3 });
-    expect(pinned.http).toBe(sessions[2]);
-    expect(ended()).toEqual([sessions[0], sessions[1]]);
+  it('tells by the server a session landed on where the release names none (SAP_BASIS 7.50)', async () => {
+    const landedOn = (server: string | undefined, get: ReturnType<typeof vi.fn>) =>
+      Object.assign(mockHttp({ get }), { sessionContextId: server && contextOn(server) });
+    const absent = () => vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x'));
+    // No such resource, and no routing over HTTP either: the session's own server is where the request ran.
+    expect(await checkRoute(landedOn('sapaas_S4D_01', absent()), 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    expect(await checkRoute(landedOn('sappas_S4D_00', absent()), 'sapaas_S4D_01')).toEqual({
+      status: 'ignored',
+      ranOn: 'sappas_S4D_00',
+    });
+    expect(await checkRoute(landedOn(undefined, absent()), 'sapaas_S4D_01')).toEqual({ status: 'unknown' });
+    // A release that answers without naming the server: on the routed one already, or forwarded there.
+    const unnamed = () => vi.fn().mockResolvedValue(answer());
+    expect(await checkRoute(landedOn('sapaas_S4D_01', unnamed()), 'sapaas_S4D_01')).toEqual({ status: 'local' });
+    expect(await checkRoute(landedOn('sappas_S4D_00', unnamed()), 'sapaas_S4D_01')).toEqual({ status: 'forwarded' });
+  });
+
+  it('reports a request SAP could not forward in its own words, and lets any other failure through', async () => {
+    const failing = mockHttp({
+      get: vi
+        .fn()
+        .mockRejectedValue(
+          new AdtApiError(
+            'x',
+            502,
+            '/x',
+            routingException('ExceptionOnTargetServer', 'No RFC authorization for function group SADT_REST'),
+          ),
+        ),
+    });
+    expect(await checkRoute(failing, 'sapaas_S4D_01')).toEqual({
+      status: 'failed',
+      error: 'No RFC authorization for function group SADT_REST',
+    });
+    const broken = mockHttp({ get: vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')) });
+    await expect(checkRoute(broken, 'sapaas_S4D_01')).rejects.toThrow(AdtApiError);
+    expect(isRoutingError(new AdtApiError('x', 403, '/x', routingException('NoAuthorization', 'no')))).toBe(true);
+    expect(isRoutingError(new AdtApiError('x', 500, '/x', debuggerException('invalidDebuggee')))).toBe(false);
+    expect(isRoutingError(new Error('plain'))).toBe(false);
   });
 
   it("ends a session through the transport's own close (the Eclipse close-session request)", async () => {

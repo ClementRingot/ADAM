@@ -69,6 +69,20 @@ describe('loadConfig', () => {
     const connection = createConnection(config!);
     expect(connection.logonUser).toBeUndefined();
     expect(connection.abapRelease).toBe('919');
+    // The BTP ABAP Environment has no SAP GUI: no SM51 advice.
+    expect(config?.sapGui).toBe(false);
+    expect(connection.sapGui).toBe(false);
+  });
+
+  it('reads ABAP_DEBUGGER_SAP_GUI over what the logon suggests', () => {
+    const base = { SAP_URL: 'https://sap', SAP_USER: 'u', SAP_PASSWORD: 'p' };
+    expect(loadConfig(base).config?.sapGui).toBe(true);
+    expect(createConnection(loadConfig(base).config!)).not.toHaveProperty('sapGui');
+    expect(loadConfig({ ...base, ABAP_DEBUGGER_SAP_GUI: 'false' }).config?.sapGui).toBe(false);
+    expect(loadConfig({ SAP_BTP_SERVICE_KEY: SERVICE_KEY, ABAP_DEBUGGER_SAP_GUI: 'true' }).config?.sapGui).toBe(true);
+    expect(loadConfig({ ...base, ABAP_DEBUGGER_SAP_GUI: 'maybe' }).problems).toEqual([
+      'ABAP_DEBUGGER_SAP_GUI must be true or false (got "maybe").',
+    ]);
   });
 
   it('takes a corporate proxy for SAP and the BTP token requests', () => {
