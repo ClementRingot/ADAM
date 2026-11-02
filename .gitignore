@@ -21,3 +21,6 @@ mta_archives/
 Makefile_*.mta
 .mta/
 default-env*.json
+
+# Single executable (npm run build:exe)
+build/

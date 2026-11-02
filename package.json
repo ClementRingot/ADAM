@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:exe": "npm run build && node scripts/build-exe.mjs",
     "typecheck": "tsc -p tsconfig.tests.json",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
@@ -54,6 +55,8 @@
     "@biomejs/biome": "^2.6.3",
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
     "tsx": "^4.23.15",
     "typescript": "~7.0.2",
     "vitest": "^5.0.5"
