@@ -1,0 +1,37 @@
+name: Release
+
+# Every tag v* gets a GitHub release with the Windows executable attached (no Node.js needed on the
+# user's machine). Run it by hand to attach the executable to an existing tag's release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag whose release gets the executable (e.g. v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:exe
+      - name: Attach the executable to the release
+        shell: bash
+        run: |
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          gh release upload "$TAG" build/abap-debugger-mcp.exe --clobber
