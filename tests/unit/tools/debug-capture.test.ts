@@ -28,16 +28,21 @@ vi.mock('undici', async (importOriginal) => ({
 
 const installFakeSap = (options: FakeSapOptions = {}) => installFakeSapOn(mockFetch, options);
 
-async function debug(args: Record<string, unknown>, conn = createConnection()) {
-  const result = await callTool({ connection: conn, problems: [] }, 'abap_debug', args);
-  const text = result.content[0]?.type === 'text' ? result.content[0].text : '';
-  let json: Record<string, any> | undefined;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = undefined;
-  }
-  return { result, text, json };
+async function debug(args: Record<string, unknown>, conn = createConnection(), relay = true) {
+  const parse = (result: Awaited<ReturnType<typeof callTool>>) => {
+    const text = result.content[0]?.type === 'text' ? result.content[0].text : '';
+    let json: Record<string, any> | undefined;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    return { result, text, json };
+  };
+  const first = parse(await callTool({ connection: conn, problems: [] }, 'abap_debug', args));
+  // With SAP GUI, trigger "none" answers once armed with the steps for the user; the agent then waits.
+  if (!relay || !first.json?.running || !String(first.json.hint ?? '').includes('SM51')) return first;
+  return parse(await callTool({ connection: conn, problems: [] }, 'abap_debug_session', { action: 'wait' }));
 }
 
 beforeAll(() => {
@@ -1543,22 +1548,47 @@ describe('abap_debug — captures that outlast their call', () => {
 
   it('stops a capture still waiting for its stop on end, and cleans up', async () => {
     const { calls } = installFakeSap({ hit: false });
-    const first = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' }, quick());
+    const first = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' }, quick(), false);
     expect(first.json).toMatchObject({
       session: 'S1',
       running: true,
-      doing: 'waiting for SAP user ADMIN to run the code — from SAP GUI, in a session opened through SM51 (0 of 60 s)',
+      doing:
+        'waiting for SAP user ADMIN to run the code — from SAP GUI: in a NEW session, SM51 → select the server → Goto → Remote Logon → Normal (0 of 60 s)',
     });
     // While nothing stopped, the answer says how to run the code: from SAP GUI, through SM51.
-    expect(first.json?.hint).toContain('Tell the user now: run the code as SAP user ADMIN');
-    expect(first.json?.hint).toContain('SM51');
-    expect(first.json?.hint).toContain('a session opened before the capture started');
+    expect(first.json?.hint).toContain('Tell the user now, as these steps');
+    expect(first.json?.hint).toContain('1. in SAP GUI, open transaction SM51');
+    expect(first.json?.hint).toContain('4. in that new window, run the code as SAP user ADMIN');
+    expect(first.json?.hint).toContain('or one opened before now');
     expect((await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 })).text).toBe(
       'Your debug capture S1 is still running: abap_debug_session action="wait" returns its result, action="end" stops it.',
     );
     const end = await session({ action: 'end' });
     expect(end.json).toMatchObject({ hit: false, reason: 'cancelled' });
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+
+  it('answers at once with the SM51 steps on a system with SAP GUI, before the user runs anything', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    const startedAt = Date.now();
+    const first = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' }, undefined, false);
+    // It does not wait for the stop, nor for the call's budget (50 s): the user needs the steps first.
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(first.json).toMatchObject({ session: 'S1', running: true });
+    expect(first.json?.hint).toContain('3. menu Goto → Remote Logon → Normal');
+    expect(first.json?.next).toMatch(/^First relay hint to the user, step by step\. /);
+    // Once: wait then waits for the stop as usual.
+    expect((await session({ action: 'wait' })).json).toMatchObject({ hit: true, release: { released: true } });
+  });
+
+  it('waits for the stop within its call where there is no SAP GUI', async () => {
+    installFakeSap({ hit: true, runByUser: true, stopAfterMs: 300 });
+    const { json } = await debug(
+      { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' },
+      { ...createConnection(), sapGui: false },
+      false,
+    );
+    expect(json).toMatchObject({ hit: true, release: { released: true } });
   });
 
   it('asks for the run without SAP GUI advice where there is no SAP GUI', async () => {

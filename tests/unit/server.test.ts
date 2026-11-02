@@ -106,7 +106,8 @@ describe('tools/list', () => {
   it('fits the advice on runs the user starts to the system: SM51 with SAP GUI, nothing of it in the cloud', () => {
     const debugDescription = (sapGui?: boolean) => listTools(sapGui)[0]?.description ?? '';
     for (const text of [serverInstructions(true), debugDescription(true)]) {
-      expect(text).toContain('SM51, select the application server, Goto → Remote Logon → Normal');
+      expect(text).toContain('SM51 (select the application server, Goto → Remote Logon → Normal)');
+      expect(text).toContain('Relay hint to the user step by step');
       expect(text).not.toContain('S/4HANA Cloud Public Edition');
     }
     for (const text of [serverInstructions(false), debugDescription(false)]) {

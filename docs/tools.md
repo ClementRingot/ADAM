@@ -106,12 +106,12 @@ Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP
 opened through transaction SM51 once the capture waits does, as do HTTP runs such as a Fiori app's
 requests; a session opened before the capture started does not. Once the capture waits, open a new
 session — SM51, select the application server, *Goto → Remote Logon → Normal*, or double-click it —
-and run the code there. With `trigger: "none"` the agent tells the user so before the call, unless the
-code clearly runs over HTTP; the capture repeats it while it waits —
-its progress messages, and the `hint` of an answer `running: true` — and so does the hint of a capture
-where nothing stopped. On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
+and run the code there. With `trigger: "none"` the call answers right after arming the breakpoints,
+with `running: true` and these steps as its `hint`: the agent relays them to the user, then waits for
+the stop with `abap_debug_session` action `wait`. Its progress messages repeat them while it waits,
+and so does the hint of a capture where nothing stopped. On a system without SAP GUI (BTP ABAP Environment, S/4HANA Cloud Public
 Edition: a service key or an Internet destination, or `ABAP_DEBUGGER_SAP_GUI=false`) none of this is
-said.
+said, and the call waits as usual.
 External breakpoints set in SAP GUI itself (ABAP Editor) exclude the capture's for the same user (SAP
 GUI shows *ED702*): SAP ends the wait at once, and the result's `reason` is a conflict, its hint naming
 them. Details in [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).

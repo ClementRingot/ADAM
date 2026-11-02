@@ -34,7 +34,7 @@ const DEBUG_DESCRIPTION = [
 ].join('\n');
 
 const SM51_ADVICE =
-  'unless the code clearly runs from a Fiori app or another HTTP call, tell the user BEFORE the call how to run it from SAP GUI (a report, a transaction, a function module called from a screen): once the capture waits (its first answer, running: true), open a NEW session — SM51, select the application server, Goto → Remote Logon → Normal (or double-click the server) — and run the code there. A session opened before the capture started, or from SAP Logon or SAP Business Client, never stopped at external breakpoints on some systems. An answer running: true repeats it as hint: relay it.';
+  'the call answers right after arming the breakpoints, with running: true and hint: the steps to run the code — from SAP GUI in a NEW session opened through SM51 (select the application server, Goto → Remote Logon → Normal), as a session opened before, or from SAP Logon or SAP Business Client, never stopped at external breakpoints on some systems. Relay hint to the user step by step, in their language, then call abap_debug_session action "wait".';
 
 /**
  * What to tell the user about a run they start themselves (trigger "none"): how to run it from SAP

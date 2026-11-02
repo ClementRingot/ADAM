@@ -30,6 +30,8 @@ export interface ToolContext {
   progress?: (message: string) => void;
   /** What the user must do now for the work to go on, shown by an answer running: true; undefined clears it. */
   hint?: (text: string | undefined) => void;
+  /** The user must act before the work can go on: the call waiting for it answers running: true now, once. */
+  answerNow?: () => void;
   /**
    * Who calls: the MCP user over HTTP (their sessions are theirs alone); unset over stdio, where
    * the one local user calls.

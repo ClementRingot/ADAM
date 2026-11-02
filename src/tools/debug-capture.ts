@@ -514,7 +514,7 @@ function runItYourselfHint(user: string, sapGui: boolean): string {
   if (!sapGui) {
     return `Tell the user now: run the code as SAP user ${user} while the capture waits — e.g. open the Fiori app.`;
   }
-  return `Tell the user now: run the code as SAP user ${user} while the capture waits. From SAP GUI, in a NEW session opened now — SM51, select the application server, Goto → Remote Logon → Normal (or double-click the server): on some systems a session opened before the capture started, or from SAP Logon or SAP Business Client, never stops at external breakpoints. A Fiori app or another HTTP call stops as it is.`;
+  return `Tell the user now, as these steps: the breakpoints are armed. From a Fiori app or another HTTP call, run the code as it is. From SAP GUI (a report, a transaction, a screen), a session from SAP Logon or SAP Business Client, or one opened before now, never stops at the breakpoints on some systems — so: 1. in SAP GUI, open transaction SM51; 2. select the application server; 3. menu Goto → Remote Logon → Normal (or double-click the server): a NEW SAP GUI window opens; 4. in that new window, run the code as SAP user ${user}.`;
 }
 
 function notHitHint(
@@ -702,10 +702,12 @@ export class CaptureRun {
       plan.kind !== 'none'
         ? 'waiting for the run to stop at a breakpoint'
         : sapGui
-          ? `waiting for SAP user ${user} to run the code — from SAP GUI, in a session opened through SM51`
+          ? `waiting for SAP user ${user} to run the code — from SAP GUI: in a NEW session, SM51 → select the server → Goto → Remote Logon → Normal`
           : `waiting for SAP user ${user} to run the code`;
     if (plan.kind === 'none') context.hint?.(runItYourselfHint(user, sapGui));
     context.progress?.(`${waiting} (0 of ${req.timeoutSeconds} s)`);
+    // From SAP GUI the user must open their session now: the call answers at once with the steps.
+    if (plan.kind === 'none' && sapGui) context.answerNow?.();
     const ticker = context.progress
       ? setInterval(
           () =>
