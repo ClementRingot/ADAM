@@ -243,15 +243,19 @@ on real systems.
 
 ## Status
 
-Version 0.1. On the SAP BTP ABAP Environment, the server has run live — over HTTP, as a remote
-connector: attaching across application servers, several stops in one run, steps, conditions, long
-step runs, statement kinds and an interactive session. On an S/4HANA system, experiments showed that
-runs from SAP GUI sessions opened through SM51 stop, while sessions opened from SAP Logon never do —
-Eclipse's breakpoints included. The newest parts —
-answers that outlast a call, watchpoints, the removal of leftovers, the wider search, and reaching the
-program's application server through SAP's own request routing (read in SAP's
-source, not yet run live) — are tested against a simulated SAP so far, like every on-premise release
-(7.50, 7.58, 8.16): see the [roadmap](docs/roadmap.md).
+Early releases (`v0.0.x`). What has run live:
+
+- **SAP BTP ABAP Environment**, over HTTP as a remote connector: attaching across application
+  servers, several stops in one run, steps, conditions, long step runs, statement kinds, interactive
+  sessions, answers that outlast a call (`wait`) and the removal of leftovers.
+- **On-premise ECC (SAP_BASIS 7.50) and S/4HANA (8.16)**, both with two application servers, run
+  locally next to the assistant: search, source, captures through unit tests, runs started by the
+  user, and interactive sessions. SAP GUI sessions opened through SM51 stop, whichever server they
+  run on, while sessions opened from SAP Logon never do — Eclipse's breakpoints included. The SM51
+  steps show in the client's dialog (MCP elicitation) in GitHub Copilot.
+
+Not run live yet: the server deployed on SAP BTP Cloud Foundry (XSUAA, destinations, principal
+propagation), an on-premise 7.58 system, and the other checks of the [roadmap](docs/roadmap.md).
 
 ## Development
 
