@@ -62,7 +62,6 @@ import {
   type StepUntil,
   type WatchItem,
 } from './debug-follow.js';
-import { type GuiArming, GuiWatch, guiHint, openGuiRoute } from './debug-gui.js';
 import type { DebugInput } from './debug-input.js';
 import { leftoversOf, recordArmed, removeLeftovers, settleArmed } from './debug-leftovers.js';
 import {
@@ -502,13 +501,24 @@ async function checkStatements(conn: SapConnection, events: readonly EventLocati
 
 type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 
+/**
+ * Where a run started from SAP GUI does not stop (seen live on S/4HANA, with Eclipse's breakpoints
+ * too): a session opened from SAP Logon or SAP Business Client ignores external breakpoints, while
+ * one opened through SM51 stops. See docs/adt-debugger-protocol.md ("SAP GUI runs").
+ */
+const SAP_GUI_HINT =
+  ' Run from SAP GUI: on some systems a session opened from SAP Logon or SAP Business Client never stops at external breakpoints (neither at Eclipse\'s), while one opened through transaction SM51 does — once the capture waits, open a new session with SM51 (select the application server, then "Remote Logon", or double-click it) and run the code there.';
+
 function notHitHint(
   req: DebugRequest,
   user: string,
   triggerFinished: boolean,
   triggerFailed: boolean,
-  gui = '',
+  conflict = false,
 ): string {
+  if (conflict) {
+    return `SAP ended the wait at once: another debugger activation of SAP user ${user} conflicts with the capture's. Most often, external breakpoints set from SAP GUI (ABAP Editor, SE80 — message ED702 "Debugging hindered by external development environment"): SAP GUI's and ADT's external breakpoints of one user exclude each other. Delete them in SAP GUI (Utilities → Breakpoints → Delete, Ctrl+Shift+F12 in the ABAP Editor), or stop the other IDE's debugger, and retry.`;
+  }
   if (triggerFailed) {
     return req.trigger === 'http'
       ? 'The trigger request itself failed (trigger.error), so nothing ran to the breakpoint. Make that call work on its own first (the same path in a browser or REST client, as the same SAP user). A service published moments ago can answer 403 "blocked by UCON" for a few minutes (seen on the BTP ABAP Environment).'
@@ -520,7 +530,7 @@ function notHitHint(
     return `The unit tests finished without reaching the breakpoint — check that a harmless test covers this code (ABAP Unit coverage in ADT shows which methods the tests reach), or use trigger="http" / trigger="none".${race}`;
   }
   if (triggerFinished) return `The trigger finished without reaching the breakpoint.${race}`;
-  return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${gui}`;
+  return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.${req.trigger === 'none' ? SAP_GUI_HINT : ''}`;
 }
 
 /** The parts of every capture result: the user, the breakpoints, the trigger. */
@@ -549,12 +559,6 @@ export class CaptureRun {
   /** What the capture armed: the attach sets its run-only event breakpoints from it. */
   armed: ArmedBreakpoints | undefined;
   readonly startedAt = Date.now();
-  /** With trigger "none": where the breakpoints are armed for the user's SAP GUI. */
-  private readonly gui: GuiArming = { others: [], armers: new Map() };
-  /** With trigger "none" where SAP GUI can be: reads the SAP GUI logons again while the capture waits. */
-  private guiWatch: GuiWatch | undefined;
-  /** What went wrong arming for SAP GUI: reported only when nothing stopped (no SAP GUI on BTP, say). */
-  private readonly guiWarnings: string[] = [];
   private listenerStarted = false;
   private externalCleared = false;
   private tornDown = false;
@@ -573,12 +577,7 @@ export class CaptureRun {
   async clearExternal(): Promise<void> {
     if (this.externalCleared) return;
     this.externalCleared = true;
-    // An arming still in flight would leave breakpoints behind the removal.
-    await this.guiWatch?.stop();
-    settleArmed(
-      this.identity,
-      await disarm(this.conn, this.identity, this.armedIds, this.warnings, this.armed?.armedFrom),
-    );
+    settleArmed(this.identity, await disarm(this.conn, this.identity, this.armedIds, this.warnings));
   }
 
   /** Idempotent: runs before a result is built (so its warnings are reported) and again in finally. */
@@ -587,9 +586,6 @@ export class CaptureRun {
     this.tornDown = true;
     this.listenAbort.abort();
     await this.clearExternal();
-    for (const session of this.gui.armers.values()) {
-      await endSession(session, { deadline: Date.now() + RELEASE_BUDGET_MS });
-    }
     if (!this.listenerStarted) return;
     try {
       await stopListener(this.conn.http, this.identity.user);
@@ -656,27 +652,9 @@ export class CaptureRun {
       }
     }
 
-    // The SAP GUI lookup and its arming session BEFORE anything is armed: once breakpoints are armed,
-    // this server's own requests run as the debugged user too and must stay as few as possible.
-    const lookup = plan.kind === 'none' ? await openGuiRoute(conn, user, this.guiWarnings) : undefined;
-    const route = lookup?.route;
-    if (route) this.gui.armers.set(route.server.toUpperCase(), route.armer);
     recordArmed(conn.http, identity);
-    const armed = await armBreakpoints(
-      conn,
-      identity,
-      targets,
-      req.events,
-      this.armedIds,
-      route ? { server: route.server, http: route.armer } : undefined,
-      this.guiWarnings,
-    );
+    const armed = await armBreakpoints(conn, identity, targets, req.events, this.armedIds);
     this.armed = armed;
-    // The user's SAP GUI server, when the breakpoints were armed there last: a SAP GUI run stops there.
-    if (route && armed.armedFrom === route.armer) {
-      this.gui.server = route.server;
-      this.gui.others = route.others;
-    }
     if (armed.ids.length === 0) {
       return {
         result: errorResult(
@@ -693,25 +671,6 @@ export class CaptureRun {
     const listen: Promise<ListenSettled> = listenUntil(conn.http, identity, req.timeoutSeconds, {
       signal: this.listenAbort.signal,
     }).catch((error: unknown) => ({ status: 'error' as const, error }));
-    // While it waits, a SAP GUI logon opened since gets the breakpoints armed on its server too. Only
-    // with line breakpoints armed for the user: an exception or message breakpoint armed for the whole
-    // user could stop the reads themselves.
-    if (lookup?.readable && armed.armed.every((bp) => bp.kind === 'line')) {
-      this.guiWatch = new GuiWatch({
-        conn,
-        user,
-        identity,
-        armed,
-        armedIds: this.armedIds,
-        arming: this.gui,
-        warnings: this.guiWarnings,
-        ...(lookup.unreachable ? { unreachable: lookup.unreachable } : {}),
-        everyMs: timings.guiRecheckMs,
-        onArmed: (server) =>
-          context.progress?.(`armed again on application server ${server}, where ${user} logged on to SAP GUI`),
-      });
-      this.guiWatch.start();
-    }
 
     if (plan.kind !== 'none') {
       await sleep(timings.armDelayMs);
@@ -749,21 +708,17 @@ export class CaptureRun {
     } finally {
       if (ticker) clearInterval(ticker);
     }
-    // The wait is over: no more arming, so that the attach and the removal see one set of breakpoints.
-    await this.guiWatch?.stop();
     // A suspended run cannot finish: a trigger that settles first ran without stopping — end the poll.
     const triggerFinished = first.source === 'trigger';
     if (first.source !== 'listener') this.listenAbort.abort();
     const outcome: ListenSettled = first.source === 'listener' ? first.outcome : await listen;
-    const guiServer = this.gui.server;
     const base: CaptureBase = {
       user,
       breakpoints: armed.report,
-      trigger: { kind: plan.kind, target: plan.label, ...(guiServer ? { guiServer } : {}) },
+      trigger: { kind: plan.kind, target: plan.label },
     };
 
     if (outcome.status !== 'caught') {
-      warnings.push(...this.guiWarnings);
       unsetRunEvents(armed);
       await this.teardown();
       const triggerOutcome = await this.settleTrigger();
@@ -789,22 +744,7 @@ export class CaptureRun {
             ...base,
             trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
             ...(warnings.length > 0 ? { warnings } : {}),
-            hint: notHitHint(
-              req,
-              user,
-              triggerFinished,
-              triggerFailure !== undefined,
-              plan.kind === 'none'
-                ? guiHint(user, {
-                    ...(guiServer ? { armedServer: guiServer } : {}),
-                    others: this.gui.others,
-                    possible: lookup?.possible ?? false,
-                    lookupOff: conn.sapGuiLookup === false,
-                    unreadable: lookup?.failed === true,
-                    watched: this.guiWatch !== undefined,
-                  })
-                : '',
-            ),
+            hint: notHitHint(req, user, triggerFinished, triggerFailure !== undefined, outcome.status === 'conflict'),
           }),
         ),
       };

@@ -23,7 +23,7 @@ export const DEFAULT_RESULT_KB = 40;
 /** Own budget for the release, so an exhausted inspection can never leave a debuggee suspended. */
 export const RELEASE_BUDGET_MS = 60_000;
 
-/** The few cheap requests before the run: removing leftovers, the SAP GUI lookup and its arming session. */
+/** The few cheap requests before the run, such as removing a previous capture's leftovers. */
 export const SETUP_BUDGET_MS = 20_000;
 
 /** The server's ceilings (environment variables), and how long an interactive session may last. */
@@ -90,8 +90,6 @@ export const timings = {
   progressIntervalMs: 2000,
   /** While waiting for the first stop, a progress notification this often. */
   waitTickMs: 5000,
-  /** While a trigger-"none" capture waits on several AS ABAP instances: how often it reads the user's SAP GUI logons again. */
-  guiRecheckMs: 5000,
 };
 
 /** Override the capture's fixed delays and margins in unit tests. */

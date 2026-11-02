@@ -101,18 +101,14 @@ before the program is released.
 
 Saves and actions are reached through a unit test or `trigger: "none"`: the HTTP trigger only reads.
 
-**Runs started from SAP GUI.** On a system with several application servers, a SAP GUI run stops
-reliably only on the server where the breakpoints were armed last; HTTP runs, such as a Fiori app's
-requests, stop on any server. So with `trigger: "none"` the capture looks up your SAP GUI's server —
-your latest SAP GUI logon, read from table USR41 through the ADT data preview — and arms the breakpoints
-there last, from a session SAP routes to that server. Log on to SAP GUI before the capture starts or
-while it waits — it reads your logons again every 5 seconds and arms on a new logon's server — and run
-the code there. This works the same with `interactive: true`. The result's `trigger.guiServer` names
-the server; when nothing stopped, the hint says where a SAP GUI run stops (System → Status in SAP GUI
-shows your session's server). The lookup needs your authorization to display USR41: without it, a
-warning says so and the capture arms as before. It is skipped where there is no SAP GUI (the BTP ABAP
-Environment) and with `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false`. Details in
-[SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
+**Runs started from SAP GUI.** On some systems a session opened from SAP Logon or SAP Business Client
+(a session of type GUI) never stops at external breakpoints — Eclipse's neither — while a session
+opened through transaction SM51 does, as do HTTP runs such as a Fiori app's requests. Once the capture
+waits, open a new session with SM51 (select the application server, then *Remote Logon*, or
+double-click it) and run the code there; the hint of a capture where nothing stopped says so.
+External breakpoints set in SAP GUI itself (ABAP Editor) exclude the capture's for the same user (SAP
+GUI shows *ED702*): SAP ends the wait at once, and the result's `reason` is a conflict, its hint naming
+them. Details in [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
 
 ### Result
 
@@ -125,8 +121,7 @@ JSON with:
 - `debuggee` — program, line, application server;
 - `stops` — each with `at` (the breakpoint), `stoppedAt` (the position), the call `stack` on a
   breakpoint's first stop, `variables`, and its `steps` or `trace`;
-- `release`, `trigger` (the unit-test summary or HTTP status; with `none`, `guiServer`, the server a
-  SAP GUI run stops on) and `warnings`.
+- `release`, `trigger` (the unit-test summary or HTTP status) and `warnings`.
 
 Without a stop, the result carries the `reason` (timeout, trigger finished first, conflict) and a `hint`.
 
@@ -384,6 +379,5 @@ names that server on each of its requests (`X-sap-adt-server-instance`), and SAP
 forwarded over RFC from wherever the load balancer put the session — no server is searched for. One
 harmless request first shows that SAP does; where it does not (an older release, or SAP cannot reach
 the server — the RFC needs the `S_RFC` authorization for `SADT_REST` that Eclipse ADT needs too), the
-capture sends no attach, which would fail and leave the program unattachable, and says why. A run
-started from SAP GUI must also be armed on its own server: see [Triggers](#triggers). Details in
+capture sends no attach, which would fail and leave the program unattachable, and says why. Details in
 [Reaching the debuggee's application server](adt-debugger-protocol.md#5-reaching-the-debuggees-application-server).

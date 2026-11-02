@@ -21,15 +21,19 @@ minutes — `abap_breakpoints` with `action: "delete"` and `listener: true` remo
 killed may still be armed: `abap_breakpoints` with `action: "list"` shows them, `"delete"` removes them
 (the next capture of the user removes them too).
 
-**A run started from SAP GUI does not stop, while the same code run from a Fiori app does.** With
-several application servers, a SAP GUI run stops reliably only on the server where the breakpoints
-were armed last. Be logged on to SAP GUI when the capture starts, or log on while it waits: the capture
-finds your SAP GUI's server (your latest logon, read again every 5 seconds) and arms there last, and its
-result names it (`trigger.guiServer`). Run the code a few seconds after a new logon. System →
-Status in SAP GUI shows which server your session runs on. A warning says when the capture could not
-look the server up, most often without authorization to display table USR41 through the data preview,
-or could not reach it; with several SAP GUI logons, run the code in the one on the server the hint
-names.
+**A run started from SAP GUI does not stop, while the same code run from a Fiori app does.** On some
+systems a session opened from SAP Logon or SAP Business Client (SM04: type `GUI`) never stops at
+external breakpoints — Eclipse's neither. A session opened through transaction SM51 (SM04: type `RFC`)
+does: once the capture waits, select the application server in SM51, then *Remote Logon* (or
+double-click it), and run the code in the new session. Prefer `trigger: "unittest"` or `"http"` where
+the code allows. Why GUI sessions ignore them is a question for the system's Basis team or SAP (kernel
+patch, profile parameters): see [SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs).
+
+**`reason: "conflict: …"` right after the capture started.** Another debugger activation of the same
+SAP user ended the wait — most often external breakpoints set in SAP GUI (ABAP Editor; SAP GUI shows
+*ED702 "Debugging hindered by external development environment"*), which exclude ADT's. Delete them
+in SAP GUI (*Utilities → Breakpoints → Delete*, Ctrl+Shift+F12 in the ABAP Editor), or stop the other
+IDE's debugger, and retry.
 
 **"SAP could not reach the debuggee's application server …" or "SAP did not route the debugger session
 …".** The program stopped on another server than the one the capture's session landed on, and SAP did

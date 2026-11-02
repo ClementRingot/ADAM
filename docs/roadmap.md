@@ -20,10 +20,11 @@ the BTP ABAP Environment and on-premise 7.50, 7.58 and 8.16.
 
 **Why it remains.** On the BTP ABAP Environment this server itself has run conditions, long step runs,
 statement kinds and an interactive session ([what was seen](adt-debugger-protocol.md#8-observed-live)).
-On-premise, only SAP GUI runs on one S/4HANA system were tried, with experiment scripts rather than
-this server ([SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs)). The later additions were observed
+On-premise, only SAP GUI runs on one S/4HANA system were tried
+([SAP GUI runs](adt-debugger-protocol.md#sap-gui-runs)): sessions opened through SM51 stopped, those
+from SAP Logon never did. The later additions were observed
 nowhere: answers that outlast a call (`wait`), the release on a non-exclusive attach, the removal of
-leftovers (`abap_breakpoints`), the wider search and source types, the SAP GUI route itself, and the
+leftovers (`abap_breakpoints`), the wider search and source types, and the
 debugger session routed to the program's application server (`X-sap-adt-server-instance`, read in
 SAP's source only).
 
@@ -33,8 +34,8 @@ watchpoints ([§8](adt-debugger-protocol.md#8-observed-live)); left there: a pro
 (not stopped) mid-capture, and a message breakpoint on code that issues a `MESSAGE`.
 Then Basic authentication on an on-premise system — one class with unit tests, one loop, one RAP
 behavior pool with `trigger: "none"`; on S/4HANA with several servers, a program stopped on another
-server than the debugger session's — attached, stepped and released there through the routed session
-— and a capture caught from SAP GUI on each server, armed there
+server than the debugger session's — attached, stepped and released there through the routed session — and why that system's SAP GUI
+sessions ignore external breakpoints
 ([live checks 21-24](adt-debugger-protocol.md#9-live-checks-still-owed)). Record SAP's answers as test
 fixtures.
 

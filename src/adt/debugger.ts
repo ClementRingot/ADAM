@@ -531,26 +531,6 @@ export async function checkRoute(
   return resp ? { status: 'forwarded' } : { status: 'unknown' };
 }
 
-/**
- * The application server that answers a request on `http` (`sap-adt-saplb`), for what a server's name
- * tells — an AS ABAP instance or a BTP ABAP Environment pod. Undefined where SAP does not say; never throws.
- */
-export async function answeringServer(
-  http: AdtHttpClient,
-  options: AdtRequestOptions = {},
-): Promise<string | undefined> {
-  try {
-    const resp = await http.get(
-      SYSTEM_INFORMATION_PATH,
-      { Accept: SYSTEM_INFORMATION_ACCEPT, [SAPLB_HEADER]: 'fetch' },
-      { ...options, suppressNotFoundLog: true },
-    );
-    return resp.headers[SAPLB_HEADER]?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** The application server a session is pinned to, from its `sap-contextid` (`SID:ANON:<server>:<id>`). */
 export function contextServer(contextId: string | undefined): string | undefined {
   if (!contextId) return undefined;

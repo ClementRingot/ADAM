@@ -7,7 +7,6 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
-  answeringServer,
   buildBreakpointsXml,
   buildChildVariablesXml,
   buildVariablesXml,
@@ -394,19 +393,6 @@ describe("the debuggee's application server", () => {
     expect(isRoutingError(new AdtApiError('x', 403, '/x', routingException('NoAuthorization', 'no')))).toBe(true);
     expect(isRoutingError(new AdtApiError('x', 500, '/x', debuggerException('invalidDebuggee')))).toBe(false);
     expect(isRoutingError(new Error('plain'))).toBe(false);
-  });
-
-  it('names the server that answers a request, and nothing where SAP does not say', async () => {
-    const http = mockHttp({ get: vi.fn().mockResolvedValue(answer({ 'sap-adt-saplb': 'appserver-t4w2x' })) });
-    expect(await answeringServer(http)).toBe('appserver-t4w2x');
-    expect(http.get).toHaveBeenCalledWith(
-      '/sap/bc/adt/core/http/systeminformation',
-      { Accept: 'application/vnd.sap.adt.core.http.systeminformation.v1+json', 'sap-adt-saplb': 'fetch' },
-      { suppressNotFoundLog: true },
-    );
-    expect(await answeringServer(mockHttp({ get: vi.fn().mockResolvedValue(answer()) }))).toBeUndefined();
-    const absent = mockHttp({ get: vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')) });
-    expect(await answeringServer(absent)).toBeUndefined();
   });
 
   it("ends a session through the transport's own close (the Eclipse close-session request)", async () => {

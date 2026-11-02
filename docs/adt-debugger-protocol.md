@@ -17,7 +17,7 @@ else still has to be confirmed release by release: see [§9](#9-live-checks-stil
 | **V** | [vscode_abap_remote_fs](https://github.com/marcellourbani/vscode_abap_remote_fs) — `client/src/adt/debugger/` (`debugListener.ts`, `debugService.ts`, `breakpointManager.ts`, `variableManager.ts`) |
 | **S** | [vibing-steampunk](https://github.com/oisee/vibing-steampunk) — `pkg/adt/debugger.go`, `pkg/saprfc/adtdebug.go`, and the live notes of its README |
 | **L** | Live, SAP BTP ABAP Environment trial, October 2026 |
-| **G** | Live, S/4HANA on-premise with two application servers, October 2026: SAP GUI runs, with experiment scripts on this server's modules (not kept; release not recorded) |
+| **G** | Live, S/4HANA on-premise (SAP_BASIS 8.16) with two application servers, October-November 2026: SAP GUI runs, with this server and experiment scripts on its modules (not kept), and Eclipse ADT |
 | **R** | SAP's ABAP source, read in October 2026 on an S/4HANA system (SAP_BASIS 8.16), the BTP ABAP Environment trial (9.20) and an ECC system (7.50): `CL_ABDBG_ACT_FOR_ATTACH__USER`, `CL_TPDAPI_SERVICE`, `CL_TPDA_ADT_RES_DEBUGGER`, `CL_ADT_WB_RES_APP`, `SADT_REST_RFC_ENDPOINT` |
 
 ## Nothing to install on SAP
@@ -234,45 +234,35 @@ of them, and missed whenever another trigger ran the code.
 
 ### SAP GUI runs
 
-Where the breakpoints are armed matters for a run started from SAP GUI (G):
+Whether a run started from SAP GUI stops depends on the kind of session it runs in, not on the
+server (G, S/4HANA SAP_BASIS 8.16, two application servers; Eclipse ADT behaves the same):
 
-- External breakpoints are the user's on every server, and HTTP runs — a Fiori app's requests, a REST
-  client's — stop on either server, wherever they were armed.
-- A **SAP GUI dialog run stops reliably only on the server where the breakpoints were armed last**:
-  arming switches debugging on for the user on that server alone. The stateless client's sync lands
-  wherever the load balancer sends it. The arming stores the arming server's `RFC_SYSTEM_INFO` with
-  the user's external debugging (`HTTP_DEBUG_UPDATE`, parameter `gui_rfcsi`, R): consistent with it,
-  not confirmed as its cause.
-- Removing the last breakpoint switches debugging off only on the server that removes it.
-- SAP records one `USR41` row per SAP GUI logon — `SERVER`, `LOGON_DATE`, `LOGON_TIME` — and ADT's own
-  sessions leave none. `SERVER` is the instance name SM51 shows (`<host>_<SID>_<nr>`), the name a
-  `sap-contextid` cookie carries and `X-sap-adt-server-instance` takes.
+- **A session of type GUI never stops at ADT's external breakpoints** — one opened from SAP Logon,
+  SAP Business Client or a `.sap` shortcut (SM04: *Type of User Session* `GUI`), on either server,
+  opened before or after the breakpoints were armed, with user or terminal-id breakpoints, whatever
+  server they were armed from. Neither did one of Eclipse's.
+- **A session of type RFC stops**: one opened through transaction SM51 once the breakpoints are armed
+  — select the server, then *Remote Logon*, or double-click it (SM04: `RFC`, `R=1 T=S S=<server>`) —
+  on either server, whichever server armed them. HTTP runs (a Fiori app's requests, a REST client's)
+  stop as well. A Remote Logon opened before the arming did not stop (one observation).
+- **External breakpoints set from SAP GUI** (ABAP Editor, *Utilities → Breakpoints*) do stop a GUI
+  session, in the SAP GUI debugger of the frontend that set them. They are another mechanism (R,
+  `HTTP_DEBUG_UPDATE`): stored in `ABDBG_BPS`, activated with the setter's SAP GUI connection key
+  (`TH_GET_REMOTE_DEBUG_KEY`, `ICFATTRIB` `K=<key>`), where ADT's are stored in `ABDBG_EXTDBPS` and
+  activated for attach (`K=0,A=X`), waiting for a listener. A client without SAP GUI has no such key,
+  and a stop there would open SAP GUI's debugger, not reach the listener.
+- **The two exclude each other for one user**: setting a SAP GUI external breakpoint while ADT's are
+  armed shows *ED702 "Debugging hindered by external development environment"*, and SAP ends the
+  listener's long poll with a `conflictNotification`. With both armed, a GUI session stopped at the SAP
+  GUI breakpoint only.
 
-So with `trigger: "none"`, where the run may come from SAP GUI, the server:
-
-1. asks which server answers — `sap-adt-saplb: fetch` on `systeminformation` — and stops there when a
-   BTP ABAP Environment pod does: it has no SAP GUI;
-2. reads the user's `USR41` rows through the ADT data preview — `POST
-   /sap/bc/adt/datapreview/freestyle?rowNumber=100`, `Content-Type: text/plain`, `Accept:
-   application/xml, application/vnd.sap.adt.datapreview.table.v1+xml`, body `SELECT server, logon_date,
-   logon_time FROM usr41 WHERE bname = '<USER>'` — and takes the latest logon's server. The answer lists
-   the columns, each with its values in row order (`tableData` → `columns` → `metadata name`, `dataSet`
-   → `data`);
-3. opens one stateful session routed to that server and checks the route as for the attach — then
-   runs the final breakpoint sync from it, after the probe sync from the stateless client, and removes
-   the breakpoints from that same session at the end;
-4. while it waits, reads the logons again every 5 seconds: when the latest is on another server than
-   the one armed last — a SAP GUI logon opened after the capture started — it opens a session routed
-   there and runs the same full sync from it. SAP may renumber the breakpoints: their old ids stay
-   known, for the stops that name them. The reads stop once the wait is over, before anything is
-   attached or removed, after a failed read, and never start while an exception or message breakpoint
-   is armed for the whole user, since the reads themselves could stop at it.
-
-The query runs as the session user and needs that user's authorization to display `USR41` through
-the data preview; a refusal costs a warning, and the capture arms from the stateless client as before
-— so does a SAP GUI server SAP cannot reach. `ABAP_DEBUGGER_SAP_GUI_LOOKUP=false` turns the lookup
-off. With SAP GUI logons on several servers, only the latest one's server is armed, and the hint of a
-run that did not stop names the others.
+So with `trigger: "none"` the capture arms as for any other run; when nothing stopped, its hint tells
+to run the code from a session opened through SM51, and a wait ended by a conflict says that SAP GUI
+external breakpoints are the usual cause. Why GUI sessions ignore ADT's breakpoints on that system —
+a kernel patch, a profile parameter — is not known ([live check 21](#9-live-checks-still-owed)). An
+earlier reading — that a SAP GUI run stops only on the server armed last, so that the capture armed
+there after looking the user's logons up in `USR41` — did not hold once the session's type was
+recorded: it was dropped.
 
 ## 6. Who is debugged
 
@@ -398,7 +388,7 @@ deployed on the same trial (29 October 2026; two pods, `appserver-n2nxt` and `ap
   `BDEF` and its behavior pools.
 - **A capture that outlasts its call.** `trigger: "none"` with 75 seconds answered after 49 with its
   session id; `abap_breakpoints` `list` meanwhile named the capture and its listener; `wait` gave the
-  timeout result — no SAP GUI lookup, no warning, on the pods.
+  timeout result, with no warning.
 - **Watchpoints.** Set in an interactive session at a `LOOP` line on `RS_SUMMARY-TOTAL`, `hits: 2`:
   each `continue` stopped on the statement after the change, `0 → 108` then `108 → 113`, the stop
   named as the watchpoint's. A local of another method (`LV_SUBTOTAL`) was refused: *"Cannot create
@@ -410,9 +400,8 @@ deployed on the same trial (29 October 2026; two pods, `appserver-n2nxt` and `ap
   would not survive the restart, leaving the listener to its two-minute expiry and the breakpoints to
   `abap_breakpoints` with `listener: true`.
 
-On an S/4HANA on-premise system with two application servers (October 2026), experiments with this
-server's modules established where a run started from SAP GUI stops: see
-[SAP GUI runs](#sap-gui-runs).
+On an S/4HANA on-premise system with two application servers (October-November 2026), experiments
+established which sessions started from SAP GUI stop: see [SAP GUI runs](#sap-gui-runs).
 
 ## 9. Live checks still owed
 
@@ -464,16 +453,15 @@ debugger session was routed to the program's server ([§5](#5-reaching-the-debug
 20. **Watchpoints**: the create answer's shape, the `kind` SAP names in `reachedBreakpoints` at a
     watchpoint's stop, how it refuses a variable not visible where the run stands, whether a
     watchpoint on a local stops in other frames, and the condition's semantics (after the change).
-21. **SAP GUI runs, end to end**: a capture through this server (not the experiment scripts) catching a
-    SAP GUI run on the SAP GUI's server — armed there through a routed session — and one from a logon
-    opened while the capture waits; whether a sync forwarded over RFC switches debugging on for the user
-    there as a session on that server does, and whether that lasts once the routed session ends;
-    whether SAP renumbers breakpoints synced again on another server; with three servers or more; the
-    release.
-22. **USR41 through the data preview**: SAP's answer without authorization for the table or for the
-    data preview, and on a release without `/datapreview/freestyle`.
+21. **SAP GUI sessions**: why a session of type GUI ignores ADT's external breakpoints on one S/4HANA
+    system ([SAP GUI runs](#sap-gui-runs)) — the kernel patch, profile parameters, SAP notes — and
+    whether other systems and releases behave alike; whether a Remote Logon opened before the arming
+    stops.
+22. **SM51 sessions end to end**: a capture with `interactive: true` holding a run from a session
+    opened through SM51 on the other server than the debugger session's — attached, stepped and
+    released there through the routed session.
 23. **SAP GUI for HTML**: whether a WebGUI session (a classic transaction opened from the Fiori
-    launchpad) leaves a `USR41` row, and whether its runs behave as SAP GUI's or as HTTP runs.
+    launchpad) runs as a GUI session or as an HTTP one, and so whether it stops.
 24. **Routing to the program's server** ([§5](#5-reaching-the-debuggees-application-server), read in
     SAP's source only): on an on-premise system with several servers, a debuggee on another server than
     the debugger session's — the route check answering without `sap-adt-saplb`, the attach, steps,

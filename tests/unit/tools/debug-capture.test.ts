@@ -5,7 +5,7 @@
  * The SAP answers are REFERENCE-DERIVED (abap-adt-api / vibing-steampunk shapes, see
  * docs/adt-debugger-protocol.md), not live captures.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { callTool } from '../../../src/server.js';
 import { setDebugTimingsForTests, setResultBudgetForTests } from '../../../src/tools/debug-capture.js';
 import { DEFAULT_LIMITS } from '../../../src/tools/debug-limits.js';
@@ -328,235 +328,33 @@ describe('abap_debug — a hit', () => {
       release: { released: true },
     });
     expect(calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual(['appserver-rpsxx']);
-    // Pods, not AS ABAP instances (the BTP ABAP Environment): no SAP GUI there, so no lookup and no warning.
-    expect(named(calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
     expect(json).not.toHaveProperty('warnings');
   });
 
-  describe('a SAP GUI run on a system with several application servers (S/4HANA)', () => {
-    // As seen live on S/4HANA: a SAP GUI run stops only on the server whose session armed the breakpoints last.
-    const gui = {
-      hit: true,
-      runByUser: true,
-      sessionUser: 'ADMIN',
-      servers: ['sappas_S4D_00', 'sapaas_S4D_01'],
-      debuggeeServer: 'sapaas_S4D_01',
-      guiStopsOnlyWhereArmed: true,
-    } satisfies FakeSapOptions;
-    const externalSyncs = (calls: Call[]) => {
-      const listening = calls.findIndex((c) => c.method === 'POST' && c.path === '/sap/bc/adt/debugger/listeners');
-      return named(calls.slice(0, listening), 'POST', '/sap/bc/adt/debugger/breakpoints');
-    };
+  it('tells how to run it from SAP GUI when nothing stopped with trigger="none"', async () => {
+    installFakeSap({ hit: false, listenerTimesOut: true, sessionUser: 'ADMIN' });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
 
-    it("arms on the user's SAP GUI server through a session routed there, so that run stops, and disarms there", async () => {
-      const fake = installFakeSap({
-        ...gui,
-        usr41: [
-          { server: 'sappas_S4D_00', time: '080000' },
-          { server: 'sapaas_S4D_01', time: '093000' },
-        ],
-      });
-      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
+    expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
+    expect(json?.hint).toContain('run the code as SAP user ADMIN');
+    expect(json?.hint).toContain(
+      'a session opened from SAP Logon or SAP Business Client never stops at external breakpoints',
+    );
+    expect(json?.hint).toContain('open a new session with SM51');
+  });
 
-      expect(json).toMatchObject({
-        hit: true,
-        attached: true,
-        debuggee: { server: 'sapaas_S4D_01' },
-        trigger: { kind: 'none', guiServer: 'sapaas_S4D_01' },
-        release: { released: true },
-      });
-      expect(json).not.toHaveProperty('warnings');
-      // The user's SAP GUI server: their latest SAP GUI logon in USR41, read through the data preview.
-      expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle').map((c) => c.body)).toEqual([
-        "SELECT server, logon_date, logon_time FROM usr41 WHERE bname = 'ADMIN'",
-      ]);
-      // The probe from the stateless client, then the final set on the SAP GUI's server — from a session the
-      // balancer put on the other one, routed there.
-      const syncs = externalSyncs(fake.calls);
-      expect(syncs.map((c) => c.server)).toEqual([undefined, 'sapaas_S4D_01']);
-      expect(syncs[1]).toMatchObject({ landed: 'sappas_S4D_00', routedTo: 'sapaas_S4D_01' });
-      // Removed there too: removing the last breakpoint switches debugging off on the server that removes it.
-      const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
-      expect(removals.length).toBeGreaterThan(0);
-      expect(removals.every((c) => c.server === 'sapaas_S4D_01')).toBe(true);
-      expect(fake.armedOn()).toBeUndefined();
-      // The debugger's session is routed to the debuggee's server too; both sessions end where they are.
-      expect(fake.calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual([
-        'sapaas_S4D_01',
-      ]);
-      const closes = fake.calls.filter((c) => c.sessionType === 'stateless');
-      expect(closes).toHaveLength(2);
-      expect(closes.every((c) => c.routedTo === undefined)).toBe(true);
-    });
+  it('says what conflicts when SAP ends the wait at once (SAP GUI external breakpoints, ED702)', async () => {
+    const { calls } = installFakeSap({ pollConflict: true, sessionUser: 'ADMIN' });
+    const { json } = await debug({ type: 'PROG', name: 'ZREPORT', line: 30, trigger: 'none', timeoutSeconds: 300 });
 
-    it('says why such a run may not stop when USR41 cannot be read', async () => {
-      const fake = installFakeSap({ ...gui, usr41: 403 });
-      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
-
-      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
-      expect(json?.trigger).not.toHaveProperty('guiServer');
-      expect(json?.warnings).toEqual([
-        expect.stringContaining(
-          "Could not look up which application server runs SAP user ADMIN's SAP GUI (table USR41 through the ADT data preview: ",
-        ),
-      ]);
-      expect(json?.warnings[0]).toContain('No authorization for table USR41');
-      expect(json?.hint).toContain(
-        'a SAP GUI run stops reliably only on the one where the breakpoints were armed: the capture could not look up your SAP GUI server to arm there',
-      );
-      // As before: armed from the stateless client alone — and no session opened.
-      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
-      expect(fake.calls.some((c) => c.stateful)).toBe(false);
-    });
-
-    it("names the server a SAP GUI run stops on when the user's run was elsewhere", async () => {
-      installFakeSap({
-        ...gui,
-        usr41: [
-          { server: 'sapaas_S4D_01', date: '20261027' },
-          { server: 'sappas_S4D_00', date: '20261028' },
-        ],
-      });
-      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
-
-      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { guiServer: 'sappas_S4D_00' } });
-      expect(json).not.toHaveProperty('warnings');
-      expect(json?.hint).toContain(
-        "Run from SAP GUI, it stops reliably on application server sappas_S4D_00 only (ADMIN's latest SAP GUI logon, where the capture armed the breakpoints), not on sapaas_S4D_01 where ADMIN is logged on too; System → Status in SAP GUI names the server.",
-      );
-    });
-
-    it('arms nowhere else when SAP cannot reach the SAP GUI server, and says so', async () => {
-      // The arming session lands on sappas_S4D_00; SAP cannot forward its requests to sapaas_S4D_01.
-      const fake = installFakeSap({
-        ...gui,
-        usr41: [{ server: 'sapaas_S4D_01' }],
-        routingFails: 'No RFC authorization for function group SADT_REST',
-      });
-      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
-
-      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
-      expect(json?.trigger).not.toHaveProperty('guiServer');
-      expect(json?.warnings).toEqual([
-        'Could not arm the breakpoints on application server sapaas_S4D_01, where SAP user ADMIN is logged on to SAP GUI (SAP could not reach it (No RFC authorization for function group SADT_REST)): a SAP GUI run there may not stop.',
-      ]);
-      // Armed from the stateless client alone; the session that could not reach the server ended at once.
-      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
-      expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(1);
-    });
-
-    it('never reads USR41 with ABAP_DEBUGGER_SAP_GUI_LOOKUP=false, and says so when nothing stopped', async () => {
-      const fake = installFakeSap({ ...gui, usr41: [{ server: 'sapaas_S4D_01' }] });
-      const { json } = await debug(
-        { type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 },
-        { ...createConnection(), sapGuiLookup: false },
-      );
-
-      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
-      expect(json?.trigger).not.toHaveProperty('guiServer');
-      expect(json).not.toHaveProperty('warnings');
-      expect(json?.hint).toContain("does not look up the user's SAP GUI server (ABAP_DEBUGGER_SAP_GUI_LOOKUP=false)");
-      expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
-      // Armed from the stateless client alone, as without SAP GUI; no session opened.
-      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
-      expect(fake.calls.some((c) => c.stateful)).toBe(false);
-    });
-
-    it("neither reads USR41 nor mentions SAP GUI on the BTP ABAP Environment's pods", async () => {
-      const fake = installFakeSap({
-        ...gui,
-        servers: ['appserver-t4w2x', 'appserver-rpsxx'],
-        debuggeeServer: 'appserver-rpsxx',
-        usr41: [{ server: 'appserver-rpsxx' }],
-      });
-      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
-
-      expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
-      expect(json).not.toHaveProperty('warnings');
-      expect(json?.hint).not.toContain('SAP GUI');
-      expect(named(fake.calls, 'POST', '/sap/bc/adt/datapreview/freestyle')).toHaveLength(0);
-      expect(externalSyncs(fake.calls).every((c) => c.server === undefined)).toBe(true);
-    });
-
-    describe('while the capture waits, it reads the SAP GUI logons again', () => {
-      const reads = (calls: Call[]) => named(calls, 'POST', '/sap/bc/adt/datapreview/freestyle').length;
-      const externalPosts = (calls: Call[]) =>
-        named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints').filter((c) => !c.body.includes('scope="debugger"'));
-      beforeAll(() => setDebugTimingsForTests({ guiRecheckMs: 20 }));
-      afterAll(() => setDebugTimingsForTests({ guiRecheckMs: 5000 }));
-
-      it('arms as before without a SAP GUI logon, and says none appeared', async () => {
-        const fake = installFakeSap({ ...gui, usr41: [] });
-        const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
-
-        expect(json).toMatchObject({ hit: false, reason: 'timeout', trigger: { kind: 'none' } });
-        expect(json?.trigger).not.toHaveProperty('guiServer');
-        expect(json).not.toHaveProperty('warnings');
-        expect(json?.hint).toContain(
-          "Run from SAP GUI, it stops on the server of ADMIN's latest SAP GUI logon, where the capture arms the breakpoints — it read the logons again every few seconds while it waited, and found none: log on to SAP GUI as ADMIN while the capture waits.",
-        );
-        // Armed from the stateless client alone, as without SAP GUI; no arming session opened.
-        expect(externalPosts(fake.calls).every((c) => c.server === undefined)).toBe(true);
-        expect(fake.calls.some((c) => c.stateful)).toBe(false);
-        // Read before arming, then again while it waited — and no more once the capture returned.
-        const done = reads(fake.calls);
-        expect(done).toBeGreaterThan(2);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        expect(reads(fake.calls)).toBe(done);
-      });
-
-      it('arms again from the server of a SAP GUI logon opened meanwhile, so that run stops', async () => {
-        let read = 0;
-        const fake = installFakeSap({
-          ...gui,
-          usr41: () => (++read < 3 ? [] : [{ server: 'sapaas_S4D_01' }]),
-        });
-        const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 5 });
-
-        expect(json).toMatchObject({
-          hit: true,
-          attached: true,
-          debuggee: { server: 'sapaas_S4D_01' },
-          trigger: { kind: 'none', guiServer: 'sapaas_S4D_01' },
-          release: { released: true },
-        });
-        expect(json).not.toHaveProperty('warnings');
-        // The probe and the narrowing from the stateless client, then the same set on that server, from a session
-        // routed there.
-        const posts = externalPosts(fake.calls);
-        expect(posts.map((c) => c.server)).toEqual([undefined, undefined, 'sapaas_S4D_01']);
-        expect(posts[2]).toMatchObject({ routedTo: 'sapaas_S4D_01' });
-        // Removed there: that switches debugging off on the server where they were armed last.
-        const removals = fake.calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'external');
-        expect(removals.length).toBeGreaterThan(0);
-        expect(removals.every((c) => c.server === 'sapaas_S4D_01')).toBe(true);
-        expect(fake.armedOn()).toBeUndefined();
-        // Every session ends: the arming one and the debugger's.
-        expect(fake.calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(2);
-      });
-
-      it('stops reading after a failed read, and says so', async () => {
-        let read = 0;
-        const fake = installFakeSap({ ...gui, usr41: () => (++read === 1 ? [] : 403) });
-        const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none', timeoutSeconds: 1 });
-
-        expect(json).toMatchObject({ hit: false, reason: 'timeout' });
-        expect(json?.warnings).toEqual([
-          expect.stringContaining("Stopped reading SAP user ADMIN's SAP GUI logons while the capture waited ("),
-        ]);
-        expect(reads(fake.calls)).toBe(2);
-      });
-
-      it('reads them no more while an exception breakpoint is armed for the whole user', async () => {
-        const fake = installFakeSap({ ...gui, usr41: [] });
-        const { json } = await debug({ exceptionClass: 'CX_SY_ZERODIVIDE', trigger: 'none', timeoutSeconds: 1 });
-
-        expect(json).toMatchObject({ hit: false, reason: 'timeout' });
-        // Its own reads could stop at that exception: the one lookup before arming only.
-        expect(reads(fake.calls)).toBe(1);
-        expect(json?.hint).toContain('be logged on to SAP GUI when the capture starts');
-      });
-    });
+    expect(json).toMatchObject({ hit: false, trigger: { kind: 'none' } });
+    expect(json?.reason).toMatch(/^conflict/);
+    expect(json?.hint).toContain('another debugger activation of SAP user ADMIN conflicts');
+    expect(json?.hint).toContain('ED702');
+    expect(json?.hint).toContain('Ctrl+Shift+F12');
+    expect(json?.hint).not.toContain('Nothing stopped');
+    // The breakpoints it armed are removed all the same.
+    expect(calls.some((c) => c.method === 'DELETE' && c.query.get('scope') === 'external')).toBe(true);
   });
 
   it('shows a structure watched across steps by its components', async () => {
