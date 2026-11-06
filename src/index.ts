@@ -16,7 +16,8 @@ const USAGE = `abap-debugger-mcp ${VERSION} — MCP server that lets an AI assis
 Usage: abap-debugger-mcp [--env-file <path>] [--http]
 
 Over stdio (default) the MCP client starts the server; with --http (or ABAP_DEBUGGER_TRANSPORT=http)
-it serves Streamable HTTP at /mcp — on SAP BTP Cloud Foundry, or any host.
+it serves Streamable HTTP at /mcp — on SAP BTP Cloud Foundry, or any host — or, for several
+systems (SAP_BTP_DESTINATIONS), at /<SID>/<client>/mcp each.
 
 Configuration (environment variables, e.g. the "env" block of the MCP client's server entry):
   SAP_URL                  SAP system URL, e.g. https://my-sap-host:44300
@@ -36,13 +37,16 @@ Configuration (environment variables, e.g. the "env" block of the MCP client's s
   ABAP_DEBUGGER_IDLE_SECONDS   interactive session: released after this long without a call (default 120)
   ABAP_DEBUGGER_SESSION_SECONDS  interactive session: released after this long in all (default 900)
   ABAP_DEBUGGER_CALL_SECONDS   a tool call answers within this time; longer work goes on in the background (default 50)
-  ABAP_DEBUGGER_MAX_CAPTURES   one-shot captures running at once on this server (default 4)
-  ABAP_DEBUGGER_MAX_SESSIONS   interactive sessions open at once on this server (default 4)
+  ABAP_DEBUGGER_MAX_CAPTURES   one-shot captures running at once on each SAP system (default 4)
+  ABAP_DEBUGGER_MAX_SESSIONS   interactive sessions open at once on each SAP system (default 4)
+  ABAP_DEBUGGER_MAX_TOTAL      captures and sessions at once on this server, all systems (default 16)
   ABAP_DEBUGGER_STATE_DIR  where captures record their armed breakpoints until removed (default: the temp directory)
   ABAP_DEBUGGER_LOG_LEVEL  debug | info | warn | error (stderr; default info)
 
 Over HTTP:
   SAP_BTP_DESTINATION      BTP destination of the SAP system (each user as themselves: principal propagation)
+  SAP_BTP_DESTINATIONS     several systems, comma-separated destinations: each served at /<SID>/<client>/mcp
+                           from its sap-sysid and sap-client properties (per-user identities only)
   ABAP_DEBUGGER_API_KEYS   comma-separated API keys (20+ characters each), besides XSUAA OAuth when bound
   ABAP_DEBUGGER_PORT       port (default 8080; PORT on Cloud Foundry), ABAP_DEBUGGER_HOST bind address
   ABAP_DEBUGGER_PUBLIC_URL public URL behind a reverse proxy (default: the Cloud Foundry route)
@@ -119,6 +123,11 @@ async function serveHttp(): Promise<void> {
   logger.info(`abap-debugger-mcp ${VERSION} ready (HTTP)`, {
     address: `${http.host}:${http.port}`,
     ...(http.btpDestination ? { destination: http.btpDestination } : {}),
+    ...(http.btpDestinations.length > 0 ? { destinations: http.btpDestinations } : {}),
+  });
+  // Several systems: their routes come from the destinations — look them up now, not on the first call.
+  void sap.systems?.overview().catch((err: unknown) => {
+    logger.warn(`Cannot look the destinations up: ${err instanceof Error ? err.message : String(err)}`);
   });
   // Cloud Foundry stops an app with SIGTERM and kills it ten seconds later: release the programs first.
   let stopping = false;

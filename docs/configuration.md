@@ -56,8 +56,9 @@ reads it at startup, so not from `--env-file`) rather than turning `SAP_INSECURE
 | `ABAP_DEBUGGER_IDLE_SECONDS` | An interactive session is released after this long without a call (10-3600, default 120) |
 | `ABAP_DEBUGGER_SESSION_SECONDS` | An interactive session is released after this long in all (60-14400, default 900) |
 | `ABAP_DEBUGGER_CALL_SECONDS` | A tool call answers within this time; a capture or move that takes longer goes on in the background (10-3600, default 50) — see [below](#calls-that-take-longer) |
-| `ABAP_DEBUGGER_MAX_CAPTURES` | One-shot captures running at once on this server (1-100, default 4) |
-| `ABAP_DEBUGGER_MAX_SESSIONS` | Interactive sessions open at once on this server (1-100, default 4) |
+| `ABAP_DEBUGGER_MAX_CAPTURES` | One-shot captures running at once on each SAP system of this server (1-100, default 4) |
+| `ABAP_DEBUGGER_MAX_SESSIONS` | Interactive sessions open at once on each SAP system of this server (1-100, default 4) |
+| `ABAP_DEBUGGER_MAX_TOTAL` | Captures and sessions at once on this server, every SAP system together — they live in its memory (1-400, default 16) |
 | `ABAP_DEBUGGER_STATE_DIR` | Where each capture records its debugger identity while its breakpoints may be armed, so that what a killed capture leaves behind can be found and removed (default: `abap-debugger-mcp` in the system's temporary directory) |
 | `ABAP_DEBUGGER_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error` — logs go to stderr |
 
@@ -77,7 +78,8 @@ While a capture or a session holds a program at a stop, SAP keeps a dialog work 
 (exclusive debugging). SAP limits how many at once with the profile parameter `rdisp/wpdbug_max_no`
 — by default half of the dialog work processes — and Eclipse users debugging the same system take
 from the same pool. Keep `ABAP_DEBUGGER_MAX_CAPTURES` plus `ABAP_DEBUGGER_MAX_SESSIONS` well below it,
-especially on a shared server on SAP BTP.
+especially on a shared server on SAP BTP. A deployment that serves several systems applies both to each
+system on its own.
 
 SAP also ends a debugging session after `rdisp/max_debug_lazy_time` (600 seconds by default) without
 debugger activity, and terminates the request that was debugged — a batch job alone continues. Keep
@@ -86,13 +88,15 @@ before SAP aborts it.
 
 ### Over HTTP
 
-With `--http` (or `ABAP_DEBUGGER_TRANSPORT=http`) the server serves Streamable HTTP at `/mcp`, on SAP
-BTP Cloud Foundry or any host; these settings apply too. The [deployment guide](btp-deployment.md#settings)
+With `--http` (or `ABAP_DEBUGGER_TRANSPORT=http`) the server serves Streamable HTTP at `/mcp` — or one
+route per system, `/<SID>/<client>/mcp`, with `SAP_BTP_DESTINATIONS` — on SAP BTP Cloud Foundry or any
+host; these settings apply too. The [deployment guide](btp-deployment.md#settings)
 lists the values the MTA sets on BTP.
 
 | Variable | Meaning |
 |---|---|
 | `SAP_BTP_DESTINATION` | BTP destination of the SAP system: `PrincipalPropagation` (on-premise, through the Cloud Connector) or `OAuth2UserTokenExchange` (BTP ABAP Environment) — each user as themselves |
+| `SAP_BTP_DESTINATIONS` | Several systems instead: comma-separated destinations, each served at `/<SID>/<client>/mcp` from its `sap-sysid` and `sap-client` properties — see [several SAP systems](btp-deployment.md#several-sap-systems-from-one-deployment) |
 | `ABAP_DEBUGGER_API_KEYS` | Comma-separated API keys (20+ characters each), besides XSUAA OAuth when an XSUAA instance is bound |
 | `ABAP_DEBUGGER_ALLOW_SHARED_USER` | `true` accepts one SAP identity for every MCP user (`SAP_URL` + `SAP_USER`, or a Basic destination) — they can then catch each other's runs |
 | `ABAP_DEBUGGER_PORT`, `ABAP_DEBUGGER_HOST` | Port (default `8080`; `PORT` on Cloud Foundry) and bind address (default `127.0.0.1`; `0.0.0.0` on Cloud Foundry) |

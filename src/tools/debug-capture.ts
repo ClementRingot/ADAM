@@ -928,32 +928,44 @@ function userBusy(holder: DebugEntry, limits: DebugLimits): string {
     : `An interactive debug session (${holder.id}) for SAP user ${holder.user} is open on this server — it must end first: abap_debug_session action="end" from its owner, or it is released after ${limits.idleSeconds} s without a call.`;
 }
 
-/** Why the server takes no further capture or session: the cap of its kind is reached. */
-function capReached(kind: DebugEntry['kind'], limits: DebugLimits): string | undefined {
+/** Why the server takes no further capture or session: the cap of its kind on the system, or in all. */
+function capReached(kind: DebugEntry['kind'], system: string, limits: DebugLimits): string | undefined {
   const [count, max, variable, what] =
     kind === 'capture'
-      ? [activeCount('capture'), limits.maxCaptures, 'ABAP_DEBUGGER_MAX_CAPTURES', 'Debug captures running']
-      : [activeCount('session'), limits.maxSessions, 'ABAP_DEBUGGER_MAX_SESSIONS', 'Interactive debug sessions open'];
-  if (count < max) return undefined;
-  return `${what} on this server: ${count} of ${max} (${variable}). Each can hold an SAP work process while its program is stopped — try again when one has ended.`;
+      ? [activeCount('capture', system), limits.maxCaptures, 'ABAP_DEBUGGER_MAX_CAPTURES', 'Debug captures running']
+      : [
+          activeCount('session', system),
+          limits.maxSessions,
+          'ABAP_DEBUGGER_MAX_SESSIONS',
+          'Interactive debug sessions open',
+        ];
+  if (count >= max) {
+    return `${what} on this server: ${count} of ${max} (${variable}). Each can hold an SAP work process while its program is stopped — try again when one has ended.`;
+  }
+  const total = activeCount('any');
+  if (total >= limits.maxTotal) {
+    return `Debug captures and sessions on this server, every SAP system together: ${total} of ${limits.maxTotal} (ABAP_DEBUGGER_MAX_TOTAL) — try again when one has ended.`;
+  }
+  return undefined;
 }
 
 /**
- * Why `owner` cannot start a capture or session (`kind`) for SAP user `user` now; undefined: go
- * ahead. The caller registers its entry without awaiting anything in between, so the checks and the
- * claim are atomic.
+ * Why `owner` cannot start a capture or session (`kind`) for SAP user `user` on `system` now;
+ * undefined: go ahead. The caller registers its entry without awaiting anything in between, so the
+ * checks and the claim are atomic.
  */
 export function refuseStart(
   owner: string,
+  system: string,
   user: string,
   kind: DebugEntry['kind'],
   limits: DebugLimits,
 ): string | undefined {
-  const own = entryOf(owner);
+  const own = entryOf(owner, system);
   if (own?.active) return ownEntryBusy(own);
-  const holder = holderOf(user);
+  const holder = holderOf(user, system);
   if (holder) return userBusy(holder, limits);
-  return capReached(kind, limits);
+  return capReached(kind, system, limits);
 }
 
 /**
@@ -970,17 +982,26 @@ export async function handleDebugCapture(
   const limits = conn.limits ?? DEFAULT_LIMITS;
   const user = await resolveDebugUser(conn);
   if (!user) return errorResult(UNKNOWN_USER_MESSAGE);
-  const refused = refuseStart(owner, user, 'capture', limits);
+  const system = conn.http.systemKey;
+  const refused = refuseStart(owner, system, user, 'capture', limits);
   if (refused) return errorResult(refused);
   const req = readDebugRequest(input);
-  const work = new BackgroundWork(nextDebugId(), owner, 'capture', user, 'arming the breakpoints', async (ctx) => {
-    try {
-      return await runCapture(conn, req, user, ctx);
-    } catch (err) {
-      if (err instanceof DebugInputError) return errorResult(err.message);
-      throw err;
-    }
-  });
+  const work = new BackgroundWork(
+    nextDebugId(),
+    owner,
+    system,
+    'capture',
+    user,
+    'arming the breakpoints',
+    async (ctx) => {
+      try {
+        return await runCapture(conn, req, user, ctx);
+      } catch (err) {
+        if (err instanceof DebugInputError) return errorResult(err.message);
+        throw err;
+      }
+    },
+  );
   setEntry(work);
   return answerWhenDone(work, context, limits);
 }

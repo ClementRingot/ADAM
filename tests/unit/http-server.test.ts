@@ -8,7 +8,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { type HttpConfig, loadHttpConfig } from '../../src/config.js';
-import { createHttpApp, type HttpSap, httpSap, lazyConnections, listen } from '../../src/http-server.js';
+import {
+  createHttpApp,
+  type HttpSap,
+  type HttpSystems,
+  httpSap,
+  lazyConnections,
+  listen,
+} from '../../src/http-server.js';
 import { setDebugTimingsForTests } from '../../src/tools/debug-capture.js';
 import { resetDebuggingForTests } from '../../src/tools/debug-registry.js';
 import { openDebugSessionId } from '../../src/tools/debug-session.js';
@@ -36,16 +43,32 @@ async function serve(sap: HttpSap, env: NodeJS.ProcessEnv = {}, httpConfig = con
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-async function mcpClient(base: string, key: string): Promise<Client> {
+async function mcpClient(base: string, key: string, path = '/mcp'): Promise<Client> {
   const client = new Client({ name: 'test', version: '0' });
   await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+    new StreamableHTTPClientTransport(new URL(`${base}${path}`), {
       requestInit: { headers: { Authorization: `Bearer ${key}` } },
     }),
   );
   clients.push(client);
   return client;
 }
+
+const XSUAA_ENV = {
+  VCAP_SERVICES: JSON.stringify({
+    xsuaa: [
+      {
+        credentials: {
+          url: 'https://sub.authentication.eu10.hana.ondemand.com',
+          clientid: 'sb-abapdbg!t1',
+          clientsecret: 'secret',
+          xsappname: 'abapdbg!t1',
+          uaadomain: 'authentication.eu10.hana.ondemand.com',
+        },
+      },
+    ],
+  }),
+};
 
 const text = (result: unknown) => (result as { content: Array<{ text: string }> }).content[0]?.text ?? '';
 
@@ -146,22 +169,7 @@ describe('the MCP server over HTTP', () => {
   });
 
   it('offers OAuth discovery for MCP clients when XSUAA is bound', async () => {
-    const env = {
-      VCAP_SERVICES: JSON.stringify({
-        xsuaa: [
-          {
-            credentials: {
-              url: 'https://sub.authentication.eu10.hana.ondemand.com',
-              clientid: 'sb-abapdbg!t1',
-              clientsecret: 'secret',
-              xsappname: 'abapdbg!t1',
-              uaadomain: 'authentication.eu10.hana.ondemand.com',
-            },
-          },
-        ],
-      }),
-    };
-    const base = await serve({ problems: [] }, env, { ...config, apiKeys: [] });
+    const base = await serve({ problems: [] }, XSUAA_ENV, { ...config, apiKeys: [] });
     const resource = await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json();
     expect(resource).toMatchObject({ resource_name: 'ABAP Debugger', scopes_supported: ['debug'] });
     const metadata = await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json();
@@ -169,6 +177,130 @@ describe('the MCP server over HTTP', () => {
     const unauthorized = await fetch(`${base}/mcp`, { method: 'POST', body: '{}' });
     expect(unauthorized.status).toBe(401);
     expect(unauthorized.headers.get('www-authenticate')).toContain('resource_metadata');
+  });
+});
+
+describe('several SAP systems from one deployment', () => {
+  const DEV = 'http://dev:8000';
+  const QAS = 'http://qas:8000';
+  /** Two systems that serve, one refused, and a destination that named no system. */
+  function systems(): HttpSystems & { connects: string[] } {
+    const connects: string[] = [];
+    const serving = (baseUrl: string): HttpSap => ({
+      problems: [],
+      sapGui: true,
+      connect: async (_authInfo, owner) => {
+        connects.push(`${baseUrl} ${owner}`);
+        return createConnection({ baseUrl });
+      },
+    });
+    const routes: Record<string, HttpSap> = {
+      'S4D/100': serving(DEV),
+      'S4Q/100': serving(QAS),
+      'S4P/100': {
+        problems: ['Destination S4P_BASIC uses BasicAuthentication: every user would debug as one SAP user.'],
+      },
+    };
+    return {
+      connects,
+      route: async (sid, client) => routes[`${sid.toUpperCase()}/${client}`],
+      overview: async () => [
+        { destination: 'S4D_PP', route: '/S4D/100/mcp' },
+        { destination: 'S4Q_PP', route: '/S4Q/100/mcp' },
+        { destination: 'S4P_BASIC', route: '/S4P/100/mcp', problem: 'it uses BasicAuthentication' },
+        { destination: 'NO_SID', problem: 'add the additional property sap-sysid' },
+      ],
+    };
+  }
+  const publicUrl = 'https://abapdbg.cfapps.eu10.hana.ondemand.com';
+
+  it('serves each system at its own route, and keeps the same user’s sessions on two systems apart', async () => {
+    installFakeSap(mockFetch, { hit: true });
+    const sap = systems();
+    const base = await serve({ problems: [], systems: sap });
+    const dev = await mcpClient(base, KEY_A, '/S4D/100/mcp');
+    const qas = await mcpClient(base, KEY_A, '/s4q/100/mcp');
+    const start = async (client: Client) =>
+      JSON.parse(
+        text(
+          await client.callTool({
+            name: 'abap_debug',
+            arguments: { type: 'CLAS', name: 'ZCL_ORDER', line: 9, interactive: true },
+          }),
+        ),
+      );
+    // The same MCP user and SAP user, at once: one session per system.
+    expect(await start(dev)).toMatchObject({ hit: true, session: 'S1' });
+    expect(await start(qas)).toMatchObject({ hit: true, session: 'S2' });
+    expect(sap.connects).toEqual([`${DEV} client:api-key-1`, `${QAS} client:api-key-1`]);
+    const devKey = createConnection({ baseUrl: DEV }).http.systemKey;
+    const qasKey = createConnection({ baseUrl: QAS }).http.systemKey;
+    expect(openDebugSessionId('client:api-key-1', devKey)).toBe('S1');
+    expect(openDebugSessionId('client:api-key-1', qasKey)).toBe('S2');
+    // Each route drives its own system's session.
+    const step = JSON.parse(text(await qas.callTool({ name: 'abap_debug_session', arguments: { action: 'step' } })));
+    expect(step).toMatchObject({ session: 'S2', position: { line: 10 } });
+    for (const client of [dev, qas]) {
+      const end = JSON.parse(text(await client.callTool({ name: 'abap_debug_session', arguments: { action: 'end' } })));
+      expect(end).toMatchObject({ ended: true });
+    }
+  });
+
+  it('points /mcp to the routes, says why a route serves nobody, and knows no other system', async () => {
+    const base = await serve({ problems: [], systems: systems() }, {}, { ...config, publicUrl } as typeof config);
+    const overview = await mcpClient(base, KEY_A);
+    const listed = text(await overview.callTool({ name: 'abap_search', arguments: { query: 'Z*' } }));
+    expect(listed).toContain('This deployment serves several SAP systems, one MCP route each');
+    expect(listed).toContain(`- ${publicUrl}/S4D/100/mcp — destination S4D_PP\n`);
+    expect(listed).toContain(
+      `- ${publicUrl}/S4P/100/mcp — destination S4P_BASIC, not serving: it uses BasicAuthentication`,
+    );
+    expect(listed).toContain('- destination NO_SID, no route: add the additional property sap-sysid');
+
+    const refused = await mcpClient(base, KEY_A, '/S4P/100/mcp');
+    const answer = text(await refused.callTool({ name: 'abap_search', arguments: { query: 'Z*' } }));
+    expect(answer).toContain('Destination S4P_BASIC uses BasicAuthentication');
+    expect(answer).toContain('The administrator of this deployment fixes them');
+
+    const post = (path: string, key?: string) =>
+      fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...(key ? { authorization: `Bearer ${key}` } : {}),
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      });
+    expect((await post('/S4D/100/mcp')).status).toBe(401);
+    const unknown = await post('/S4X/100/mcp', KEY_A);
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toMatchObject({ error: 'No SAP system S4X client 100 on this deployment.' });
+    // Segments that name no system are no route of a system.
+    expect((await post('/a/b/mcp', KEY_A)).status).toBe(404);
+  });
+
+  it('gives each route its own OAuth protected-resource metadata', async () => {
+    const base = await serve({ problems: [], systems: systems() }, XSUAA_ENV, {
+      ...config,
+      apiKeys: [],
+      publicUrl,
+    } as typeof config);
+    const resource = await fetch(`${base}/.well-known/oauth-protected-resource/S4D/100/mcp`);
+    expect(await resource.json()).toEqual({
+      resource: `${publicUrl}/S4D/100/mcp`,
+      authorization_servers: [`${publicUrl}/`],
+      scopes_supported: ['debug'],
+      resource_name: 'ABAP Debugger — S4D/100',
+    });
+    expect((await fetch(`${base}/.well-known/oauth-protected-resource/S4X/100/mcp`)).status).toBe(404);
+    // /mcp keeps its own.
+    expect((await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).status).toBe(200);
+    const unauthorized = await fetch(`${base}/S4Q/100/mcp`, { method: 'POST', body: '{}' });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get('www-authenticate')).toContain(
+      `resource_metadata="${publicUrl}/.well-known/oauth-protected-resource/S4Q/100/mcp"`,
+    );
   });
 });
 
@@ -182,6 +314,16 @@ describe('the HTTP configuration', () => {
     expect(
       loadHttpConfig({ SAP_BTP_DESTINATION: 'A4H_PP', ABAP_DEBUGGER_ALLOW_SHARED_USER: 'true' }).http,
     ).toMatchObject({ btpDestination: 'A4H_PP', allowSharedUser: true });
+    expect(loadHttpConfig({ SAP_BTP_DESTINATIONS: 'S4D_PP, S4Q_PP' }).http).toMatchObject({
+      btpDestinations: ['S4D_PP', 'S4Q_PP'],
+    });
+    expect(loadHttpConfig({ SAP_BTP_DESTINATION: 'A4H_PP', SAP_BTP_DESTINATIONS: 'S4D_PP,S4D_PP' }).problems).toEqual([
+      'Set SAP_BTP_DESTINATION (one system, at /mcp) or SAP_BTP_DESTINATIONS (several, at /<SID>/<client>/mcp each), not both.',
+      'SAP_BTP_DESTINATIONS names S4D_PP more than once.',
+    ]);
+    const several = httpSap(loadHttpConfig({ SAP_BTP_DESTINATIONS: 'S4D_PP,S4Q_PP' }).http as HttpConfig, {});
+    expect(several.systems).toBeDefined();
+    expect(several.connect).toBeUndefined();
   });
 
   it('refuses one SAP identity for every caller unless allowed, and a browser login on a server', async () => {

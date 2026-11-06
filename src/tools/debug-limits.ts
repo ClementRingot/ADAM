@@ -42,10 +42,18 @@ export interface DebugLimits {
    * answers with its session id: abap_debug_session action "wait" picks it up.
    */
   callSeconds: number;
-  /** One-shot captures that may run at once on this server (ABAP_DEBUGGER_MAX_CAPTURES). */
+  /**
+   * One-shot captures that may run at once on each SAP system of this server
+   * (ABAP_DEBUGGER_MAX_CAPTURES): each can hold one of its dialog work processes.
+   */
   maxCaptures: number;
-  /** Interactive sessions that may be open at once on this server (ABAP_DEBUGGER_MAX_SESSIONS). */
+  /** Interactive sessions that may be open at once on each SAP system of this server (ABAP_DEBUGGER_MAX_SESSIONS). */
   maxSessions: number;
+  /**
+   * Captures and sessions at once on this server, every system together (ABAP_DEBUGGER_MAX_TOTAL):
+   * they live in this process's memory.
+   */
+  maxTotal: number;
 }
 
 export const DEFAULT_LIMITS: DebugLimits = {
@@ -56,6 +64,7 @@ export const DEFAULT_LIMITS: DebugLimits = {
   callSeconds: 50,
   maxCaptures: 4,
   maxSessions: 4,
+  maxTotal: 16,
 };
 
 /** Kept at the end of a call to build and send its answer. */

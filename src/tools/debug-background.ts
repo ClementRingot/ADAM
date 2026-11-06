@@ -37,6 +37,7 @@ export class BackgroundWork implements DebugEntry {
   constructor(
     readonly id: string,
     readonly owner: string,
+    readonly system: string,
     readonly kind: DebugEntry['kind'],
     readonly user: string,
     /** What it does now: the latest progress message. */

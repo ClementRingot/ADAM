@@ -19,6 +19,10 @@ export interface ServerState {
   owner?: string;
   /** Why there is no connection (configuration problems), reported by every tool call. */
   problems: string[];
+  /** Who fixes the problems, and where (default: the MCP client's server entry, over stdio). */
+  fix?: string;
+  /** Why every tool call is refused here, said as is (instead of the configuration problems). */
+  refusal?: string;
   /** Whether users run code from SAP GUI on this system; undefined: not known before the first call. */
   sapGui?: boolean;
   /**
@@ -52,9 +56,10 @@ export async function callTool(
   if (!tool) return errorResult(`Unknown tool "${name}". Tools: ${TOOLS.map((t) => t.name).join(', ')}.`);
   const parsed = tool.schema.safeParse(args ?? {});
   if (!parsed.success) return errorResult(`Invalid ${name} input:\n${formatIssues(parsed.error)}`);
+  if (state.refusal) return errorResult(state.refusal);
   if (!state.connection && !state.connect) {
     return errorResult(
-      `abap-debugger is not configured:\n- ${state.problems.join('\n- ')}\nSet these in the env block of the MCP client's abap-debugger entry, then restart the server.`,
+      `abap-debugger is not configured:\n- ${state.problems.join('\n- ')}\n${state.fix ?? "Set these in the env block of the MCP client's abap-debugger entry, then restart the server."}`,
     );
   }
   let connection = state.connection;

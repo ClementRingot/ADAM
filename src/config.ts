@@ -84,6 +84,7 @@ function readLimits(env: NodeJS.ProcessEnv, problems: string[]): DebugLimits {
     callSeconds: bounded('ABAP_DEBUGGER_CALL_SECONDS', DEFAULT_LIMITS.callSeconds, 10, 3600),
     maxCaptures: bounded('ABAP_DEBUGGER_MAX_CAPTURES', DEFAULT_LIMITS.maxCaptures, 1, 100),
     maxSessions: bounded('ABAP_DEBUGGER_MAX_SESSIONS', DEFAULT_LIMITS.maxSessions, 1, 100),
+    maxTotal: bounded('ABAP_DEBUGGER_MAX_TOTAL', DEFAULT_LIMITS.maxTotal, 1, 400),
   };
 }
 
@@ -245,6 +246,8 @@ export interface HttpConfig {
   allowSharedUser: boolean;
   /** SAP_BTP_DESTINATION: the system, and how each user logs on to it. */
   btpDestination?: string;
+  /** SAP_BTP_DESTINATIONS: several systems, each at /<SID>/<client>/mcp. */
+  btpDestinations: string[];
 }
 
 const list = (text: string | undefined): string[] =>
@@ -279,8 +282,18 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): { http?: H
   if (dcrSigningSecret && dcrSigningSecret.length < 32) {
     problems.push('ABAP_DEBUGGER_DCR_SIGNING_SECRET must be at least 32 characters.');
   }
-  if (problems.length > 0) return { problems };
   const btpDestination = value(env, 'SAP_BTP_DESTINATION');
+  const btpDestinations = list(env.SAP_BTP_DESTINATIONS);
+  if (btpDestination && btpDestinations.length > 0) {
+    problems.push(
+      'Set SAP_BTP_DESTINATION (one system, at /mcp) or SAP_BTP_DESTINATIONS (several, at /<SID>/<client>/mcp each), not both.',
+    );
+  }
+  const repeated = btpDestinations.filter((name, index) => btpDestinations.indexOf(name) !== index);
+  if (repeated.length > 0) {
+    problems.push(`SAP_BTP_DESTINATIONS names ${[...new Set(repeated)].join(', ')} more than once.`);
+  }
+  if (problems.length > 0) return { problems };
   return {
     problems,
     http: {
@@ -292,6 +305,7 @@ export function loadHttpConfig(env: NodeJS.ProcessEnv = process.env): { http?: H
       ...(dcrSigningSecret ? { dcrSigningSecret } : {}),
       allowSharedUser: flag(env, 'ABAP_DEBUGGER_ALLOW_SHARED_USER'),
       ...(btpDestination ? { btpDestination } : {}),
+      btpDestinations,
     },
   };
 }

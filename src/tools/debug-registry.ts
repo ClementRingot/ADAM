@@ -1,9 +1,10 @@
 /**
- * What each MCP user debugs on this server: one capture or interactive session at a time, kept in
- * this process between calls — the stdio process of the one local user, or the single instance of
- * an HTTP deployment. It also says who debugs which SAP user (SAP keys the debugger listener by
- * user, so one capture or session per SAP user), and the caps on concurrent captures and sessions
- * count what is here.
+ * What each MCP user debugs on this server: one capture or interactive session at a time per SAP
+ * system, kept in this process between calls — the stdio process of the one local user, or the
+ * single instance of an HTTP deployment, which may serve several systems (SAP_BTP_DESTINATIONS). It
+ * also says who debugs which SAP user on which system (SAP keys the debugger listener by user, so
+ * one capture or session per SAP user and system), and the caps on concurrent captures and sessions
+ * count what is here: per system, and in all.
  */
 
 import { settleBy } from './debug-limits.js';
@@ -14,6 +15,8 @@ export interface DebugEntry {
   readonly id: string;
   /** The MCP user it belongs to: nobody else reaches it. */
   readonly owner: string;
+  /** The SAP system and client it debugs (`AdtHttpClient.systemKey`). */
+  readonly system: string;
   readonly kind: 'capture' | 'session';
   /** The SAP user it debugs. */
   readonly user: string;
@@ -34,8 +37,10 @@ export const LOCAL_OWNER = 'local';
 /** On shutdown, how long the releases may take before the process exits anyway. */
 const SHUTDOWN_BUDGET_MS = 15_000;
 
-/** Each owner's current entry — active, or the last one until they start another. */
+/** Each owner's current entry on each system — active, or the last one until they start another. */
 const entries = new Map<string, DebugEntry>();
+
+const keyOf = (owner: string, system: string): string => `${system}\n${owner}`;
 let counter = 0;
 
 /** The calling MCP user. */
@@ -46,28 +51,33 @@ export function nextDebugId(): string {
   return `S${counter}`;
 }
 
-export function entryOf(owner: string): DebugEntry | undefined {
-  return entries.get(owner);
+/** What `owner` debugs on `system`. */
+export function entryOf(owner: string, system: string): DebugEntry | undefined {
+  return entries.get(keyOf(owner, system));
 }
 
-/** Make `entry` its owner's current one. */
+/** Make `entry` its owner's current one on its system. */
 export function setEntry(entry: DebugEntry): void {
-  entries.set(entry.owner, entry);
+  entries.set(keyOf(entry.owner, entry.system), entry);
 }
 
 /** Forget `entry` — only while it is still its owner's current one. */
 export function removeEntry(entry: DebugEntry): void {
-  if (entries.get(entry.owner) === entry) entries.delete(entry.owner);
+  const key = keyOf(entry.owner, entry.system);
+  if (entries.get(key) === entry) entries.delete(key);
 }
 
-/** The active capture or session that debugs SAP user `user`, whoever owns it. */
-export function holderOf(user: string): DebugEntry | undefined {
-  return [...entries.values()].find((entry) => entry.active && entry.user === user);
+/** The active capture or session that debugs SAP user `user` on `system`, whoever owns it. */
+export function holderOf(user: string, system: string): DebugEntry | undefined {
+  return [...entries.values()].find((entry) => entry.active && entry.user === user && entry.system === system);
 }
 
-/** Captures or sessions that still work on SAP or hold a program. */
-export function activeCount(kind: DebugEntry['kind']): number {
-  return [...entries.values()].filter((entry) => entry.kind === kind && entry.active).length;
+/** Captures or sessions that still work on SAP or hold a program: on `system`, or on every system. */
+export function activeCount(kind: DebugEntry['kind'] | 'any', system?: string): number {
+  return [...entries.values()].filter(
+    (entry) =>
+      entry.active && (kind === 'any' || entry.kind === kind) && (system === undefined || entry.system === system),
+  ).length;
 }
 
 export function allEntries(): DebugEntry[] {

@@ -48,7 +48,7 @@ import {
   planCallBudget,
   RELEASE_BUDGET_MS,
 } from './debug-limits.js';
-import { type DebugEntry, entryOf, LOCAL_OWNER, nextDebugId, ownerOf, setEntry } from './debug-registry.js';
+import { allEntries, type DebugEntry, entryOf, LOCAL_OWNER, nextDebugId, ownerOf, setEntry } from './debug-registry.js';
 import type { DebugSessionInput } from './debug-session-input.js';
 import {
   compactValues,
@@ -134,6 +134,11 @@ class InteractiveSession implements DebugEntry {
     this.pending = start;
   }
 
+  /** The SAP system it debugs. */
+  get system(): string {
+    return this.conn.http.systemKey;
+  }
+
   get user(): string {
     return this.run.user;
   }
@@ -209,11 +214,18 @@ class InteractiveSession implements DebugEntry {
     clearTimeout(this.idleTimer);
     clearTimeout(this.lifeTimer);
     this.pending?.cancel();
-    const work = new BackgroundWork(this.id, this.owner, 'session', this.user, 'releasing the program', () =>
-      this.exclusive(async () => {
-        const summary = await this.close(reason, undefined, terminate);
-        return textResult(toolJson({ session: this.id, ...(requested ? { action: 'end' } : {}), ...summary }));
-      }),
+    const work = new BackgroundWork(
+      this.id,
+      this.owner,
+      this.system,
+      'session',
+      this.user,
+      'releasing the program',
+      () =>
+        this.exclusive(async () => {
+          const summary = await this.close(reason, undefined, terminate);
+          return textResult(toolJson({ session: this.id, ...(requested ? { action: 'end' } : {}), ...summary }));
+        }),
     );
     this.pending = work;
     return work;
@@ -296,8 +308,14 @@ class InteractiveSession implements DebugEntry {
       const busy = this.busyText();
       if (busy) return errorResult(busy);
       clearTimeout(this.idleTimer);
-      const move = new BackgroundWork(this.id, this.owner, 'session', this.user, moveDoing(input), (moveContext) =>
-        this.exclusive(() => this.perform(input, moveContext)),
+      const move = new BackgroundWork(
+        this.id,
+        this.owner,
+        this.system,
+        'session',
+        this.user,
+        moveDoing(input),
+        (moveContext) => this.exclusive(() => this.perform(input, moveContext)),
       );
       this.pending = move;
       return await this.answer(move, context);
@@ -667,11 +685,17 @@ export async function startDebugSession(
   const limits = conn.limits ?? DEFAULT_LIMITS;
   const user = await resolveDebugUser(conn);
   if (!user) return errorResult(UNKNOWN_USER_MESSAGE);
-  const refused = refuseStart(owner, user, 'session', limits);
+  const refused = refuseStart(owner, conn.http.systemKey, user, 'session', limits);
   if (refused) return errorResult(refused);
   const req = readDebugRequest(input);
-  const start = new BackgroundWork(nextDebugId(), owner, 'session', user, 'arming the breakpoints', (ctx, self) =>
-    holdFirstStop(conn, req, user, limits, ctx, self),
+  const start = new BackgroundWork(
+    nextDebugId(),
+    owner,
+    conn.http.systemKey,
+    'session',
+    user,
+    'arming the breakpoints',
+    (ctx, self) => holdFirstStop(conn, req, user, limits, ctx, self),
   );
   setEntry(start);
   return answerWhenDone(start, context, limits);
@@ -706,7 +730,7 @@ export async function handleDebugSession(
 ): Promise<ToolResult> {
   const owner = ownerOf(context);
   const wanted = input.session?.trim().toUpperCase();
-  const entry = entryOf(owner);
+  const entry = entryOf(owner, conn.http.systemKey);
   if (!entry) {
     return errorResult(
       input.action === 'wait'
@@ -720,8 +744,14 @@ export async function handleDebugSession(
   return errorResult(NO_SESSION);
 }
 
-/** The id of a user's open session, for tests. */
-export function openDebugSessionId(owner = LOCAL_OWNER): string | undefined {
-  const entry = entryOf(owner);
-  return entry instanceof InteractiveSession && !entry.closed ? entry.id : undefined;
+/** The id of a user's open session (on any system, or on `system`), for tests. */
+export function openDebugSessionId(owner = LOCAL_OWNER, system?: string): string | undefined {
+  const entry = allEntries().find(
+    (candidate) =>
+      candidate.owner === owner &&
+      (system === undefined || candidate.system === system) &&
+      candidate instanceof InteractiveSession &&
+      !candidate.closed,
+  );
+  return entry?.id;
 }

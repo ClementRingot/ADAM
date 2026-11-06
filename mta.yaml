@@ -79,12 +79,14 @@ modules:
     properties:
       # Set in mta-overrides.mtaext (an extension can add or override, never remove):
       # SAP_BTP_DESTINATION: "A4H_PP"
+      # or, for several systems at /<SID>/<client>/mcp each (docs/btp-deployment.md):
+      # SAP_BTP_DESTINATIONS: "S4D_PP,S4Q_PP"
       SAP_LANGUAGE: EN
       # Every MCP user debugs as their own SAP user; "true" only for a deployment one person uses.
       ABAP_DEBUGGER_ALLOW_SHARED_USER: "false"
       # Bounds (see docs/configuration.md): inspection time and result size ceilings, interactive
       # sessions, the time a call may take, and how many programs the server holds at once — each
-      # takes an SAP dialog work process (rdisp/wpdbug_max_no).
+      # takes an SAP dialog work process (rdisp/wpdbug_max_no): per system, and in all.
       ABAP_DEBUGGER_MAX_SECONDS: "600"
       ABAP_DEBUGGER_MAX_RESULT_KB: "200"
       ABAP_DEBUGGER_IDLE_SECONDS: "120"
@@ -92,6 +94,7 @@ modules:
       ABAP_DEBUGGER_CALL_SECONDS: "50"
       ABAP_DEBUGGER_MAX_CAPTURES: "4"
       ABAP_DEBUGGER_MAX_SESSIONS: "4"
+      ABAP_DEBUGGER_MAX_TOTAL: "16"
     provides:
       - name: abap-debugger-api
         properties:

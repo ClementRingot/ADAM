@@ -6,7 +6,7 @@ Ideas, not commitments. Each entry says why it remains and how to resume it.
 |---|---|---|---|---|
 | [LIVE-1](#live-1) | Live verification of this server | P1 | S | Needs a system |
 | [LIVE-2](#live-2) | First deployment on a real SAP BTP subaccount | P1 | S | Needs a subaccount |
-| [MULTI-1](#multi-1) | Several SAP systems from one deployment: a fixed list of destinations | P2 | M | After LIVE-2 |
+| [MULTI-1](#multi-1) | Several SAP systems from one deployment: a fixed list of destinations | P2 | M | Built; live check after LIVE-2 |
 | [INC-1](#inc-1) | Breakpoints in program and function-group includes | P3 | S | Needs research |
 | [WATCH-1](#watch-1) | Watchpoints: check them on a real system | P2 | S | Needs live check |
 | [TRACE-1](#trace-1) | One call from an OData URL or a Fiori app to its handler methods | P3 | M | Idea |
@@ -62,24 +62,28 @@ deployment with one system. A connector is then one system, chosen by the person
 tools keep their schemas and no call names a target, so the model cannot arm breakpoints — or hold a
 work process — on QAS when it meant DEV. With five tools, several connectors stay cheap.
 
-**Why it remains.** One deployment per system already works, and isolates best: on BTP one MTA per
-Cloud Foundry space (the descriptor derives the `xsappname` and the role collection from the space),
-locally one MCP client entry per system. And the first deployment on a real subaccount
-([LIVE-2](#live-2)) comes first.
-
-**What it takes.**
-- One capture or session per SAP user *and system* (`holderOf` compares the user name only), and per
-  MCP user and system.
-- The caps per system, since they protect its dialog work processes (`rdisp/wpdbug_max_no`), and one
-  more for the process's memory.
-- One `BtpConnections` per destination; the records of leftover breakpoints already carry the system.
-- Protected-resource metadata (RFC 9728) for each route: `@arc-mcp/xsuaa-auth` serves it for `/mcp`
-  only.
-- Only destinations that log each user on as themselves: a `BasicAuthentication` one is refused, as
-  everyone would debug as one SAP user (a person alone keeps one local entry per system). Two
-  destinations for the same system and client are refused too.
-- A destination that fails leaves the others working, and its route says why.
+**Built** ([several SAP systems](btp-deployment.md#several-sap-systems-from-one-deployment)):
+- One capture or session per SAP user *and system*, and per MCP user and system: the registry keys
+  its entries by both, the system being the ADT client's `systemKey` — the key the records of
+  leftover breakpoints already carried.
+- `ABAP_DEBUGGER_MAX_CAPTURES` and `ABAP_DEBUGGER_MAX_SESSIONS` per system, since they protect its
+  dialog work processes (`rdisp/wpdbug_max_no`), and `ABAP_DEBUGGER_MAX_TOTAL` (default 16) for the
+  process's memory.
+- One `BtpConnections` per destination (`src/btp/systems.ts`), looked up at startup.
+- Protected-resource metadata (RFC 9728) for each route, at
+  `/.well-known/oauth-protected-resource/<SID>/<client>/mcp`, and each route's 401 names it: the
+  route checks the bearer itself, with the verifiers of `@arc-mcp/xsuaa-auth`, which serves the
+  metadata of `/mcp` only.
+- Only destinations that log each user on as themselves: a `BasicAuthentication` one is refused,
+  whatever `ABAP_DEBUGGER_ALLOW_SHARED_USER` says. Two destinations for the same system and client
+  are both refused.
+- A destination that fails leaves the others working: one without a route (not found, no
+  `sap-sysid`) is named by `/mcp`, whose tool calls list the routes; one refused keeps its route,
+  whose tool calls say why. Each is looked up again on demand, at most every 30 seconds.
 - Still one Cloud Foundry instance: interactive sessions live in the process.
+
+Tested against simulated destinations and the SDK's HTTP client: two systems with the same MCP user
+and SAP user at once, the caps per system and in all, the refusals, the routes' metadata.
 
 **Not in this step.** What else ARC-1's multi-target mode does (its ADR-0006 and ADR-0008):
 destinations discovered by a property and refreshed, systems filtered per user by XSUAA attributes,
@@ -92,7 +96,8 @@ app, which should catch the RFC call made as that user (trusted RFC, current use
 
 **Resume with.** Once LIVE-2 has run: two systems where the person has the same SAP user name (DEV and
 QAS through principal propagation), a capture on each at the same time, the caps per system, and the
-OAuth sign-in on two routes.
+OAuth sign-in on two routes — Claude Code, Claude Desktop and VS Code each adding both connectors, the
+dynamic client registration of the second reusing the first's sign-in or not.
 
 <a id="inc-1"></a>
 ## INC-1 — Breakpoints in includes

@@ -108,6 +108,7 @@ describe('loadConfig', () => {
       callSeconds: 50,
       maxCaptures: 4,
       maxSessions: 4,
+      maxTotal: 16,
     });
     const { config } = loadConfig({
       ...base,
@@ -118,6 +119,7 @@ describe('loadConfig', () => {
       ABAP_DEBUGGER_CALL_SECONDS: '25',
       ABAP_DEBUGGER_MAX_CAPTURES: '10',
       ABAP_DEBUGGER_MAX_SESSIONS: '2',
+      ABAP_DEBUGGER_MAX_TOTAL: '30',
     });
     expect(config?.limits).toEqual({
       maxSeconds: 1200,
@@ -127,6 +129,7 @@ describe('loadConfig', () => {
       callSeconds: 25,
       maxCaptures: 10,
       maxSessions: 2,
+      maxTotal: 30,
     });
     expect(createConnection(config as NonNullable<typeof config>).limits).toEqual(config?.limits);
     expect(loadConfig({ ...base, ABAP_DEBUGGER_IDLE_SECONDS: '5' }).problems).toEqual([

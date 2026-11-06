@@ -45,7 +45,7 @@ export type BreakpointsInput = z.infer<typeof BreakpointsInputSchema>;
 
 /** Who listens for `user` on SAP: a capture or session of this server, another debugger, or nobody. */
 async function listenerOf(conn: SapConnection, user: string, owner: string): Promise<string> {
-  const holder = holderOf(user);
+  const holder = holderOf(user, conn.http.systemKey);
   if (holder) {
     return holder.owner === owner
       ? `your ${holder.kind === 'capture' ? 'capture' : 'interactive session'} ${holder.id}, on this server`
@@ -66,8 +66,9 @@ export async function handleBreakpoints(
   const user = await resolveDebugUser(conn);
   if (!user) return errorResult(UNKNOWN_USER_MESSAGE);
 
+  const system = conn.http.systemKey;
   if (input.action === 'list') {
-    const own = entryOf(owner);
+    const own = entryOf(owner, system);
     const leftovers = leftoversOf(conn.http, user);
     const listener = await listenerOf(conn, user, owner);
     const removable = leftovers.length > 0 || listener.startsWith('another debugger');
@@ -88,7 +89,7 @@ export async function handleBreakpoints(
   }
 
   const out: Record<string, unknown> = { user };
-  const own = entryOf(owner);
+  const own = entryOf(owner, system);
   if (own?.active) {
     const ended = await handleDebugSession(conn, { action: 'end' }, context);
     const text = ended.content[0]?.text ?? '';
@@ -105,7 +106,7 @@ export async function handleBreakpoints(
   if (failed.length > 0)
     out.leftoversFailed = failed.map(({ record, error }) => ({ ...describeLeftover(record), error }));
   if (input.listener) {
-    const holder = holderOf(user);
+    const holder = holderOf(user, system);
     if (holder) {
       out.listener = `kept: ${holder.owner === owner ? `your ${holder.kind} ${holder.id} still ends` : 'a capture or session of another user of this server debugs the same SAP user'} — removing its listener would break it`;
     } else {

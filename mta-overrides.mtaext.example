@@ -21,6 +21,9 @@ modules:
       # The SAP system: a subaccount destination. PrincipalPropagation (on-premise, Cloud
       # Connector) or OAuth2UserTokenExchange (BTP ABAP Environment) — each user as themselves.
       SAP_BTP_DESTINATION: "A4H_PP"
+      # Or several systems, one MCP route each (/<SID>/<client>/mcp, from each destination's
+      # sap-sysid and sap-client properties) — then without SAP_BTP_DESTINATION above:
+      # SAP_BTP_DESTINATIONS: "S4D_PP,S4Q_PP"
 
       # Logon language of the debugger session.
       # SAP_LANGUAGE: "DE"

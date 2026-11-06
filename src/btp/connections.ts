@@ -57,6 +57,22 @@ export interface BtpTarget {
 export interface BtpTargetOptions {
   /** ABAP_DEBUGGER_ALLOW_SHARED_USER: accept a destination with one technical identity. */
   allowSharedUser: boolean;
+  /**
+   * One of several systems (SAP_BTP_DESTINATIONS): a technical identity is refused whatever
+   * allowSharedUser says — a person alone keeps one local MCP entry per system instead.
+   */
+  severalSystems?: boolean;
+}
+
+/** The bound BTP services; `setting` names what needs them, for the message. */
+export function boundBtp(env: NodeJS.ProcessEnv, setting: string): BTPConfig {
+  const btp = parseVCAPServices(env, btpLogger);
+  if (!btp) {
+    throw new Error(
+      `${setting} needs the Destination service bound to this app (and the Connectivity service for an on-premise system): VCAP_SERVICES has no such binding.`,
+    );
+  }
+  return btp;
 }
 
 /**
@@ -70,18 +86,27 @@ export async function resolveBtpTarget(
   env: NodeJS.ProcessEnv = process.env,
   lookup: typeof lookupDestination = lookupDestination,
 ): Promise<BtpTarget> {
-  const btp = parseVCAPServices(env, btpLogger);
-  if (!btp) {
-    throw new Error(
-      `SAP_BTP_DESTINATION=${name} needs the Destination service bound to this app (and the Connectivity service for an on-premise system): VCAP_SERVICES has no such binding.`,
-    );
-  }
-  const destination = await lookup(btp, name, btpLogger);
+  const btp = boundBtp(env, `SAP_BTP_DESTINATION=${name}`);
+  return checkBtpTarget(btp, name, await lookup(btp, name, btpLogger), options);
+}
+
+/** Whether `destination` can serve a debugger (see resolveBtpTarget); its target, else an error that says why. */
+export function checkBtpTarget(
+  btp: BTPConfig,
+  name: string,
+  destination: Destination,
+  options: BtpTargetOptions,
+): BtpTarget {
   const authentication = destination.Authentication;
   const perUser = PER_USER.has(authentication);
   if (!perUser && !SHARED.has(authentication)) {
     throw new Error(
       `Destination ${name} uses ${authentication || 'no'} authentication; a debugger needs PrincipalPropagation (on-premise, Cloud Connector), OAuth2UserTokenExchange or OAuth2SAMLBearerAssertion (BTP ABAP Environment), or SAMLAssertion.`,
+    );
+  }
+  if (!perUser && options.severalSystems) {
+    throw new Error(
+      `Destination ${name} uses ${authentication}: every user would debug as one SAP user and could catch each other's runs. A deployment that serves several systems (SAP_BTP_DESTINATIONS) takes only destinations that log each user on as themselves, such as PrincipalPropagation; a person alone keeps one local MCP entry per system instead.`,
     );
   }
   if (!perUser && !options.allowSharedUser) {

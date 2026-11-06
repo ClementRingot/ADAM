@@ -1770,6 +1770,42 @@ describe('abap_debug — captures that outlast their call', () => {
     );
     expect((await session({ action: 'end' }, 'alice')).json).toMatchObject({ hit: false, reason: 'cancelled' });
   });
+
+  it('keeps each SAP system apart: the same MCP and SAP user on two systems, the caps per system and in all', async () => {
+    installFakeSap({ hit: false });
+    const on = (baseUrl: string, limits: Partial<typeof DEFAULT_LIMITS>) => ({
+      ...createConnection({ baseUrl }),
+      limits: { ...DEFAULT_LIMITS, callSeconds: 0.5, ...limits },
+    });
+    const dev = on('http://dev:8000', { maxCaptures: 1, maxTotal: 2 });
+    const qas = on('http://qas:8000', { maxCaptures: 1, maxTotal: 2 });
+    expect(JSON.parse(textOf(await capture(dev, 'alice', { trigger: 'none' })))).toMatchObject({
+      session: 'S1',
+      running: true,
+    });
+    // Alice's capture on DEV keeps neither her nor SAP user ADMIN from QAS, whose cap is its own.
+    expect(JSON.parse(textOf(await capture(qas, 'alice', { trigger: 'none' })))).toMatchObject({
+      session: 'S2',
+      running: true,
+    });
+    // The process's own cap counts every system.
+    expect(textOf(await capture(on('http://prd:8000', { maxTotal: 2 }), 'alice'))).toBe(
+      'Debug captures and sessions on this server, every SAP system together: 2 of 2 (ABAP_DEBUGGER_MAX_TOTAL) — try again when one has ended.',
+    );
+    // Each system's capture is reached on its own system only.
+    const end = async (conn: ReturnType<typeof on>, id: string) =>
+      textOf(
+        await callTool(
+          { connection: conn, problems: [] },
+          'abap_debug_session',
+          { action: 'end', session: id },
+          { owner: 'alice' },
+        ),
+      );
+    expect(await end(qas, 'S1')).toBe('There is no debug session S1: yours is S2.');
+    expect(JSON.parse(await end(qas, 'S2'))).toMatchObject({ hit: false, reason: 'cancelled' });
+    expect(JSON.parse(await end(dev, 'S1'))).toMatchObject({ hit: false, reason: 'cancelled' });
+  });
 });
 
 describe('abap_debug — non-exclusive debugging', () => {

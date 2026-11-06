@@ -169,9 +169,51 @@ it never logs tokens.
   up. The server sends progress notifications to clients that ask for them.
 - **Shared SAP resources**: every held program takes a dialog work process on the SAP system, from the
   pool `rdisp/wpdbug_max_no` caps (half the dialog work processes by default). The server holds at
-  most `ABAP_DEBUGGER_MAX_CAPTURES` captures and `ABAP_DEBUGGER_MAX_SESSIONS` sessions at once (4 each);
-  size both against that pool for the number of developers who use the deployment — see
+  most `ABAP_DEBUGGER_MAX_CAPTURES` captures and `ABAP_DEBUGGER_MAX_SESSIONS` sessions at once (4 each)
+  on each system, and `ABAP_DEBUGGER_MAX_TOTAL` (16) on all systems together; size them against that
+  pool for the number of developers who use the deployment — see
   [sizing](configuration.md#sizing-against-the-sap-system).
+
+## Several SAP systems from one deployment
+
+One deployment per system isolates best — one MTA per Cloud Foundry space, as the descriptor derives
+the `xsappname` and the role collection from the space. To serve DEV and QAS from one deployment
+instead, list their destinations in `SAP_BTP_DESTINATIONS` (in place of `SAP_BTP_DESTINATION`):
+
+```yaml
+    properties:
+      SAP_BTP_DESTINATIONS: "S4D_PP,S4Q_PP"
+```
+
+Each destination needs two additional properties, which name its MCP route: `sap-sysid` (the system
+ID, e.g. `S4D`) and `sap-client` (e.g. `100`). The server looks the destinations up at startup and
+serves each one at `https://<route>/<SID>/<client>/mcp`:
+
+| Destination | `sap-sysid` | `sap-client` | MCP server URL |
+|---|---|---|---|
+| `S4D_PP` | `S4D` | `100` | `https://<route>/S4D/100/mcp` |
+| `S4Q_PP` | `S4Q` | `100` | `https://<route>/S4Q/100/mcp` |
+
+A connector is then **one system**, chosen by the person who adds it (`claude mcp add --transport http
+adam-s4d https://<route>/S4D/100/mcp`, and `adam-s4q` for QAS). The tools keep their schemas and no call
+names a system, so the model cannot arm breakpoints — or hold a work process — on QAS when it meant
+DEV. Each route has its own OAuth protected-resource metadata, so each connector signs in on its own;
+`/mcp` then serves no system: its tool calls list the routes.
+
+- **Only destinations that log each user on as themselves** (`PrincipalPropagation`,
+  `OAuth2UserTokenExchange`, …): a `BasicAuthentication` one is refused, whatever
+  `ABAP_DEBUGGER_ALLOW_SHARED_USER` says — everyone would debug as one SAP user. A person alone keeps
+  one local MCP entry per system instead. Two destinations for the same system and client are both
+  refused.
+- **A destination that fails leaves the others working.** One the Destination service cannot find, or
+  that names no `sap-sysid`, has no route: `/mcp` says why. One that is refused keeps its route, whose
+  tool calls say why. Either is looked up again on demand, at most every 30 seconds, until it serves.
+- **Per system**: one capture or session per SAP user and system, one per MCP user and system — Alice
+  can hold a session on DEV and capture a run on QAS at once — and the caps
+  `ABAP_DEBUGGER_MAX_CAPTURES` / `ABAP_DEBUGGER_MAX_SESSIONS` count each system on its own, since they
+  protect its work processes. `ABAP_DEBUGGER_MAX_TOTAL` bounds them all together: they live in the
+  process's memory — raise the app's memory (256 MB) for many systems and users.
+- **Still one instance**: interactive sessions live in the process, whichever system they debug.
 
 ## Settings
 
@@ -180,14 +222,16 @@ override a property, never remove one).
 
 | Variable | Default on BTP | Meaning |
 |---|---|---|
-| `SAP_BTP_DESTINATION` | — (required) | The destination of the SAP system |
+| `SAP_BTP_DESTINATION` | — (required, or `SAP_BTP_DESTINATIONS`) | The destination of the SAP system, served at `/mcp` |
+| `SAP_BTP_DESTINATIONS` | — | [Several systems](#several-sap-systems-from-one-deployment): comma-separated destinations, each served at `/<SID>/<client>/mcp` |
 | `SAP_LANGUAGE` | `EN` | Logon language |
 | `ABAP_DEBUGGER_ALLOW_SHARED_USER` | `false` | Accept one SAP identity for every MCP user (Basic destination) |
 | `ABAP_DEBUGGER_SAP_GUI` | `true` behind an on-premise destination, else `false` | Whether users run code from SAP GUI, so the agent explains how to run it through SM51 |
 | `ABAP_DEBUGGER_MAX_SECONDS`, `ABAP_DEBUGGER_MAX_RESULT_KB` | `600`, `200` | Ceilings of a call's time and result size |
 | `ABAP_DEBUGGER_IDLE_SECONDS`, `ABAP_DEBUGGER_SESSION_SECONDS` | `120`, `900` | Interactive session limits |
 | `ABAP_DEBUGGER_CALL_SECONDS` | `50` | A call answers within this time; longer work goes on in the background |
-| `ABAP_DEBUGGER_MAX_CAPTURES`, `ABAP_DEBUGGER_MAX_SESSIONS` | `4`, `4` | Captures and sessions at once on the server |
+| `ABAP_DEBUGGER_MAX_CAPTURES`, `ABAP_DEBUGGER_MAX_SESSIONS` | `4`, `4` | Captures and sessions at once on each SAP system |
+| `ABAP_DEBUGGER_MAX_TOTAL` | `16` | Captures and sessions at once on the server, every system together |
 | `ABAP_DEBUGGER_DCR_SIGNING_SECRET` | XSUAA client secret | Signs the MCP clients' registrations (set with `cf set-env`) |
 | `ABAP_DEBUGGER_API_KEYS` | — | Comma-separated API keys (20+ characters), besides XSUAA |
 | `ABAP_DEBUGGER_ALLOWED_ORIGINS` | — | CORS origins of browser MCP clients |
@@ -211,7 +255,8 @@ before deploying.
 ## Status
 
 The BTP mode is tested with the SAP Cloud SDK and XSUAA calls simulated: OAuth discovery and API-key
-authentication over real HTTP, the destination checks, the per-user identity headers, and the
+authentication over real HTTP, the destination checks, the routes of several systems and their
+metadata, the per-user identity headers, and the
 Connectivity proxy's plain forward proxying (it refuses CONNECT) against a real local proxy. The MTA
 builds with MBT, and a staged app (runtime dependencies only) starts. A first deployment on a real
 subaccount is still to come — see the [roadmap](roadmap.md).

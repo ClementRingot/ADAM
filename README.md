@@ -62,8 +62,9 @@ line 42."*
 Deploy the MTA on Cloud Foundry (`mbt build`, `cf deploy`), point it at a destination, assign the role
 collection, and connect the clients to `https://<route>/mcp`. They sign in through XSUAA in the
 browser, and each user debugs as their own SAP user: principal propagation through the Cloud
-Connector for an on-premise system, a user token for the BTP ABAP Environment. See the
-[deployment guide](docs/btp-deployment.md).
+Connector for an on-premise system, a user token for the BTP ABAP Environment. One deployment can
+also serve several systems, one route each (`https://<route>/S4D/100/mcp`): a connector is then one
+system, chosen by whoever adds it. See the [deployment guide](docs/btp-deployment.md).
 
 | Client | How |
 |---|---|
@@ -255,7 +256,7 @@ Early releases (`v0.0.x`). What has run live:
   steps show in the client's dialog (MCP elicitation) in GitHub Copilot.
 
 Not run live yet: the server deployed on SAP BTP Cloud Foundry (XSUAA, destinations, principal
-propagation), an on-premise 7.58 system, and the other checks of the [roadmap](docs/roadmap.md).
+propagation, several systems from one deployment), an on-premise 7.58 system, and the other checks of the [roadmap](docs/roadmap.md).
 
 ## Development
 

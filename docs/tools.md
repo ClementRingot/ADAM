@@ -380,10 +380,12 @@ abap_debug_session {action: "end"}
   `maxSeconds` (default 120 s) allow, each capped by the server's ceiling. A one-shot capture then
   lets the program go on without stopping, an interactive session keeps it waiting; a warning says
   which bound ended the call. A client that cancels the call stops it the same way.
-- **One capture per SAP user** at a time, and one capture or interactive session per MCP user. The
-  server runs at most `ABAP_DEBUGGER_MAX_CAPTURES` captures (default 4) and keeps at most
-  `ABAP_DEBUGGER_MAX_SESSIONS` sessions open (default 4) at once: each held program takes an SAP
-  dialog work process (see [sizing](configuration.md#sizing-against-the-sap-system)).
+- **One capture per SAP user** at a time, and one capture or interactive session per MCP user — on
+  each SAP system, when a deployment serves several. The server runs at most
+  `ABAP_DEBUGGER_MAX_CAPTURES` captures (default 4) and keeps at most `ABAP_DEBUGGER_MAX_SESSIONS`
+  sessions open (default 4) at once on each system: each held program takes an SAP dialog work
+  process (see [sizing](configuration.md#sizing-against-the-sap-system)); `ABAP_DEBUGGER_MAX_TOTAL`
+  (default 16) bounds them on all systems together.
 - **Each call answers within `ABAP_DEBUGGER_CALL_SECONDS`** (default 50 s); what takes longer goes on
   in the background until `wait` picks it up.
 - **Progress.** Clients that ask for progress notifications get one at most every two seconds while a
