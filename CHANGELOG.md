@@ -1,4 +1,4 @@
-# abap-debugger-mcp
+# @adam-mcp/server
 
 All notable changes to this project are documented here. Entries are written by
 [Changesets](https://github.com/changesets/changesets) from the `.changeset/*.md`

@@ -11,7 +11,7 @@ it('propagates the package.json version to version.ts, mta.yaml and the .mtar re
     mkdirSync(join(root, 'src'));
     mkdirSync(join(root, 'docs'));
     copyFileSync(new URL('./sync-version.mjs', import.meta.url), join(root, 'scripts/sync-version.mjs'));
-    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'abap-debugger-mcp', version: '9.8.7' }));
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@adam-mcp/server', version: '9.8.7' }));
     writeFileSync(join(root, 'src/version.ts'), "/** doc */\nexport const VERSION = '0.1.0';\n");
     writeFileSync(
       join(root, 'mta.yaml'),
