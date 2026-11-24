@@ -33,6 +33,9 @@
   "engines": {
     "node": ">=22.12"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:exe": "npm run build && node scripts/build-exe.mjs",

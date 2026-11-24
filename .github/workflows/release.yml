@@ -1,7 +1,8 @@
 name: Release
 
-# One release per version: a tag v1.2.3 -> a GitHub Release with the Windows executable (no Node.js
-# needed on the user's machine) and its checksum, and — once enabled — the npm package. Tags are
+# One release per version: a tag v1.2.3 -> the npm package (npmjs, via Trusted Publishing / OIDC)
+# and a GitHub Release with the Windows executable (no Node.js needed on the user's machine) and its
+# checksum. Tags are
 # normally pushed by the Changesets workflow (scripts/tag-missing-releases.mjs) after the version
 # PR merges. Run it by hand to rebuild an existing tag's release.
 
@@ -82,13 +83,11 @@ jobs:
           gh release upload "$TAG" build/abap-debugger-mcp.exe build/SHA256SUMS.txt --clobber
 
   # ---------------------------------------------------------------------------
-  # npmjs via Trusted Publishing (OIDC), off until the repository variable
-  # NPM_PUBLISH is "true" (see docs/RELEASE.md, bootstrap). Idempotent: a
-  # re-run skips publish if the version is already on npm.
+  # Publish to npmjs via Trusted Publishing (OIDC). Idempotent: a re-run after a
+  # partial release skips publish if the version is already on npm.
   # ---------------------------------------------------------------------------
   npm-publish:
     needs: build
-    if: vars.NPM_PUBLISH == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read

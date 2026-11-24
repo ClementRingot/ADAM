@@ -7,7 +7,7 @@ name: Changesets
 #     mirrors mta.yaml + the README, refreshes the lockfile).
 #   - No pending changesets? → runs scripts/tag-missing-releases.mjs, which pushes
 #     the canonical vX.Y.Z tag for the committed version if it is not already
-#     tagged. The pushed tag then triggers release.yml (Windows executable, npm when enabled).
+#     tagged. The pushed tag then triggers release.yml (npm + Windows executable).
 #
 # The only human step is MERGING the version PR.
 #

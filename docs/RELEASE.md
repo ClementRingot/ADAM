@@ -1,8 +1,8 @@
 # Release guide (maintainers)
 
-ADAM ships **one release per version**: a single tag `vX.Y.Z` produces the GitHub
-Release with the Windows executable (and its checksum) and — once enabled — the
-npm package `abap-debugger-mcp`. Releases are driven by
+ADAM ships **one release per version, multi-artifact**: a single tag `vX.Y.Z`
+produces the npm package (`abap-debugger-mcp` on npmjs, via Trusted Publishing)
+and the GitHub Release with the Windows executable and its checksum. Releases are driven by
 [Changesets](https://github.com/changesets/changesets), the same mechanism as
 [`ClementRingot/ROSA`](https://github.com/ClementRingot/ROSA).
 
@@ -35,7 +35,7 @@ flowchart TD
     direction TB
     build["build — install, verify version == tag, typecheck, lint, test"]
     build --> exe["windows-exe — SEA executable + SHA256SUMS → GitHub Release"]
-    build --> npmp["npm-publish — npmjs (OIDC, idempotent, when NPM_PUBLISH=true)"]
+    build --> npmp["npm-publish — npmjs (OIDC, idempotent)"]
   end
 ```
 
@@ -112,8 +112,7 @@ unreleased. Dev-only and Actions bumps pass as they are.
 2. **windows-exe** — builds the single executable on Windows (Node 24 SEA),
    writes `SHA256SUMS.txt`, creates the GitHub Release with generated notes if
    missing, and uploads both (overwriting on a re-run).
-3. **npm-publish** — only when the repo **variable** `NPM_PUBLISH` is `true`:
-   publishes `abap-debugger-mcp` to **npmjs** via **Trusted Publishing (OIDC)** —
+3. **npm-publish** — publishes `abap-debugger-mcp` to **npmjs** via **Trusted Publishing (OIDC)** —
    no token; provenance attached. **Idempotent:** skipped if that version is
    already on npm.
 
@@ -131,10 +130,11 @@ Also allow Actions to open PRs: Settings → Actions → General → *Allow GitH
 Actions to create and approve pull requests* (needed for the `github.token`
 fallback only).
 
-### 2. npm (optional)
+### 2. First npm publish + Trusted Publisher
 
-The npm package does not exist yet, and npmjs can only configure a Trusted
-Publisher for a package that **already exists**, so the first publish is manual:
+npmjs can only configure a Trusted Publisher for a package that **already
+exists**, so the first publish is manual (until then the `npm-publish` job fails
+on every release):
 
 ```bash
 npm publish --access public   # with a short-lived granular token, deleted right after
@@ -142,7 +142,7 @@ npm publish --access public   # with a short-lived granular token, deleted right
 
 Then on npmjs.com → the package → **Settings → Trusted Publisher** → add a
 **GitHub Actions** publisher: repository `ClementRingot/ADAM`, workflow
-`release.yml`. Delete the token and set the repo variable `NPM_PUBLISH=true`.
+`release.yml`. Delete the token.
 
 ## Manual fallback
 

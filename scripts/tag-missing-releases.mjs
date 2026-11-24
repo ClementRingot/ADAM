@@ -5,7 +5,7 @@
 //
 // It creates and pushes the canonical vX.Y.Z tag for the committed
 // package.json version if it isn't already on origin. The pushed tag then
-// triggers release.yml (Windows executable, npm when enabled). NOTE: for that trigger to
+// triggers release.yml (npm + Windows executable). NOTE: for that trigger to
 // fire, the tag must be pushed with the release GitHub App's token (see the
 // workflow) — tags pushed with the default GITHUB_TOKEN do not trigger
 // workflows (GitHub's recursive-workflow prevention).
