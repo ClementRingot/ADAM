@@ -1,6 +1,6 @@
 _schema-version: "3.1"
 ID: abap-debugger-mcp
-version: 0.1.1
+version: 1.0.0
 description: ABAP debugger MCP server — one-shot and interactive debugging of ABAP code for AI assistants
 
 # ──────────────────────────────────────────────────────────────────────
@@ -12,7 +12,7 @@ description: ABAP debugger MCP server — one-shot and interactive debugging of 
 #
 #   cp mta-overrides.mtaext.example mta-overrides.mtaext   # set SAP_BTP_DESTINATION
 #   mbt build
-#   cf deploy mta_archives/abap-debugger-mcp_0.1.1.mtar -e mta-overrides.mtaext
+#   cf deploy mta_archives/abap-debugger-mcp_1.0.0.mtar -e mta-overrides.mtaext
 #
 # See docs/btp-deployment.md.
 # ──────────────────────────────────────────────────────────────────────
