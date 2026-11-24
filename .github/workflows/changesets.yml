@@ -67,6 +67,6 @@ jobs:
           pr-title: "chore(release): version packages"
           # Tags + GitHub releases are ours: tag-missing-releases.mjs pushes the
           # canonical vX.Y.Z tag and release.yml cuts the release. Keep the action
-          # from creating its own abap-debugger-mcp@X.Y.Z-style tags/releases.
+          # from creating its own @adam-mcp/server@X.Y.Z-style tags/releases.
           create-github-releases: false
           push-git-tags: false

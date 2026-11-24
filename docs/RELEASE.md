@@ -1,7 +1,7 @@
 # Release guide (maintainers)
 
 ADAM ships **one release per version, multi-artifact**: a single tag `vX.Y.Z`
-produces the npm package (`abap-debugger-mcp` on npmjs, via Trusted Publishing)
+produces the npm package (`@adam-mcp/server` on npmjs, via Trusted Publishing)
 and the GitHub Release with the Windows executable and its checksum. Releases are driven by
 [Changesets](https://github.com/changesets/changesets), the same mechanism as
 [`ClementRingot/ROSA`](https://github.com/ClementRingot/ROSA).
@@ -112,7 +112,7 @@ unreleased. Dev-only and Actions bumps pass as they are.
 2. **windows-exe** — builds the single executable on Windows (Node 24 SEA),
    writes `SHA256SUMS.txt`, creates the GitHub Release with generated notes if
    missing, and uploads both (overwriting on a re-run).
-3. **npm-publish** — publishes `abap-debugger-mcp` to **npmjs** via **Trusted Publishing (OIDC)** —
+3. **npm-publish** — publishes `@adam-mcp/server` to **npmjs** via **Trusted Publishing (OIDC)** —
    no token; provenance attached. **Idempotent:** skipped if that version is
    already on npm.
 
@@ -135,7 +135,8 @@ fallback only).
 npmjs can only configure a Trusted Publisher for a package that **already
 exists**, so the first publish uses a token. `release.yml` carries a
 **temporary** `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` on its publish step
-for that:
+for that. The package lives in the npm organization **`adam-mcp`** (as ROSA's
+in `rosa-mcp`), which must exist, and the token must be allowed to publish to it.
 
 1. Create a short-lived **granular access token** on npmjs.com (read and write,
    bypass 2FA) and save it as the repo **secret** `NPM_TOKEN` (Settings → Secrets

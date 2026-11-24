@@ -151,6 +151,8 @@ claude mcp add adam \
 - `--allow-git=root`: npm 12 refuses to install from git unless allowed; earlier versions accept the
   flag too.
 - Pin a version by appending `#<tag or commit>` to the repository name.
+- Also on npm, already built: `npx -y @adam-mcp/server` (pin a version with `@adam-mcp/server@<version>`);
+  no git and no build on the first start. The command it installs is still `abap-debugger-mcp`.
 - On Windows, some clients start `npx` only through the shell: `"command": "cmd"` with
   `"args": ["/c", "npx", "-y", "--allow-git=root", "github:ClementRingot/ADAM"]`.
 - From a clone: `git clone https://github.com/ClementRingot/ADAM.git`, then `npm ci` (it also

@@ -12,7 +12,7 @@ function lockfile(overrides = {}) {
     lockfileVersion: 3,
     packages: {
       "": {
-        name: "abap-debugger-mcp",
+        name: "@adam-mcp/server",
         version: "0.1.0",
         dependencies: { express: "^5.2.1", zod: "^3.25.0" },
         devDependencies: { typescript: "^5.7.0", vitest: "^3.2.4" },
