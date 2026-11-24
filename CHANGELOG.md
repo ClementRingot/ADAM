@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Entries are written by
 files each pull request adds (see [docs/RELEASE.md](./docs/RELEASE.md)); the
 project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.0.0
+
+### Major Changes
+
+- 74c3be0: First stable release, 1.0.0. Published to npm as `@adam-mcp/server` through Trusted Publishing (OIDC) only,
+  with provenance; the bootstrap token is gone. No change to the tools, the configuration or the SAP BTP
+  deployment since 0.1.1.
+
 ## 0.1.1
 
 ### Patch Changes
