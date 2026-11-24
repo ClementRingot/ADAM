@@ -130,27 +130,18 @@ Also allow Actions to open PRs: Settings → Actions → General → *Allow GitH
 Actions to create and approve pull requests* (needed for the `github.token`
 fallback only).
 
-### 2. First npm publish + Trusted Publisher
+### 2. npm Trusted Publisher
 
-npmjs can only configure a Trusted Publisher for a package that **already
-exists**, so the first publish uses a token. `release.yml` carries a
-**temporary** `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` on its publish step
-for that. The package lives in the npm organization **`adam-mcp`** (as ROSA's
-in `rosa-mcp`), which must exist, and the token must be allowed to publish to it.
+`@adam-mcp/server` lives in the npm organization **`adam-mcp`** (as ROSA's in
+`rosa-mcp`) and is published **only through Trusted Publishing (OIDC)**: no
+token, no secret. On npmjs.com → the package → **Settings → Trusted Publisher**,
+the **GitHub Actions** publisher is repository `ClementRingot/ADAM`, workflow
+`release.yml`. Renaming the workflow file breaks publishing until it is updated
+there.
 
-1. Create a short-lived **granular access token** on npmjs.com (read and write,
-   bypass 2FA) and save it as the repo **secret** `NPM_TOKEN` (Settings → Secrets
-   and variables → Actions).
-2. Let the first release run (the `v0.1.0` tag pushed after the merge, or Actions
-   → Release → Run workflow with the tag): `npm-publish` publishes with the token.
-3. On npmjs.com → the package → **Settings → Trusted Publisher** → add a
-   **GitHub Actions** publisher: repository `ClementRingot/ADAM`, workflow
-   `release.yml`.
-4. Back to OIDC only: delete the `NPM_TOKEN` secret, the token on npmjs.com, and
-   the `env:` block (with its comment) from the publish step of `release.yml`.
-
-Equivalent by hand: `npm publish --access public` from a clone with the token,
-then steps 3 and 4.
+npmjs configures a Trusted Publisher only for a package that already exists, so
+the very first version (0.1.1) was published once with a short-lived token,
+since deleted.
 
 ## Manual fallback
 
