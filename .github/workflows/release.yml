@@ -1,37 +1,122 @@
 name: Release
 
-# Every tag v* gets a GitHub release with the Windows executable attached (no Node.js needed on the
-# user's machine). Run it by hand to attach the executable to an existing tag's release.
+# One release per version: a tag v1.2.3 -> the npm package (npmjs, via Trusted Publishing / OIDC)
+# and a GitHub Release with the Windows executable (no Node.js needed on the user's machine) and its
+# checksum. Tags are
+# normally pushed by the Changesets workflow (scripts/tag-missing-releases.mjs) after the version
+# PR merges. Run it by hand to rebuild an existing tag's release.
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag whose release gets the executable (e.g. v0.1.0)
+        description: Tag to (re)build the release for (e.g. v0.1.0)
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
-  windows-exe:
-    runs-on: windows-latest
-    env:
-      TAG: ${{ inputs.tag || github.ref_name }}
-      GH_TOKEN: ${{ github.token }}
+  # ---------------------------------------------------------------------------
+  # Gate: install + version==tag + typecheck/lint/test/build. Nothing publishes
+  # unless this passes.
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify package.json and the build match the tag
+        run: |
+          npm run build
+          WANT="${TAG#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          BIN="$(node dist/index.js --version)"
+          echo "tag=$WANT package.json=$PKG dist=$BIN"
+          if [ "$WANT" != "$PKG" ] || [ "$WANT" != "$BIN" ]; then
+            echo "::error::tag ($WANT), package.json ($PKG) and the build ($BIN) disagree"
+            exit 1
+          fi
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Windows executable + checksum -> GitHub Release.
+  # ---------------------------------------------------------------------------
+  windows-exe:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write # create the GitHub Release and upload assets
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run build:exe
+      - name: Generate checksums
+        shell: bash
+        working-directory: build
+        run: sha256sum abap-debugger-mcp.exe > SHA256SUMS.txt
       - name: Attach the executable to the release
         shell: bash
         run: |
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
-          gh release upload "$TAG" build/abap-debugger-mcp.exe --clobber
+          gh release upload "$TAG" build/abap-debugger-mcp.exe build/SHA256SUMS.txt --clobber
+
+  # ---------------------------------------------------------------------------
+  # Publish to npmjs via Trusted Publishing (OIDC). Idempotent: a re-run after a
+  # partial release skips publish if the version is already on npm.
+  # ---------------------------------------------------------------------------
+  npm-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Trusted Publishing + provenance on npmjs
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      # Trusted Publishing requires npm >= 11.5; setup-node 22 ships npm 10.
+      - name: Upgrade npm (for Trusted Publishing)
+        run: npm install -g npm@latest
+      - name: Publish to npmjs (skip if the version already exists)
+        # TEMPORARY (bootstrap): npmjs only lets a Trusted Publisher be configured for a package
+        # that already exists, so the FIRST publish uses the repo secret NPM_TOKEN. npm tries OIDC
+        # first and falls back to this token. Once the package exists and its Trusted Publisher is
+        # set, delete these two lines and the NPM_TOKEN secret (see docs/RELEASE.md, bootstrap).
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} already published — skipping npm publish"
+          else
+            npm publish --access public
+          fi

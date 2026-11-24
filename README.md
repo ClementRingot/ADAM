@@ -243,7 +243,7 @@ on real systems.
 
 ## Status
 
-Early releases (`v0.0.x`). What has run live:
+Early releases (`v0.x`, see the [changelog](CHANGELOG.md)). What has run live:
 
 - **SAP BTP ABAP Environment**, over HTTP as a remote connector: attaching across application
   servers, several stops in one run, steps, conditions, long step runs, statement kinds, interactive
@@ -266,7 +266,11 @@ npm run typecheck   # tsc over sources and tests
 npm run lint        # biome
 npm run dev         # run from source (tsx)
 npm run build:exe   # one executable needing no Node.js, for this platform: build/abap-debugger-mcp(.exe)
+npx changeset       # describe a change that ships: releases are automatic (docs/RELEASE.md)
 ```
+
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Releases, versions and Dependabot:
+[docs/RELEASE.md](docs/RELEASE.md).
 
 | Folder | Contents |
 |---|---|

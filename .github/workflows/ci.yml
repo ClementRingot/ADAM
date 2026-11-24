@@ -13,8 +13,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -23,16 +23,46 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
-      - run: node dist/index.js --version
+      # The built server must report the package.json version (src/version.ts is synced by
+      # scripts/sync-version.mjs on every release).
+      - name: Verify the build reports the package version
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          BIN="$(node dist/index.js --version)"
+          echo "package.json=$PKG dist=$BIN"
+          if [ "$PKG" != "$BIN" ]; then
+            echo "::error::dist reports $BIN, package.json says $PKG: run npm run sync-version"
+            exit 1
+          fi
 
   mta:
     # The SAP BTP deployment archive still builds (mta.yaml, xs-security.json, the module's payload).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npx -y mbt@1.2.34 build -t "$RUNNER_TEMP/mta"
       - run: unzip -l "$RUNNER_TEMP"/mta/*.mtar
+
+  # Changeset guard: a PR that changes what ADAM ships must carry a changeset
+  # (or an empty one to merge without releasing).
+  guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # need base + head history for the diff
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Require a changeset for shipped changes
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/require-changeset.mjs
+        # require-changeset.mjs uses only Node builtins, so this job needs no
+        # `npm ci`. The shipped-deps unit tests run in the `test` job's `npm test`.

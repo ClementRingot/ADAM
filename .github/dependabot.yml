@@ -1,0 +1,38 @@
+version: 2
+
+updates:
+  # --- npm ---
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(dev-deps)"
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # @types/node follows the oldest supported runtime (engines.node >=22.12, the SAP BTP
+      # Node.js buildpack): a new major would type APIs Node 22 does not have. Bump it with
+      # engines.node, deliberately. Minor and patch updates still come through.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  # --- GitHub Actions ---
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      actions:
+        patterns:
+          - "*"
