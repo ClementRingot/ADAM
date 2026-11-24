@@ -245,7 +245,7 @@ on real systems.
 
 ## Status
 
-Early releases (`v0.x`, see the [changelog](CHANGELOG.md)). What has run live:
+Releases: see the [changelog](CHANGELOG.md). What has run live:
 
 - **SAP BTP ABAP Environment**, over HTTP as a remote connector: attaching across application
   servers, several stops in one run, steps, conditions, long step runs, statement kinds, interactive
