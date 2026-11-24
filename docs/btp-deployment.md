@@ -106,7 +106,7 @@ cp mta-overrides.mtaext.example mta-overrides.mtaext    # set SAP_BTP_DESTINATIO
 
 cf login -a https://api.cf.<region>.hana.ondemand.com
 mbt build
-cf deploy mta_archives/abap-debugger-mcp_0.1.0.mtar -e mta-overrides.mtaext
+cf deploy mta_archives/abap-debugger-mcp_0.1.1.mtar -e mta-overrides.mtaext
 cf app abap-debugger-mcp                                  # shows the route
 ```
 

@@ -1,6 +1,6 @@
 {
   "name": "@adam-mcp/server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server that debugs ABAP code in SAP's debugger for AI assistants: one-shot captures and interactive sessions, over stdio or HTTP (SAP BTP Cloud Foundry).",
   "license": "MIT",
   "type": "module",

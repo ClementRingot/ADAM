@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Entries are written by
 files each pull request adds (see [docs/RELEASE.md](./docs/RELEASE.md)); the
 project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.1.1
+
+### Patch Changes
+
+- 20121ab: Publish on npm as `@adam-mcp/server`, in the `adam-mcp` organization (as ROSA's `@rosa-mcp/server`),
+  instead of the unscoped `abap-debugger-mcp`. The command (`abap-debugger-mcp`), the server name in the
+  MCP handshake and `/health`, and the SAP BTP application are unchanged.
+
 ## 0.1.0
 
 First version released by the release train: one-shot captures and interactive
