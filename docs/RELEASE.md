@@ -133,16 +133,23 @@ fallback only).
 ### 2. First npm publish + Trusted Publisher
 
 npmjs can only configure a Trusted Publisher for a package that **already
-exists**, so the first publish is manual (until then the `npm-publish` job fails
-on every release):
+exists**, so the first publish uses a token. `release.yml` carries a
+**temporary** `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` on its publish step
+for that:
 
-```bash
-npm publish --access public   # with a short-lived granular token, deleted right after
-```
+1. Create a short-lived **granular access token** on npmjs.com (read and write,
+   bypass 2FA) and save it as the repo **secret** `NPM_TOKEN` (Settings → Secrets
+   and variables → Actions).
+2. Let the first release run (the `v0.1.0` tag pushed after the merge, or Actions
+   → Release → Run workflow with the tag): `npm-publish` publishes with the token.
+3. On npmjs.com → the package → **Settings → Trusted Publisher** → add a
+   **GitHub Actions** publisher: repository `ClementRingot/ADAM`, workflow
+   `release.yml`.
+4. Back to OIDC only: delete the `NPM_TOKEN` secret, the token on npmjs.com, and
+   the `env:` block (with its comment) from the publish step of `release.yml`.
 
-Then on npmjs.com → the package → **Settings → Trusted Publisher** → add a
-**GitHub Actions** publisher: repository `ClementRingot/ADAM`, workflow
-`release.yml`. Delete the token.
+Equivalent by hand: `npm publish --access public` from a clone with the token,
+then steps 3 and 4.
 
 ## Manual fallback
 

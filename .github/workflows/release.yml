@@ -106,6 +106,12 @@ jobs:
       - name: Upgrade npm (for Trusted Publishing)
         run: npm install -g npm@latest
       - name: Publish to npmjs (skip if the version already exists)
+        # TEMPORARY (bootstrap): npmjs only lets a Trusted Publisher be configured for a package
+        # that already exists, so the FIRST publish uses the repo secret NPM_TOKEN. npm tries OIDC
+        # first and falls back to this token. Once the package exists and its Trusted Publisher is
+        # set, delete these two lines and the NPM_TOKEN secret (see docs/RELEASE.md, bootstrap).
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
